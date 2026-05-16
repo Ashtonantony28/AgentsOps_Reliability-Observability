@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Agent, AgentVersion, Trace
@@ -11,7 +11,7 @@ async def compute_agent_health(db: AsyncSession, agent_id: str) -> dict:
     cutoff = datetime.utcnow() - timedelta(hours=1)
     q = select(
         func.count(Trace.id),
-        func.sum(func.case((Trace.status != "success", 1), else_=0)),
+        func.sum(case((Trace.status != "success", 1), else_=0)),
         func.avg(Trace.latency_ms),
         func.coalesce(func.sum(Trace.cost_usd), 0.0),
     ).where(Trace.agent_id == agent_id, Trace.created_at >= cutoff)

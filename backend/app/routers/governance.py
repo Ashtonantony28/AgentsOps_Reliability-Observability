@@ -143,13 +143,6 @@ async def least_privilege(ctx: AuthContext = Depends(get_current_user), db: Asyn
 async def scorecard(ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Org-wide health scorecard: pii hits, injection attempts, policy blocks last 30d."""
     cutoff = datetime.utcnow() - timedelta(days=30)
-    pii_hits = (await db.execute(
-        select(func.count(Trace.id)).where(
-            Trace.org_id == ctx.org_id, Trace.created_at >= cutoff,
-            func.json_array_length(func.cast(Trace.pii_flags, type_=func.coalesce(Trace.pii_flags, []).type)) > 0
-        )
-    )).scalar_one() if False else 0  # SQLAlchemy/pg func varies; do it manually below
-    # manual count
     rows = (await db.execute(
         select(Trace.pii_flags, Trace.injection_score).where(
             Trace.org_id == ctx.org_id, Trace.created_at >= cutoff
