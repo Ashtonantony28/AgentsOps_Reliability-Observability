@@ -61,7 +61,7 @@ SG0 reruns these numbers on the benchmark harness and may revise the budget once
 Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` ∥ `SG4`) → (`SG5a` ∥ `SG5b`) → `SG6` → audits.
 
 ### SG0 Shared interfaces and harness
-- **Owner:** unassigned · **Status:** proposed · **Blocks:** everything
+- **Owner:** SG0 thread · **Status:** ready · **Blocks:** everything
 - **Scope:** everything under **Interface contracts** as code with stub bodies (`NotImplementedError` / HTTP 501): `app/policy/{ast,events,checker,counterexample}.py` signatures, pydantic schemas, SQLAlchemy models + migration `0002`, TS types, DSL grammar (`docs/policy-dsl.md`, EBNF + semantics table), fixture format + ≥ 20 fixture traces with expected verdicts, test harness (SQLite async + fakeredis), `scripts/bench_policy.py`, CI workflow running backend, SDK and frontend checks.
 - **Acceptance:**
   - Migration upgrades and downgrades cleanly on Postgres (docker-compose) and the new tables exist.
@@ -260,4 +260,5 @@ await async_client.acheck(...)
 
 ## Log
 
-- 2026-10-13: Plan drafted from codebase read at `7766898`; awaiting go-ahead before SG0.
+- 2026-10-13: Plan drafted from codebase read at `7766898`.
+- 2026-10-13: Plan approved by Ashton; SG0 dispatched.
