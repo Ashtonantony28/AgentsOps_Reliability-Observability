@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field, model_validator
 
 
 class ToolCallIn(BaseModel):
@@ -9,6 +9,18 @@ class ToolCallIn(BaseModel):
     output: Dict[str, Any] = {}
     latency_ms: int = 0
     status: str = "success"
+
+
+class EventIn(BaseModel):
+    seq: int = Field(ge=0)
+    kind: Literal["tool", "llm", "retrieval", "confirmation", "custom"] = "tool"
+    name: str = Field(min_length=1)
+    status: str = "success"
+    input: Dict[str, Any] = {}
+    output: Dict[str, Any] = {}
+    attrs: Dict[str, Any] = {}
+    latency_ms: int = 0
+    timestamp: Optional[datetime] = None
 
 
 class TraceIn(BaseModel):
@@ -26,8 +38,17 @@ class TraceIn(BaseModel):
     agent_version: str = "1.0.0"
     error_message: Optional[str] = None
     tool_calls: List[ToolCallIn] = []
+    events: List[EventIn] = []
     metadata: Dict[str, Any] = Field(default_factory=dict)
     timestamp: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _check_events(self):
+        if self.events and self.tool_calls:
+            raise ValueError("send either events or tool_calls, not both")
+        if [e.seq for e in self.events] != list(range(len(self.events))):
+            raise ValueError("event seq must be 0, 1, 2, ... in order")
+        return self
 
 
 class TraceBulkIn(BaseModel):
@@ -38,10 +59,12 @@ class SpanOut(BaseModel):
     id: str
     trace_id: str
     parent_span_id: Optional[str]
+    seq: Optional[int] = None
     kind: str
     name: str
     input: Dict[str, Any]
     output: Dict[str, Any]
+    attrs: Optional[Dict[str, Any]] = None
     latency_ms: int
     status: str
     started_at: datetime

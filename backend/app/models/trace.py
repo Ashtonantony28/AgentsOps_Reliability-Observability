@@ -48,13 +48,19 @@ class Span(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     trace_id: Mapped[str] = mapped_column(ForeignKey("traces.id", ondelete="CASCADE"), index=True)
     parent_span_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    kind: Mapped[str] = mapped_column(String(32), default="tool")  # tool|llm|retrieval|custom
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(String(32), default="tool")  # tool|llm|retrieval|confirmation|custom
     name: Mapped[str] = mapped_column(String(255))
     input: Mapped[dict] = mapped_column(JSON, default=dict)
     output: Mapped[dict] = mapped_column(JSON, default=dict)
+    attrs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="success")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     trace = relationship("Trace", back_populates="spans")
+
+    __table_args__ = (
+        Index("ix_span_trace_seq", "trace_id", "seq", unique=True),
+    )

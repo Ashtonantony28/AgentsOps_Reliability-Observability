@@ -12,6 +12,7 @@ from app.models.alert import AlertRule, AlertEvent
 from app.models.incident import Incident
 from app.models.integration import Integration
 from app.models.audit_log import AuditLog, PolicyRule
+from app.models.policy import TracePolicy, TracePolicyViolation
 
 __all__ = [
     "Organization",
@@ -34,4 +35,6 @@ __all__ = [
     "Integration",
     "AuditLog",
     "PolicyRule",
+    "TracePolicy",
+    "TracePolicyViolation",
 ]

@@ -202,7 +202,7 @@ async def get_trace(trace_id: str, ctx: AuthContext = Depends(get_current_user),
     if not t:
         raise HTTPException(404, "trace_not_found")
     spans = (await db.execute(
-        select(Span).where(Span.trace_id == trace_id).order_by(Span.started_at)
+        select(Span).where(Span.trace_id == trace_id).order_by(Span.seq, Span.started_at)
     )).scalars().all()
     out = TraceDetailOut.model_validate(t)
     out.spans = [SpanOut.model_validate(s) for s in spans]

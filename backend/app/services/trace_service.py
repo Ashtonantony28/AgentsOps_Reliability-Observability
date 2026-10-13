@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Agent, Trace, Span, PolicyRule, AuditLog
+from app.policy.events import event_inputs
 from app.redis import get_redis
 from app.schemas.trace import TraceIn
 from app.services.security_service import detect_pii, injection_score, mask_pii
@@ -31,8 +32,8 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
             continue
         if rule.get("forbid_tool"):
             tool = rule["forbid_tool"]
-            for tc in trace.tool_calls:
-                if tc.name == tool:
+            for ev in event_inputs(trace):
+                if ev.kind == "tool" and ev.name == tool:
                     if r.action == "block":
                         raise PolicyViolation(f"tool '{tool}' forbidden by policy", r.name)
                     return f"warn: tool {tool} flagged"
@@ -98,15 +99,18 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
     db.add(trace)
     await db.flush()
 
-    for i, tc in enumerate(payload.tool_calls):
+    for ev in event_inputs(payload):
         db.add(Span(
             trace_id=trace.id,
-            kind="tool",
-            name=tc.name,
-            input=tc.input,
-            output=tc.output,
-            latency_ms=tc.latency_ms,
-            status=tc.status,
+            seq=ev.seq,
+            kind=ev.kind,
+            name=ev.name,
+            input=ev.input,
+            output=ev.output,
+            attrs=ev.attrs or None,
+            latency_ms=ev.latency_ms,
+            status=ev.status,
+            started_at=ev.timestamp or datetime.utcnow(),
             ended_at=datetime.utcnow(),
         ))
 
