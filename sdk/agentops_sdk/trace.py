@@ -111,9 +111,9 @@ class Trace:
             self._check_body(name, kind, input, attrs))
 
     def _undelivered(self) -> Optional[CheckResult]:
-        """A failed check when some of this streamed trace's events are still on their way to the server.
-        Events the server rejected never will be: the check goes on against what it holds."""
-        if self._streaming() and not self._dead and self._sent < len(self.events):
+        """A failed check when the server lacks some of this streamed trace's events. Once it rejected some, a
+        fail-open client checks against the events the server holds instead."""
+        if self._streaming() and self._sent < len(self.events) and (not self._dead or self._client.fail_closed):
             return failed_result("trace events not delivered", self._client.fail_closed)
         return None
 
@@ -157,6 +157,8 @@ class Trace:
                 log.warning("agentops final push failed for trace %s; %d events not delivered", self.trace_id, n)
             return False
         if outcome == "refused":
+            if not n:  # a legacy rule refused the empty final push: nothing to drop
+                return False
             if any(a is not b for a, b in zip(self.events[start:start + n], sent)) or len(self.events) < start + n:
                 return True  # an overlapping push already settled this batch
             if n > 1:  # find the refused event: the ones before it are allowed

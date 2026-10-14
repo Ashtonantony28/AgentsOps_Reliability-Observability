@@ -317,3 +317,20 @@ def test_refusal_settled_by_an_overlapping_push_drops_nothing(client):
     t.events.append({"seq": 0, "name": "a"})  # recorded, not pushed
     assert t._settle("refused", 0, [{"seq": 0, "name": "a"}], False) is True
     assert t.events == [{"seq": 0, "name": "a"}] and t._refused == 0
+
+
+def test_fail_closed_client_still_fails_checks_after_a_rejection(make_client, server):
+    c = make_client(fail_closed=True)
+    server.queue("events", (413, {"error": {"code": "trace_too_long"}}))
+    with c.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        result = t.check("b")
+    assert (result.allowed, result.error) == (False, "trace events not delivered")
+    assert "check" not in server.routes()
+
+
+def test_refused_empty_final_push_ends_the_push(client, server):
+    server.queue("events", (202, {"accepted": 1}), BLOCK)
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+    assert seqs(server) == [[0], []] and [e["name"] for e in t.events] == ["a"]

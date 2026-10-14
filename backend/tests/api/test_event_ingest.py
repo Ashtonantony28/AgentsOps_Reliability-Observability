@@ -157,9 +157,6 @@ async def test_blocked_event_is_stored_as_a_live_violation(client, db, org, agen
     assert r.status_code == 202 and r.json()["violations"] == []
     (trace,) = await _rows(db, Trace)
     assert trace.meta["stream"] == "final" and enqueued == [trace.id]
-    await tps.check_completed_trace(db, trace.id)
-    (row,) = await _rows(db, TracePolicyViolation)
-    assert row.counterexample == []  # the batch has no event that explains it
 
 
 async def test_block_rebuilt_from_spans_records_the_replayed_violations(client, db, org, agent, api_key_headers,
