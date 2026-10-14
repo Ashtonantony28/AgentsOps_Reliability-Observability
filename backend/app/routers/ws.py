@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import async_session_maker
 from app.middleware.auth import decode_token
-from app.models import OrgMembership, ApiKey
+from app.models import OrgMembership, ApiKey, Organization
 from app.middleware.auth import hash_api_key
+from app.middleware.rate_limit import enforce_rate_limit
 from app.redis import get_redis
 from app.services.trace_service import PolicyViolation, TraceConflict, append_events, ingest_trace
 from app.schemas.policy import ViolationOut, WsEventsMessage
@@ -103,8 +104,14 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
     await websocket.accept()
     try:
         async with async_session_maker() as db:
+            limit = (await db.get(Organization, org_id)).rate_limit_per_min
             while True:
                 raw = await websocket.receive_text()
+                try:
+                    await enforce_rate_limit(f"org:{org_id}", limit)
+                except HTTPException:
+                    await websocket.send_json({"ok": False, "error": "rate_limited"})
+                    continue
                 if _is_events_message(raw):
                     try:
                         msg = WsEventsMessage.model_validate_json(raw)

@@ -133,7 +133,7 @@ async def validate_trace_policy(
 @router.post("/check", response_model=PolicyCheckOut)
 async def check_candidate(req: PolicyCheckIn, request: Request, db: AsyncSession = Depends(get_db)):
     org, _api_key = await authenticate_api_key(request, db)
-    await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
+    await enforce_rate_limit(f"check:{org.id}", org.rate_limit_per_min)
     try:
         return await precheck(db, org.id, req)
     except TraceConflict as e:

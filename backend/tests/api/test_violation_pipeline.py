@@ -35,7 +35,7 @@ def fixture_events(fx):
     return [ev(e.seq, e.name, e.kind, status=e.status, attrs=dict(e.attrs)) for e in fx.events]
 
 
-def _policy_row(org, source, action="log"):
+def _policy_row(org, source, action="alert"):
     (p,) = parse(source)
     return TracePolicy(org_id=org.id, name=p.name, source=source, severity=p.severity, action=action)
 
@@ -294,12 +294,14 @@ def test_policy_checks_have_their_own_queue():
 
 async def test_metric_counts_window_severity_and_agent(db, org, agent):
     t = (await _add(db, Trace(org_id=org.id, agent_id=agent.id, trace_uid="t")))[0]
-    (p,) = await _add(db, TracePolicy(org_id=org.id, name="p", source="x", severity="high"))
+    p, logged = await _add(db, TracePolicy(org_id=org.id, name="p", source="x", severity="high", action="alert"),
+                           TracePolicy(org_id=org.id, name="q", source="x", severity="high", action="log"))
     now = datetime.utcnow()
-    await _add(db, *(TracePolicyViolation(org_id=org.id, trace_id=t.id, agent_id=agent.id, policy_id=p.id,
-                                          policy_name="p", policy_version=version, severity=sev, at_seq=0,
+    await _add(db, *(TracePolicyViolation(org_id=org.id, trace_id=t.id, agent_id=agent.id, policy_id=pol.id,
+                                          policy_name=pol.name, policy_version=version, severity=sev, at_seq=0,
                                           mode="batch", detected_at=now - timedelta(minutes=ago))
-                     for version, (sev, ago) in enumerate([("high", 1), ("low", 1), ("critical", 2), ("critical", 60)])))
+                     for version, (pol, sev, ago) in enumerate([(p, "high", 1), (p, "low", 1), (p, "critical", 2),
+                                                                (p, "critical", 60), (logged, "critical", 1)])))
     rule = lambda **kw: AlertRule(org_id=org.id, metric="policy_violations", window_minutes=15, **kw)  # noqa: E731
     assert await compute_metric_value(db, rule(context={})) == 3
     assert await compute_metric_value(db, rule(context={"severity_at_least": "high"})) == 2

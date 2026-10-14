@@ -6,11 +6,11 @@ from typing import Sequence
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AlertRule, TracePolicyViolation
+from app.models import AlertRule, TracePolicy, TracePolicyViolation
 from app.redis import get_redis
 from app.schemas.policy import ViolationOut
 from app.services import trace_policy_service as tps
-from app.services.alert_service import already_firing, compare, compute_metric_value, fire_alert, severities_at_least
+from app.services.alert_service import ALERTING_ACTIONS, already_firing, compare, compute_metric_value, fire_alert, severities_at_least
 from app.services.notification_service import dispatch_alert
 
 log = logging.getLogger(__name__)
@@ -38,6 +38,11 @@ async def publish_violations(db: AsyncSession, rows: Sequence[TracePolicyViolati
 
 
 async def evaluate_violation_alerts(db: AsyncSession, rows: Sequence[TracePolicyViolation]) -> None:
+    alerting = set((await db.execute(select(TracePolicy.id).where(
+        TracePolicy.id.in_({r.policy_id for r in rows}), TracePolicy.action.in_(ALERTING_ACTIONS)))).scalars())
+    rows = [r for r in rows if r.policy_id in alerting]
+    if not rows:
+        return
     rules = (await db.execute(select(AlertRule).where(
         AlertRule.org_id == rows[0].org_id, AlertRule.enabled == True,  # noqa: E712
         AlertRule.metric == "policy_violations",

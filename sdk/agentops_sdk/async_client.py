@@ -14,7 +14,7 @@ import httpx
 
 from agentops_sdk.precheck import PrecheckMixin
 from agentops_sdk.trace import Trace
-from agentops_sdk.utils import append_to_disk, disk_buffer_path
+from agentops_sdk.utils import append_to_disk, buffer_rejected, disk_buffer_path
 
 log = logging.getLogger("agentops_sdk.async")
 
@@ -115,6 +115,8 @@ class AsyncAgentOpsClient(PrecheckMixin):
                     log.warning("ingest failed: %s %s", r.status_code, r.text[:200])
                     for it in items:
                         append_to_disk(self._disk, it)
+                else:
+                    buffer_rejected(self._disk, items, r)
         except Exception as e:
             log.warning("ingest exception, buffering: %s", e)
             for it in items:

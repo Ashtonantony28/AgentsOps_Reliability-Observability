@@ -27,10 +27,18 @@ def test_sync_guard_in_async_streamed_trace_is_checked(aclient, server):
     assert calls == [] and "check" in server.routes()
 
 
-@pytest.mark.xfail(strict=True, reason="A3-10: traces the bulk endpoint rejects with storage_error are dropped")
 def test_bulk_storage_error_is_retried(client, server):
     server.queue("bulk", (202, {"accepted": [], "rejected": [{"index": 0, "reason": "storage_error"}]}))
     with client.trace() as t:
         t.add_tool_call("search")
     client.flush()
     assert [p["trace_id"] for p in drain_disk(client._disk)] == [t.trace_id]
+
+
+def test_bulk_policy_block_is_logged_not_retried(client, server, caplog):
+    server.queue("bulk", (202, {"accepted": [], "rejected": [{"index": 0, "reason": "policy_block", "rule": "r"}]}))
+    with client.trace() as t:
+        t.add_tool_call("search")
+    client.flush()
+    assert drain_disk(client._disk) == []
+    assert f"dropped trace {t.trace_id}: policy_block" in caplog.text
