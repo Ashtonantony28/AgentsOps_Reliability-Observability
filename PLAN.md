@@ -237,6 +237,36 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest tests/test_audit2.py tests/api/test_violation_pipeline.py tests/policy/test_monitor.py -q`
 - **Result:** verify passes (both audit tests unmarked; A2-1/A2-7 still xfail for SG-A2.1). A2-4: after the unlocked dedup check passes, firing a `policy_violations` rule takes an in-process lock per rule and `SELECT … FOR UPDATE` on the rule's row (held until `fire_alert` commits), then re-checks `already_firing`. AUDIT-2's race (20 concurrent `drop_db` appends, one critical rule) gave 2, 2, 1 alerts on Postgres before and 1 alert and 1 incident in each of 6 runs after, with 4 workers. A2-6: a `count … by` node keeps exact counts for its first `MAX_GROUPS = 1000` values with a hit (zero counts are no longer stored); later values share one overflow counter, giving bounds on their count. When the bounds don't settle the comparison, the policy is false at that event and every later one, so nothing is missed (Hypothesis-checked against `reference.evaluate` with the bound at 0–3, across restores) at the cost of extra violations, and blocks under a `block` policy, on traces past 1 000 distinct counted names. Snapshot at 50 000 distinct names: 13 KB, restore+step+snapshot p95 0.4 ms (was 722 KB, 72 ms). The batch check stays exact.
 
+### SG-A3.1 Streamed traces carry their trace fields (AUDIT-3 A3-1, A3-2 high)
+- **Owner:** unassigned · **Status:** proposed: changes the interface contract, so stop-and-report before dispatch · **Depends:** AUDIT-3
+- **Scope:** `EventsAppendIn` gains the trace-level fields of `TraceIn` (`environment`, `agent_version`, `session_id`, `input`, `metadata` on the first append; `output`, `status`, `error_message`, tokens, cost, `latency_ms` with `final`), `PolicyCheckIn` gains `environment`; WS `events` message and TS types follow. The first append fixes the trace's environment (a later different value is 409). Policy scope, legacy rules (PII/injection on `input`/`output` text, masking as on the whole-trace path) and the stored row use them. The SDK sends them.
+- **Acceptance:** the A3-1 and A3-2 tests pass unmarked; an environment-scoped policy gives the same verdict on whole-trace ingest, streamed append and `/check` for every violating fixture; old SDKs (no new fields) behave as today; SDK contract test updated.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k "environment or streamed" tests/api/test_event_ingest.py tests/api/test_sdk_contract.py -q` · `cd sdk && pytest -q` · `cd frontend && npx tsc --noEmit`
+
+### SG-A3.2 `/check` applies legacy block rules (AUDIT-3 A3-3 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** `precheck` runs the legacy `PolicyRule` checks the append path runs on the candidate (`forbid_tool`, `forbid_pii` on its `input`, `block_on_injection`), so `allowed` is false exactly when the append would be a 403. How a legacy hit appears in `violations` is the thread's call within `ViolationOut`; a shape change is stop-and-report.
+- **Acceptance:** the A3-3 test passes unmarked; for each legacy rule type, a candidate the append rejects is `allowed: false` and one it accepts is `allowed: true`; precheck budget row still met.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k legacy_block tests/api/test_precheck.py -q` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+
+### SG-A3.3 Sync checks in async streamed traces (AUDIT-3 A3-4 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none (SDK only)
+- **Scope:** `Trace.check` on a streamed trace with an async client delivers pending events before checking (or waits for the in-flight push), so a sync `@guard` in an async agent is checked against the server.
+- **Acceptance:** `sdk/tests/test_audit_3.py::test_sync_guard_in_async_streamed_trace_is_checked` passes unmarked; event order and `seq` stay correct when a sync check and an `add_event` push race; existing SDK tests unchanged.
+- **Verify:** `cd sdk && pytest -q`
+
+### SG-A3.4 AUDIT-3 mediums without contract changes (A3-6, A3-8, A3-9, A3-10, A3-11)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** checks get their own rate-limit bucket (A3-6); `policy_violations` alert rules count only `alert` and `block` policies (A3-8, default picked; the alternative is dropping `alert`); a re-sent whole trace with a known `trace_id` is not stored or checked twice (A3-9); the SDK re-buffers `storage_error` bulk rejections and logs the others (A3-10); `/ws/ingest` enforces the org rate limit per message (A3-11).
+- **Acceptance:** the five tests pass unmarked; full backend and SDK suites green.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -q && pytest -q` · `cd sdk && pytest -q`
+
+### SG-A3.5 AUDIT-3 mediums that change the contract (A3-5, A3-7)
+- **Owner:** unassigned · **Status:** proposed: interface change, stop-and-report; can ride with SG-A3.1 · **Depends:** none
+- **Scope:** a non-streamed `Trace.check` sends its unsent events as a prefix in `PolicyCheckIn` (A3-5); `ViolationOut` says whether the counterexample is pending, minimal or a degraded fallback, and the UI stops guessing (A3-7).
+- **Acceptance:** the A3-5 and A3-7 tests pass unmarked; precheck budget row met with a 200-event prefix in the request.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k "non_streamed or counterexample" -q` · `cd sdk && pytest -q` · `cd frontend && npx tsc --noEmit && npm test -- --run`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -245,7 +275,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 |---|---|---|
 | A1 | Encoding soundness (no false negatives); done, see `AUDIT-1.md`: 2 high → SG-A1.1, SG-A1.2 | Differential fuzz at 100 k cases vs reference evaluator, mutation testing of `encode.py` (surviving mutants are findings), adversarial fixtures (empty trace, 1-event trace, glob edge cases, unicode names, counts at exact bounds). |
 | A2 | Performance under load | Load at 2× the SG4 rate, long traces (5 000 events), 50 policies, Redis restarts mid-trace; every budget row checked. |
-| A3 | API/SDK consistency | OpenAPI vs pydantic vs TS types vs SDK models; error codes; legacy payload compatibility. |
+| A3 | API/SDK consistency; done, see `AUDIT-3.md`: 4 high → SG-A3.1 to SG-A3.3 | OpenAPI vs pydantic vs TS types vs SDK models; error codes; legacy payload compatibility. |
 | A4 | Test coverage and quality | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
 
 ## Interface contracts
@@ -385,3 +415,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: Audit A2 (performance) done: 1 critical, 2 high, 4 medium, 3 low in AUDIT-2.md; SG-A2.1 to SG-A2.4 proposed.
 - 2026-10-14: SG-A2.3 and SG-A2.4 done (A2-3, A2-4, A2-6 fixed; A2-5 partly).
 - 2026-10-14: SG-A1.2, SG-A2.1 and SG-A2.2 done.
+- 2026-10-14: Audit A3 (API/SDK consistency) done: 0 critical, 4 high, 7 medium, 4 low in AUDIT-3.md; SG-A3.1 to SG-A3.5 proposed (SG-A3.1 and SG-A3.5 change the interface contract).
