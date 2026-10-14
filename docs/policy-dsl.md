@@ -115,6 +115,7 @@ The counterexample of a violation at `at_seq` is the minimal set `S` of seqs suc
 | temporal operator in tag | `tag t = once tool("x")`, `count` in a tag | the operator (reported as unexpected token) |
 | unknown severity | `severity urgent` | the level (reported as unexpected token) |
 | too large | a source over 20 000 characters; a policy over 2 000 atoms and operators with its tags expanded | 1:1; the `policy` keyword |
+| too deep | a formula nested over 64 deep, tags expanded (parentheses count while parsing) | where the limit is crossed |
 
 ## Fixtures
 

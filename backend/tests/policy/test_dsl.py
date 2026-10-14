@@ -124,6 +124,20 @@ def test_size_caps():
         parse("#" * 20_001)
 
 
+def test_depth_caps():
+    assert parse("policy ok: always " + "not " * 63 + 'tool("a")')
+    assert parse("policy ok: always " + "(" * 63 + 'tool("a")' + ")" * 63)
+    deep = ["policy p: always " + "not " * 64 + 'tool("a")',
+            "policy p: always " + " or ".join(['tool("a")'] * 65),
+            'tag t0 = tool("a")\n' + "".join(f"tag t{i} = not @t{i - 1}\n" for i in range(1, 65)) + "policy p: always @t64",
+            "policy p: always " + "not " * 4000 + 'tool("a")',
+            "policy p: always " + "(" * 9000 + 'tool("a")' + ")" * 9000,
+            "policy p: always " + "count(" * 1000 + 'tool("a")' + ") > 1" * 1000]
+    for src in deep:
+        with pytest.raises(PolicyParseError, match="nested over 64 deep"):
+            parse(src)
+
+
 def test_empty_and_tag_only_sources():
     assert parse("") == []
     assert parse("  # nothing\n") == []

@@ -142,7 +142,6 @@ async def test_blocked_append_is_surfaced(db, org, sdk_client):
 
 
 # A5-6: a deeply nested policy raises RecursionError in the parser, which the routes do not catch
-@pytest.mark.xfail(strict=True, reason="A5-6: 1000 nested 'not' is a 500, not a validation error")
 async def test_deeply_nested_policy_is_a_validation_error(client, auth_headers):
     source = "policy deep:\n  always " + "not " * 1000 + 'tool("a")'
     r = await client.post("/api/trace-policies/validate", headers=auth_headers, json={"source": source})

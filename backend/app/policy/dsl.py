@@ -18,6 +18,7 @@ UNARY = {"not": Not, "once": Once, "historically": Historically, "previously": P
 TEMPORAL = frozenset(("once", "historically", "previously", "since", "count"))
 MAX_SOURCE_CHARS = 20_000
 MAX_FORMULA_SIZE = 2_000  # atoms and operators of a policy with its tags expanded
+MAX_FORMULA_DEPTH = 64  # nesting with tags expanded; every checker walks formulas recursively
 
 _TOKEN = re.compile(
     r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<comment>\#[^\n]*)"
@@ -103,7 +104,8 @@ class _Parser:
         self.tags: dict[str, Formula] = {}
         self.policy_names: set[str] = set()
         self.in_tag = False
-        self.sizes: dict[int, int] = {}
+        self.shape: dict[int, tuple[Formula, int, int]] = {}  # id -> (node, size, depth), tags expanded
+        self.nesting = 0
 
     @property
     def tok(self) -> Token:
@@ -172,39 +174,50 @@ class _Parser:
         self.expect(":")
         self.expect("always")
         formula = self.formula()
-        if self.size(formula) > MAX_FORMULA_SIZE:
+        if self.shape[id(formula)][1] > MAX_FORMULA_SIZE:
             raise PolicyParseError(start.line, start.col,
                                    f"policy has over {MAX_FORMULA_SIZE} atoms and operators with its tags expanded")
         end = self.toks[self.i - 1].end
         return Policy(name.value, severity, formula, self.src[start.start:end])
 
-    def size(self, f: Formula) -> int:
-        # tags are shared nodes, so a tree walk can be exponential in the source; each node is counted once
-        if id(f) not in self.sizes:
-            kids = (f.left, f.right) if hasattr(f, "left") else (f.pred,) if isinstance(f, Count) else (
-                (f.arg,) if hasattr(f, "arg") else ())
-            self.sizes[id(f)] = 1 + sum(self.size(k) for k in kids)
-        return self.sizes[id(f)]
+    def node(self, f: Formula, *kids: Formula) -> Formula:
+        # sized as each node is built, so tags (shared nodes) are never walked again
+        shapes = [self.shape[id(k)] for k in kids]
+        self.shape[id(f)] = (f, 1 + sum(s[1] for s in shapes), 1 + max((s[2] for s in shapes), default=0))
+        if self.shape[id(f)][2] > MAX_FORMULA_DEPTH:
+            raise PolicyParseError(self.tok.line, self.tok.col, f"formula is nested over {MAX_FORMULA_DEPTH} deep")
+        return f
+
+    def nest(self) -> None:
+        # bounds the parser's own recursion before any node exists
+        self.nesting += 1
+        if self.nesting > MAX_FORMULA_DEPTH:
+            raise PolicyParseError(self.tok.line, self.tok.col, f"formula is nested over {MAX_FORMULA_DEPTH} deep")
 
     def formula(self) -> Formula:
+        self.nest()
         left = self.or_expr()
         if self.at("->"):
             self.advance()
-            return Implies(left, self.formula())
+            right = self.formula()
+            left = self.node(Implies(left, right), left, right)
+        self.nesting -= 1
         return left
 
     def or_expr(self) -> Formula:
         left = self.and_expr()
         while self.at("or"):
             self.advance()
-            left = Or(left, self.and_expr())
+            right = self.and_expr()
+            left = self.node(Or(left, right), left, right)
         return left
 
     def and_expr(self) -> Formula:
         left = self.since_expr()
         while self.at("and"):
             self.advance()
-            left = And(left, self.since_expr())
+            right = self.since_expr()
+            left = self.node(And(left, right), left, right)
         return left
 
     def since_expr(self) -> Formula:
@@ -212,7 +225,8 @@ class _Parser:
         if self.at("since"):
             self.no_temporal()
             self.advance()
-            left = Since(left, self.unary())
+            right = self.unary()
+            left = self.node(Since(left, right), left, right)
             if self.at("since"):
                 raise PolicyParseError(self.tok.line, self.tok.col, "'since' is non-associative; parenthesize")
         return left
@@ -228,7 +242,10 @@ class _Parser:
             if t.value != "not":
                 self.no_temporal()
             self.advance()
-            return UNARY[t.value](self.unary())
+            self.nest()
+            arg = self.unary()
+            self.nesting -= 1
+            return self.node(UNARY[t.value](arg), arg)
         return self.primary()
 
     def primary(self) -> Formula:
@@ -252,7 +269,7 @@ class _Parser:
             self.expect("(")
             globs = () if self.star() else self.globs()
             self.expect(")")
-            return Match(kind="tool", globs=globs)
+            return self.node(Match(kind="tool", globs=globs))
         if self.at("event"):
             self.advance()
             self.expect("(")
@@ -268,13 +285,13 @@ class _Parser:
                     globs = self.globs()
                 m = Match(kind=kind.value, globs=globs)
             self.expect(")")
-            return m
+            return self.node(m)
         if self.at("status"):
             self.advance()
             self.expect("(")
             status = self.string("status string").value
             self.expect(")")
-            return Match(status=status)
+            return self.node(Match(status=status))
         if self.at("attr"):
             self.advance()
             self.expect("(")
@@ -282,7 +299,7 @@ class _Parser:
             self.expect(",")
             value = self.value()
             self.expect(")")
-            return Match(attrs=((key, value),))
+            return self.node(Match(attrs=((key, value),)))
         if self.at("always"):
             raise PolicyParseError(t.line, t.col, "nested 'always' is not supported; it may only start a policy")
         raise self.fail("a formula")
@@ -339,7 +356,7 @@ class _Parser:
         op = self.advance().value
         if not (self.tok.type == "num" and self.tok.value.isdigit()):
             raise self.fail(f"integer bound after '{op}'")
-        return Count(pred, op, int(self.advance().value), by)
+        return self.node(Count(pred, op, int(self.advance().value), by), pred)
 
 
 def parse(src: str) -> list[Policy]:
