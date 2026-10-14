@@ -50,8 +50,8 @@ async def ws_traces_feed(
         return
     pubsub = get_redis().pubsub()
     channels = {f"traces:{org_id}": "trace", f"violations:{org_id}": "violation"}
-    await pubsub.subscribe(*channels)  # before accept, so nothing published after the handshake is missed
     try:
+        await pubsub.subscribe(*channels)  # before accept, so nothing published after the handshake is missed
         await websocket.accept()
         # heartbeat task
         async def heartbeat():

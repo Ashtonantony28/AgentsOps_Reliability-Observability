@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -14,6 +15,7 @@ from app.models import (
 from app.policy.dsl import parse, pretty
 from app.schemas.policy import ViolationMessage, ViolationOut
 from app.services import violation_service
+from app.services.alert_service import compute_metric_value
 from app.tasks import alert_tasks, policy_tasks
 from tests.policy.fixtures import load_fixtures
 
@@ -177,7 +179,7 @@ async def test_rule_filters_by_severity_and_agent(client, db, org, agent, api_ke
     assert {a.rule_id for a in alerts} == {mine.id, high.id, crit_only.id}  # the others are deduplicated
     assert [a.value for a in alerts if a.rule_id == crit_only.id] == [1]
     (inc,) = await _all(db, Incident)
-    assert "breached" in inc.title and other_agent.id not in {a.rule_id for a in alerts}
+    assert inc.severity == "critical" and "breached" in inc.title and other_agent.id not in {a.rule_id for a in alerts}
 
 
 async def test_threshold_counts_window(client, db, org, agent, api_key_headers, feed):
@@ -204,11 +206,26 @@ async def test_publish_failures_never_fail_ingest(client, db, org, agent, api_ke
     async def boom_alerts(*a, **k):
         raise RuntimeError("alerts down")
 
-    monkeypatch.setattr(redis, "publish", boom)
+    monkeypatch.setattr(redis, "pipeline", lambda **k: SimpleNamespace(publish=lambda *a: None, execute=boom))
     monkeypatch.setattr(violation_service, "evaluate_violation_alerts", boom_alerts)
     await _add(db, _policy_row(org, NO_DROP))
     (v,) = await _stream(client, api_key_headers, agent, "u1", "drop_db")
     assert [r.id for r in await _all(db, TracePolicyViolation)] == [v["id"]]
+
+
+async def test_alert_failure_leaves_caller_session_usable(db, org, agent, monkeypatch):
+    async def boom(s, rows):
+        await s.execute(select(AlertRule))
+        raise RuntimeError("alerts down")
+
+    monkeypatch.setattr(violation_service, "evaluate_violation_alerts", boom)
+    (p,) = await _add(db, _policy_row(org, NO_DROP))
+    (t,) = await _add(db, Trace(org_id=org.id, agent_id=agent.id, trace_uid="t"))
+    row = TracePolicyViolation(id="v1", org_id=org.id, trace_id=t.id, agent_id=agent.id, policy_id=p.id,
+                               policy_name="no_drop", policy_version=1, severity="critical", at_seq=0,
+                               counterexample=[0], mode="live", detected_at=datetime.utcnow())
+    await violation_service.publish_violations(db, [row])
+    assert t.id and t.trace_uid == "t"  # an expired instance would need a lazy load here and fail
 
 
 async def test_alert_notifications_are_dispatched(client, db, org, agent, api_key_headers, monkeypatch):
@@ -246,31 +263,33 @@ async def test_celery_task_checks_publishes_and_closes_redis(monkeypatch, sessio
     assert calls == ["t1"] and closed == [True]
 
 
-def test_periodic_alert_task_counts_policy_violations(tmp_path):
+async def test_metric_counts_window_severity_and_agent(db, org, agent):
+    t = (await _add(db, Trace(org_id=org.id, agent_id=agent.id, trace_uid="t")))[0]
+    (p,) = await _add(db, TracePolicy(org_id=org.id, name="p", source="x", severity="high"))
+    now = datetime.utcnow()
+    await _add(db, *(TracePolicyViolation(org_id=org.id, trace_id=t.id, agent_id=agent.id, policy_id=p.id,
+                                          policy_name="p", policy_version=version, severity=sev, at_seq=0,
+                                          mode="batch", detected_at=now - timedelta(minutes=ago))
+                     for version, (sev, ago) in enumerate([("high", 1), ("low", 1), ("critical", 2), ("critical", 60)])))
+    rule = lambda **kw: AlertRule(org_id=org.id, metric="policy_violations", window_minutes=15, **kw)  # noqa: E731
+    assert await compute_metric_value(db, rule(context={})) == 3
+    assert await compute_metric_value(db, rule(context={"severity_at_least": "high"})) == 2
+    assert await compute_metric_value(db, rule(context={"severity_at_least": "critical"}, agent_id=agent.id)) == 1
+    assert await compute_metric_value(db, rule(context={}, agent_id="nobody")) == 0
+
+
+def test_periodic_alert_task_leaves_policy_violation_rules_to_ingest(tmp_path, monkeypatch):
     eng = create_engine(f"sqlite:///{tmp_path}/a.db")
     Base.metadata.create_all(eng)
-    with sessionmaker(eng)() as s:
+    Session = sessionmaker(eng)
+    with Session() as s:
         o = Organization(name="o", slug="o")
         s.add(o)
         s.flush()
-        a = Agent(org_id=o.id, name="a")
-        s.add(a)
-        s.flush()
-        t = Trace(org_id=o.id, agent_id=a.id, trace_uid="t")
-        p = TracePolicy(org_id=o.id, name="p", source="x", severity="high")
-        s.add_all([t, p])
-        s.flush()
-        now = datetime.utcnow()
-        for version, (sev, ago) in enumerate([("high", 1), ("low", 1), ("critical", 2), ("critical", 60)]):
-            s.add(TracePolicyViolation(org_id=o.id, trace_id=t.id, agent_id=a.id, policy_id=p.id,
-                                       policy_name="p", policy_version=version, severity=sev, at_seq=0,
-                                       mode="batch", detected_at=now - timedelta(minutes=ago)))
+        s.add(AlertRule(org_id=o.id, name="pv", metric="policy_violations", operator=">=", threshold=0))
         s.commit()
-        rule = lambda **kw: AlertRule(org_id=o.id, metric="policy_violations", window_minutes=15, **kw)  # noqa: E731
-        assert alert_tasks._compute(s, rule(context={})) == 3
-        assert alert_tasks._compute(s, rule(context={"severity_at_least": "high"})) == 2
-        assert alert_tasks._compute(s, rule(context={"severity_at_least": "critical"}, agent_id=a.id)) == 1
-        assert alert_tasks._compute(s, rule(context={}, agent_id="nobody")) == 0
+    monkeypatch.setattr(alert_tasks, "SyncSession", Session)
+    assert alert_tasks.evaluate_alert_rules.run() == {"checked": 0, "fired": 0}
     eng.dispose()
 
 

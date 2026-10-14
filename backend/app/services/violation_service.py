@@ -22,15 +22,16 @@ async def publish_violations(db: AsyncSession, rows: Sequence[TracePolicyViolati
     if not rows:
         return
     try:
-        r = get_redis()
+        pipe = get_redis().pipeline(transaction=False)
         for row in rows:
-            await r.publish(f"violations:{row.org_id}", ViolationOut.model_validate(row).model_dump_json())
+            pipe.publish(f"violations:{row.org_id}", ViolationOut.model_validate(row).model_dump_json())
+        await pipe.execute()
     except Exception:
         log.exception("could not publish %d policy violations", len(rows))
     try:
-        await evaluate_violation_alerts(db, rows)
+        async with AsyncSession(db.bind, expire_on_commit=False) as s:  # keeps the caller's objects unexpired
+            await evaluate_violation_alerts(s, rows)
     except Exception:
-        await db.rollback()
         log.exception("could not evaluate policy_violations alert rules")
 
 
@@ -41,8 +42,8 @@ async def evaluate_violation_alerts(db: AsyncSession, rows: Sequence[TracePolicy
         or_(AlertRule.agent_id.is_(None), AlertRule.agent_id.in_({r.agent_id for r in rows})),
     ).order_by(AlertRule.created_at))).scalars().all()
     for rule in rules:
-        hits = [r for r in rows
-                if rule.agent_id in (None, r.agent_id) and r.severity in severities_at_least(rule)]
+        allowed = severities_at_least(rule)
+        hits = [r for r in rows if rule.agent_id in (None, r.agent_id) and r.severity in allowed]
         if not hits:
             continue
         value = await compute_metric_value(db, rule)

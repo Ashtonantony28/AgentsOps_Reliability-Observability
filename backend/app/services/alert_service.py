@@ -89,7 +89,7 @@ async def fire_alert(db: AsyncSession, rule: AlertRule, value: float, context: O
             org_id=rule.org_id,
             agent_id=rule.agent_id,
             title=f"{rule.name}: {rule.metric} breached",
-            severity=rule.severity,
+            severity="critical",
             timeline=[{
                 "ts": datetime.utcnow().isoformat(),
                 "event": "alert_fired",
