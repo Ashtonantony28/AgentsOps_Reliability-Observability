@@ -61,7 +61,7 @@ SG0 reruns these numbers on the benchmark harness and may revise the budget once
 Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` ∥ `SG4`) → (`SG5a` ∥ `SG5b`) → `SG6` → audits.
 
 ### SG0 Shared interfaces and harness
-- **Owner:** SG0 thread · **Status:** in review · **Blocks:** everything
+- **Owner:** SG0 thread · **Status:** done (merged `aa2f27a`, PR #2) · **Blocks:** everything
 - **Scope:** everything under **Interface contracts** as code with stub bodies (`NotImplementedError` / HTTP 501): `app/policy/{ast,events,checker,counterexample}.py` signatures, pydantic schemas, SQLAlchemy models + migration `0002`, TS types, DSL grammar (`docs/policy-dsl.md`, EBNF + semantics table), fixture format + ≥ 20 fixture traces with expected verdicts, test harness (SQLite async + fakeredis), `scripts/bench_policy.py`, CI workflow running backend, SDK and frontend checks.
 - **Acceptance:**
   - Migration upgrades and downgrades cleanly on Postgres (docker-compose) and the new tables exist.
@@ -73,14 +73,15 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
 - **Result:** all four verify commands pass locally (164 backend tests incl. a Postgres migration test, SDK 2, tsc clean, bench dry run prints all 5 paths). 31 fixtures in `backend/tests/policy/fixtures/`, verdicts and unique minimal counterexamples cross-checked by brute force. Budget unchanged: only stubs exist, so the first real numbers come from SG2's `--assert-budget` run. Additions to the contract made while freezing it are listed under **SG0 contract notes**.
 
 ### SG1 DSL parser and reference evaluator
-- **Owner:** unassigned · **Status:** proposed · **Depends:** SG0
+- **Owner:** SG1 thread · **Status:** done · **Depends:** SG0
 - **Scope:** `app/policy/dsl.py` (`parse`), `app/policy/reference.py` (`evaluate`), pretty-printer for round-trips. Pure Python, no Z3.
 - **Acceptance:**
   - Parses every example in `docs/policy-dsl.md`; `parse(pretty(p)) == p` for Hypothesis-generated ASTs.
   - Errors carry line, column and an expected-token message; one test per error class (unknown tag, bad glob, unbalanced parens, non-integer bound, future operator).
   - `evaluate` matches the expected verdicts on every SG0 fixture.
   - Line coverage ≥ 95 % on `dsl.py` and `reference.py`.
-- **Verify:** `cd backend && pytest tests/policy/test_dsl.py tests/policy/test_reference.py -q --cov=app/policy --cov-fail-under=95`
+- **Verify:** `cd backend && pytest tests/policy/test_dsl.py tests/policy/test_reference.py -q --cov=app.policy.dsl --cov=app.policy.reference --cov-fail-under=95` (narrowed from `--cov=app/policy`, which also counted the SG2/SG3 stubs)
+- **Result:** verify passes with 100 % coverage on both files (248 tests); full backend suite 411 passed. Every fixture's verdict matches. `pretty`/`pretty_formula` live in `dsl.py`. The Hypothesis AST generator for SG2's differential test is `tests/policy/strategies.py` (`formulas()`, `policies`); it emits only atoms the DSL can express. `reference.truth(f, events)` gives per-position values. Attr equality compares Python types exactly, so a float `2.0` does not match `attr("k", 2)`. The evaluator is also cross-checked against a naive quantifier-literal oracle in `test_reference.py`.
 
 ### SG2 Trace → Z3 encoding
 - **Owner:** unassigned (must not be the SG1 owner) · **Status:** proposed · **Depends:** SG0
@@ -276,3 +277,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-13: Plan drafted from codebase read at `7766898`.
 - 2026-10-13: Plan approved by Ashton; SG0 dispatched.
 - 2026-10-14: SG0 in review.
+- 2026-10-14: SG0 merged (`aa2f27a`). SG1 done.
