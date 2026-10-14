@@ -6,7 +6,7 @@ from typing import Iterable, List
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Agent, EvaluationRun, Trace, TracePolicyViolation
+from app.models import Agent, EvaluationRun, EvaluationSet, Trace, TracePolicyViolation
 from app.services.alert_service import SEVERITIES
 
 VIOLATION_CSV_COLUMNS = ["detected_at", "agent", "trace_id", "policy", "severity", "at_seq", "counterexample", "mode"]
@@ -62,8 +62,8 @@ async def org_summary(db: AsyncSession, org_id: str, days: int = 7) -> dict:
         })
 
     last_eval_runs = (await db.execute(
-        select(EvaluationRun).where(
-            EvaluationRun.created_at >= cutoff,
+        select(EvaluationRun).join(EvaluationSet, EvaluationSet.id == EvaluationRun.set_id).where(
+            EvaluationSet.org_id == org_id, EvaluationRun.created_at >= cutoff,
         ).order_by(EvaluationRun.created_at.desc()).limit(20)
     )).scalars().all()
 

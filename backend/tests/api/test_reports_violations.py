@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from app import seed
 from app.middleware.auth import make_access_token
 from app.models import (
-    Agent, AlertRule, Organization, OrgMembership, Span, Trace, TracePolicy, TracePolicyViolation, User,
+    Agent, AlertRule, EvaluationRun, EvaluationSet, Organization, OrgMembership, Span, Trace, TracePolicy, TracePolicyViolation, User,
 )
 from app.policy.checker import check_trace
 from app.policy.events import events_from_spans
@@ -128,6 +128,36 @@ async def test_summary_without_violations(client, auth_headers, agent):
     assert pv == {"total": 0, "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
                   "by_policy": []}
 
+
+
+async def _eval_runs(db, org, agent):
+    other = Organization(name="Other", slug="other-evals")
+    db.add(other)
+    await db.flush()
+    their_agent = Agent(org_id=other.id, name="their-agent")
+    sets = [EvaluationSet(org_id=org.id, name="ours"), EvaluationSet(org_id=other.id, name="theirs")]
+    db.add_all([their_agent, *sets])
+    await db.flush()
+    runs = [EvaluationRun(set_id=sets[0].id, agent_id=agent.id, score=0.9),
+            EvaluationRun(set_id=sets[1].id, agent_id=their_agent.id, score=0.42)]
+    db.add_all(runs)
+    await db.commit()
+    return runs
+
+
+async def test_summary_lists_only_own_evaluation_runs(client, db, org, agent, viewer_headers):
+    ours, _ = await _eval_runs(db, org, agent)
+    s = (await client.get("/api/reports/summary", headers=viewer_headers)).json()
+    assert [r["id"] for r in s["recent_evals"]] == [ours.id]
+
+
+async def test_eval_diff_rejects_other_orgs_runs(client, db, org, agent, auth_headers):
+    ours, theirs = await _eval_runs(db, org, agent)
+    for a, b in ((ours.id, theirs.id), (theirs.id, ours.id), (theirs.id, theirs.id)):
+        r = await client.post("/api/evaluations/diff", headers=auth_headers, json={"run_a_id": a, "run_b_id": b})
+        assert r.status_code == 404
+    r = await client.post("/api/evaluations/diff", headers=auth_headers, json={"run_a_id": ours.id, "run_b_id": ours.id})
+    assert r.status_code == 200 and r.json()["delta_score"] == 0
 
 async def test_pdf_has_policy_violations_section(client, db, org, agent, auth_headers):
     await _violations(db, org, agent, SPECS)
