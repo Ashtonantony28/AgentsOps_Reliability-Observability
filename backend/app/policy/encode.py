@@ -12,6 +12,7 @@ _SMT_CMP = {"<": "<", "<=": "<=", "==": "=", "!=": None, ">=": ">=", ">": ">"}
 _INLINE_MAX = 40
 
 
+# matching is deliberately not shared with reference.py: the reference evaluator is an independent oracle
 @lru_cache(maxsize=4096)
 def glob_regex(glob: str) -> re.Pattern:
     return re.compile("".join(".*" if c == "*" else "." if c == "?" else re.escape(c) for c in glob), re.S)
@@ -144,7 +145,7 @@ class TraceEncoding:
 def first_violations(formulas: Sequence[ast.Formula], events: Sequence[Event]) -> list[int | None]:
     """For each formula, the first seq at which it is false on `events`, or None."""
     n = len(events)
-    if not n:
+    if not n or not formulas:
         return [None] * len(formulas)
     enc = TraceEncoding(events)
     firsts = []
