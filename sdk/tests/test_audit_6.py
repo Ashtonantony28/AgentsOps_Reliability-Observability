@@ -41,13 +41,13 @@ def test_bulk_requests_stay_under_the_server_event_cap(client, server):
     assert all(sum(len(t["events"]) for t in b["traces"]) <= MAX_EVENTS_PER_REQUEST for b in bodies)
 
 
-# A6-3: after the server rejects a streamed event as policy_block, later checks of the trace allow everything
+# A6-3: after the server rejects a streamed append (here: the trace is too long), later checks allow everything
 @pytest.mark.xfail(strict=True, reason="A6-3: a dead stream turns every later check into a fail-open allow")
-def test_check_after_policy_block_rejection_is_not_allowed(client, server):
-    server.queue("events", (403, {"error": {"code": "policy_block", "message": "blocked"}}))
+def test_check_after_trace_too_long_is_not_allowed(client, server):
+    server.queue("events", (413, {"error": {"code": "trace_too_long", "details": {"max_events": 10_000}}}))
     server.queue("check", (200, {"allowed": False, "violations": [{"policy_id": "p1", "policy_name": "p"}]}))
     with client.trace(stream=True) as t:
-        t.add_event("tool", "delete_user")  # done without a guard; the server refuses to record it
+        t.add_event("tool", "step")
         result = t.check("delete_account")
     assert t._dead  # control
     assert not result.allowed
