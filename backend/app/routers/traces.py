@@ -74,7 +74,8 @@ async def append_events(trace_uid: Annotated[str, Path(max_length=128)], req: Ev
     try:
         _trace, rows = await append_trace_events(db, org.id, trace_uid, req)
     except PolicyViolation as e:
-        raise HTTPException(403, detail={"error": "policy_block", "rule": e.rule_name, "message": str(e)})
+        raise HTTPException(403, detail={"error": "policy_block", "rule": e.rule_name, "message": str(e),
+                                         "target": e.target})
     except TraceConflict as e:
         raise HTTPException(e.status, detail={"error": e.code, "message": e.message, **e.details})
     except ValueError as e:

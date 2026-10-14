@@ -22,10 +22,40 @@ def test_streams_each_event_in_order(client, server):
     assert finals(server) == [False, False, False, True]
     paths = {p for p, _, _ in server.requests}
     assert paths == {f"/api/traces/{t.trace_id}/events"}
-    body = server.bodies("events")[0]
-    assert set(body) == {"agent_id", "events", "final"} and body["agent_id"] == "a1"
+    bodies = server.bodies("events")
+    assert bodies[0]["agent_id"] == "a1" and all(b["environment"] == client.environment for b in bodies)
+    assert ["input" in b for b in bodies] == [True, False, False, False]
+    assert ["output" in b for b in bodies] == [False, False, False, True]
     assert server.requests[0][2]["x-api-key"] == client.api_key
     assert client._queue.empty()  # no legacy whole-trace payload
+
+
+def test_stream_sends_trace_fields(client, server):
+    with pytest.raises(RuntimeError):
+        with client.trace(stream=True, input="q", session_id="s1", environment="prod") as t:
+            t.set_metadata(user="u7")
+            t.add_event("tool", "a")
+            t.set_output("partial", tokens_input=3, tokens_output=4, cost_usd=0.5)
+            t.set_metadata(step=2)
+            raise RuntimeError("boom")
+    first, last = server.bodies("events")
+    assert {k: first[k] for k in ("environment", "agent_version", "session_id", "input", "metadata")} == {
+        "environment": "prod", "agent_version": "1.0.0", "session_id": "s1", "input": "q",
+        "metadata": {"user": "u7"}}
+    assert {k: last[k] for k in ("final", "output", "status", "error_message", "tokens_input", "tokens_output",
+                                 "cost_usd", "metadata")} == {
+        "final": True, "output": "partial", "status": "error", "error_message": "RuntimeError: boom",
+        "tokens_input": 3, "tokens_output": 4, "cost_usd": 0.5, "metadata": {"user": "u7", "step": 2}}
+    assert last["latency_ms"] >= 0 and "input" not in last
+
+
+def test_checks_send_the_trace_environment(client, server):
+    client.check("a")
+    with client.trace(environment="prod") as t:
+        t.check("a")
+    with client.trace(stream=True, environment="staging") as t:
+        t.check("a")
+    assert [b["environment"] for b in server.bodies("check")] == [client.environment, "prod", "staging"]
 
 
 @pytest.mark.parametrize("failure", [
@@ -334,3 +364,12 @@ def test_refused_empty_final_push_ends_the_push(client, server):
     with client.trace(stream=True) as t:
         t.add_event("tool", "a")
     assert seqs(server) == [[0], []] and [e["name"] for e in t.events] == ["a"]
+
+
+def test_block_on_trace_text_stops_streaming_and_keeps_events(client, server):
+    server.queue("events", (403, {"error": {"code": "policy_block", "message": "PII detected",
+                                            "details": {"rule": "no-pii", "target": "trace"}}}))
+    with client.trace(stream=True, input="mail jane.doe@example.com") as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert seqs(server) == [[0]] and [e["name"] for e in t.events] == ["a", "b"] and t._dead

@@ -28,6 +28,7 @@ class PolicyViolation(Exception):
         self.rule_name = rule_name
         self.rule_id = rule_id
         self.violations = violations  # set for a trace policy block: the violations of the refused event
+        self.target = "event"  # "trace" when a legacy rule matched the trace's input/output text, not an event
 
 
 class TraceConflict(Exception):
@@ -80,10 +81,31 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
     return note
 
 
-def _event_trace(agent: Agent, environment: str, events: list[EventIn]) -> TraceIn:
-    """The legacy-rule view of events checked on their own (event append and precheck): no trace text."""
-    return TraceIn.model_construct(agent_id=agent.id, environment=environment, input="", output="",
-                                   events=events, tool_calls=[])
+def _event_trace(agent: Agent, environment: str, events: list[EventIn], input: Optional[str] = None,
+                 output: Optional[str] = None) -> TraceIn:
+    """The legacy-rule view of events checked on their own (event append and precheck), with the trace text sent."""
+    return TraceIn.model_construct(agent_id=agent.id, environment=environment, input=input or "",
+                                   output=output or "", events=events, tool_calls=[])
+
+
+_STREAM_FIELDS = ("agent_version", "session_id", "status", "error_message", "latency_ms", "tokens_input",
+                  "tokens_output", "cost_usd")
+
+
+def _apply_stream_fields(trace: Trace, req: EventsAppendIn) -> None:
+    """Sets the trace-level fields an append sent, masking PII in the text as whole-trace ingest does."""
+    for f in _STREAM_FIELDS:
+        if (v := getattr(req, f)) is not None:
+            setattr(trace, f, v)
+    for side in ("input", "output"):
+        if (text := getattr(req, side)) is not None:
+            pii = detect_pii(text)
+            setattr(trace, side, mask_pii(text) if pii else text)
+            trace.pii_flags = sorted(set(trace.pii_flags or []) | set(pii))
+    if req.input is not None:
+        trace.injection_score = injection_score(req.input)[0]
+    if req.metadata is not None:
+        trace.meta = {**req.metadata, "stream": trace.meta["stream"]}
 
 
 def _strings(v: Any):
@@ -233,6 +255,9 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             raise TraceConflict("trace_closed", "trace is complete; no more events can be appended")
         if trace is not None and trace.agent_id != agent.id:
             raise TraceConflict("agent_mismatch", "trace belongs to another agent")
+        if trace is not None and req.environment is not None and req.environment != trace.environment:
+            raise TraceConflict("environment_mismatch", f"trace environment is '{trace.environment}'",
+                                environment=trace.environment)
         last = None if trace is None else (await db.execute(
             select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
         next_seq = 0 if last is None else last + 1
@@ -243,8 +268,9 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             raise TraceTooLong("trace_too_long", f"a trace holds at most {MAX_TRACE_EVENTS} events",
                                max_events=MAX_TRACE_EVENTS)
         if trace is None:
-            trace = Trace(org_id=org_id, agent_id=agent.id, trace_uid=trace_uid, environment=agent.environment,
-                          agent_version=agent.current_version, meta={"stream": "open"})
+            trace = Trace(org_id=org_id, agent_id=agent.id, trace_uid=trace_uid,
+                          environment=req.environment or agent.environment,
+                          agent_version=req.agent_version or agent.current_version, meta={"stream": "open"})
             db.add(trace)
             await db.flush()
 
@@ -252,6 +278,14 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
         try:
             legacy = _event_trace(agent, trace.environment, req.events)
             policy_note = await evaluate_policies(db, org_id, agent, legacy, req.events)
+            if req.input or req.output:
+                text = _event_trace(agent, trace.environment, [], req.input, req.output)
+                try:
+                    text_note = await evaluate_policies(db, org_id, agent, text, [])
+                    policy_note = policy_note or text_note
+                except PolicyViolation as pv:
+                    pv.target = "trace"
+                    raise
             policies = await tps.active_policies(db, org_id, agent.id, trace.environment)
             monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)
             blocking = {row.id: c.policy.name for row, c in policies if row.action == "block"}
@@ -274,6 +308,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
         else:
             for ev in req.events:
                 db.add(_span(trace.id, ev))
+            _apply_stream_fields(trace, req)
             rows = await tps.record_violations(db, trace, policies, replayed + found, "live")
             if policy_note:
                 db.add(AuditLog(
@@ -309,7 +344,10 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     )).scalar_one_or_none()
     if trace is not None and trace.agent_id != agent.id:
         raise TraceConflict("agent_mismatch", "trace belongs to another agent")
-    environment = agent.environment if trace is None else trace.environment
+    if trace is not None and req.environment is not None and req.environment != trace.environment:
+        raise TraceConflict("environment_mismatch", f"trace environment is '{trace.environment}'",
+                            environment=trace.environment)
+    environment = (req.environment or agent.environment) if trace is None else trace.environment
     policies = await tps.active_policies(db, org_id, agent.id, environment)
     compiled = [c for _, c in policies]
     if trace is None:

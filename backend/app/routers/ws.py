@@ -129,7 +129,8 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
                             "violations": [ViolationOut.model_validate(r).model_dump(mode="json") for r in rows],
                         })
                     except PolicyViolation as pv:
-                        await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name})
+                        await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name,
+                                                   "target": pv.target})
                     except TraceConflict as tc:
                         await db.rollback()
                         await websocket.send_json({"ok": False, "error": tc.code, "message": tc.message, **tc.details})

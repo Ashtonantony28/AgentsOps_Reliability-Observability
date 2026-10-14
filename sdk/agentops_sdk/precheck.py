@@ -38,12 +38,14 @@ def event_dict(seq: int, kind: str, name: str, status: str = "success", input: O
 
 
 def check_request(agent_id: str, trace_uid: Optional[str], candidate: dict,
-                  prefix: Optional[List[dict]] = None) -> dict:
-    return {"agent_id": agent_id, "trace_uid": trace_uid, "prefix": prefix or [], "candidate": candidate}
+                  prefix: Optional[List[dict]] = None, environment: Optional[str] = None) -> dict:
+    return {"agent_id": agent_id, "trace_uid": trace_uid, "environment": environment, "prefix": prefix or [],
+            "candidate": candidate}
 
 
-def events_request(agent_id: str, events: List[dict], final: bool) -> dict:
-    return {"agent_id": agent_id, "events": events, "final": final}
+def events_request(agent_id: str, events: List[dict], final: bool, **fields) -> dict:
+    """`fields` are the trace-level fields of the append (environment, input, output, status, ...)."""
+    return {"agent_id": agent_id, "events": events, "final": final, **fields}
 
 
 def failed_result(reason: str, fail_closed: bool) -> CheckResult:
@@ -79,7 +81,7 @@ def _error(r: httpx.Response) -> dict:
 
 def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, int]:
     """'ok', 'retry' (keep pending events), 'refused' (a policy blocked the batch; the trace goes on without it),
-    'fatal' (drop the batch and stop streaming the trace), or the server's expected seq on a seq conflict,
+    'fatal' (drop the batch and stop streaming the trace, also when a policy blocked the trace's text), or the server's expected seq on a seq conflict,
     so a batch stored before a lost reply can be resynced."""
     if isinstance(outcome, BaseException):
         return "retry"
@@ -90,7 +92,8 @@ def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, in
     err = _error(outcome) if outcome.status_code in (403, 409) else {}
     if outcome.status_code == 403 and err.get("code") == "policy_block":
         log.warning("agentops events refused by policy: %s", err.get("message"))
-        return "refused"
+        # a block on the trace's input/output text refuses the trace, not an event
+        return "fatal" if (err.get("details") or {}).get("target") == "trace" else "refused"
     if err.get("code") == "trace_busy":
         return "retry"
     expected = (err.get("details") or {}).get("expected_seq") if err.get("code") == "seq_conflict" else None
@@ -110,7 +113,8 @@ class PrecheckMixin:
         return {"X-API-Key": self.api_key}
 
     def _check_body(self, name: str, kind: str, input: Optional[dict], attrs: dict) -> dict:
-        return check_request(self.agent_id, None, event_dict(0, kind, name, input=input, attrs=attrs))
+        return check_request(self.agent_id, None, event_dict(0, kind, name, input=input, attrs=attrs),
+                             environment=self.environment)
 
     def check(self, name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
         return self._post_check(self._check_body(name, kind, input, attrs))
