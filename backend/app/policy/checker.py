@@ -54,11 +54,12 @@ def first_violations(policies: Sequence[CompiledPolicy], events: Sequence[Event]
     `encode.first_violations` (the Z3 encoding) is differential-tested equal."""
     plans = [plan_for(p.policy) for p in policies]
     states = [plan.initial() for plan in plans]
+    memos: list[dict] = [{} for _ in plans]
     out: list[int | None] = [None] * len(plans)
     todo = list(range(len(plans)))
     for e in events:
         for i in todo:
-            if not plans[i].step(states[i], e, math.inf):
+            if not plans[i].step(states[i], e, math.inf, memos[i]):
                 out[i] = e.seq
         todo = [i for i in todo if out[i] is None]
         if not todo:

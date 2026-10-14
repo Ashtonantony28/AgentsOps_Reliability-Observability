@@ -66,14 +66,20 @@ class Plan:
     def initial(self) -> list:
         return [({} if f.by else 0) if op == "Count" else _INIT.get(op) for op, f, _ in self.nodes]
 
-    def step(self, state: list, e: Event, max_groups: float | None = None) -> bool:
+    def step(self, state: list, e: Event, max_groups: float | None = None, memo: dict | None = None) -> bool:
         """Advances `state` in place by event `e`; returns the formula's value at `e`. `max_groups=math.inf`
-        counts every group exactly, for a batch check whose state is never stored."""
+        counts every group exactly, for a batch check whose state is never stored. `memo` keeps attr-free atoms'
+        values by (node, kind, name, status) across steps, for replays where names repeat."""
         v: list[bool] = [False] * len(self.nodes)
         max_groups = MAX_GROUPS if max_groups is None else max_groups
         for k, (op, f, kids) in enumerate(self.nodes):
             if op == "Match":
-                v[k] = matches(f, e)
+                if memo is None or f.attrs:
+                    v[k] = matches(f, e)
+                else:
+                    key = (k, e.kind, e.name, e.status)
+                    hit = memo.get(key)
+                    v[k] = memo[key] = matches(f, e) if hit is None else hit
             elif op == "Not":
                 v[k] = not v[kids[0]]
             elif op == "And":
