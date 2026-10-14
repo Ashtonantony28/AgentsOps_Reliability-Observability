@@ -190,6 +190,7 @@ def test_ws_ingest_rejects_revoked_key(app_, api_key, session_maker):
         asyncio.run(revoke())
         with pytest.raises(WebSocketDisconnect) as exc:
             with tc.websocket_connect(f"/ws/ingest?api_key={api_key}") as ws:
+                ws.send_text("not json")
                 ws.receive_json()
         assert exc.value.code == 4401
 
