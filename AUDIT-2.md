@@ -59,7 +59,7 @@ long   5000 events:   2455 ms
 long  20000 events:  21484 ms
 ```
 
-Backlog: with 2 worker processes, 300 whole-trace ingests of 200 events (accepted at 41 traces/s) took about 36 s to drain, about 8 traces/s, or about 120 ms of worker time per trace beyond `check_trace` itself (each task builds and disposes its own async engine and Redis client). Batch checks, the per-minute `evaluate_alert_rules` and anomaly detection share the default queue, so a batch backlog delays alerting with nothing to show it. SG-A2.2 covers the bounds; A2-1 is the worst case it has to absorb.
+Backlog: with 2 worker processes, 300 whole-trace ingests of 200 events (accepted at 41 traces/s) took about 36 s to drain, about 8 traces/s, or about 240 ms of worker time per trace, of which `check_trace` is 60–85 ms (each task builds and disposes its own async engine and Redis client). Batch checks, the per-minute `evaluate_alert_rules` and anomaly detection share the default queue, so a batch backlog delays alerting with nothing to show it. SG-A2.2 covers the bounds; A2-1 is the worst case it has to absorb.
 
 ### A2-3 · high · Precheck replays the whole trace on every call once the Redis monitor state is gone
 
