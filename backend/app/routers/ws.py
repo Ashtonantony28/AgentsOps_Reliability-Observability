@@ -104,7 +104,11 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
     await websocket.accept()
     try:
         async with async_session_maker() as db:
-            limit = (await db.get(Organization, org_id)).rate_limit_per_min
+            org = await db.get(Organization, org_id)
+            if org is None:
+                await websocket.close(code=4401)
+                return
+            limit = org.rate_limit_per_min
             while True:
                 raw = await websocket.receive_text()
                 try:
@@ -144,6 +148,7 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
                 except PolicyViolation as pv:
                     await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name})
                 except Exception as e:
+                    await db.rollback()
                     await websocket.send_json({"ok": False, "error": str(e)})
     except WebSocketDisconnect:
         return

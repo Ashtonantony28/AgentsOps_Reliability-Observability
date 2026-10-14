@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "sdk"))
 
 from agentops_sdk.async_client import AsyncAgentOpsClient  # noqa: E402
-from app.models import AlertEvent, AlertRule, PolicyRule, Span, Trace, TracePolicy  # noqa: E402
+from app.models import Agent, AlertEvent, AlertRule, PolicyRule, Span, Trace, TracePolicy  # noqa: E402
 from app.policy.dsl import parse  # noqa: E402
 from app.schemas.policy import PolicyCheckIn  # noqa: E402
 from app.services import violation_service  # noqa: E402
@@ -162,6 +162,18 @@ async def test_resent_trace_is_stored_once(client, db, org, agent, api_key_heade
         r = await client.post("/api/traces/ingest", headers=api_key_headers, json=body)
         assert r.status_code in (202, 409)
     assert await _count(db, Trace, Trace.trace_uid == "uid-1") == 1
+
+
+async def test_resent_trace_returns_first_id_and_other_agents_keep_their_own(client, db, org, agent, api_key_headers):
+    other = Agent(org_id=org.id, name="other")
+    db.add(other)
+    await db.commit()
+    ids = []
+    for a in (agent, agent, other):
+        r = await client.post("/api/traces/ingest", headers=api_key_headers, json={"agent_id": a.id, "trace_id": "uid-1"})
+        assert r.status_code == 202
+        ids.append(r.json()["id"])
+    assert ids[0] == ids[1] != ids[2]
 
 
 # A3-11: /ws/ingest skips the rate limit the REST ingest paths enforce

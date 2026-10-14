@@ -14,7 +14,7 @@ import httpx
 
 from agentops_sdk.precheck import PrecheckMixin
 from agentops_sdk.trace import Trace
-from agentops_sdk.utils import append_to_disk, buffer_rejected, disk_buffer_path
+from agentops_sdk.utils import append_to_disk, buffer_rejected, disk_buffer_path, drain_disk
 
 log = logging.getLogger("agentops_sdk.async")
 
@@ -50,6 +50,8 @@ class AsyncAgentOpsClient(PrecheckMixin):
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self._disk = disk_buffer_path(api_key)
+        for it in drain_disk(self._disk):  # previous run's undelivered traces
+            self._queue.put_nowait(it)
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
