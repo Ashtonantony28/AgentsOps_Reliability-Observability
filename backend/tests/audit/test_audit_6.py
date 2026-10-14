@@ -100,15 +100,22 @@ async def test_test_database_enforces_foreign_keys(db, org, agent):
         await db.commit()
 
 
-# A6-10: the create endpoint only parses; a policy nested a few hundred deep then fails every append and check
-@pytest.mark.xfail(strict=True, reason="A6-10: compile errors other than parse errors escape active_policies")
+# A6-10: the create endpoint only parsed; a policy nested a few hundred deep then failed every append and check
 async def test_deeply_nested_policy_does_not_break_ingest(client, agent, api_key_headers, auth_headers):
-    source = 'policy deep severity low:\n  always ' + 'not ' * 400 + 'tool("a")'
-    r = await client.post("/api/trace-policies", headers=auth_headers, json={"source": source})
-    assert r.status_code == 200  # control: accepted
+    r = await client.post("/api/trace-policies", headers=auth_headers,
+                          json={"source": 'policy deep severity low:\n  always ' + 'not ' * 400 + 'tool("a")'})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_policy"
+    deepest = ["not " * 63 + 'tool("b")', "(" * 62 + 'not tool("b")' + ")" * 62,
+               "count(" * 62 + 'tool("b")' + ") by name > 0" * 62 + ' -> not tool("b")']
+    for i, f in enumerate(deepest):
+        r = await client.post("/api/trace-policies", headers=auth_headers, json={"source": f"policy d{i}:\n  always {f}"})
+        assert r.status_code == 200, r.text
     r = await client.post("/api/trace-policies/check", headers=api_key_headers,
                           json={"agent_id": agent.id, "candidate": {"seq": 0, "name": "a"}})
     assert r.status_code == 200, r.text
+    r = await client.post("/api/traces/t1/events", headers=api_key_headers,
+                          json={"agent_id": agent.id, "events": [{"seq": 0, "name": "a"}], "final": True})
+    assert r.status_code == 202, r.text
 
 
 # A6-11: /ws/traces checks only the token's signature: a user removed from the org keeps the live feed
