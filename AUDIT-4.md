@@ -8,16 +8,16 @@ Audited at `c741be2` (SG0 to SG6, SG-A1.1, SG-A1.2, SG-A2.1 to SG-A2.4 merged) b
 
 - **Line and branch coverage**: `pytest --cov=app --cov-branch` was run over the full backend suite (971 passed), and `pytest --cov=agentops_sdk` over the SDK (73 passed).
 - **Mutation testing**: an AST mutator flips comparisons, `and`/`or`, `not`, int and bool constants, `+`/`-`, deletes statements and returns `None`.
-  - Each mutant runs the tests for its module with `-x`. A survivor there is a lead, not a finding: every mutant named in a finding below was replayed against the whole backend or SDK suite and still survived. Two leads were killed by the full suite and are not reported: dropping the Celery dispatch is caught by `test_enqueue_failure_does_not_raise`, and the `events_from_spans` survivors are caught by `test_ingest_hardening.py`.
+  - Each mutant runs the tests for its module with `-x`. A survivor there is a lead, not a finding: every mutant named in a finding below was replayed against the whole backend or SDK suite and still survived, except A4-9's (see there). Two leads were killed by the full suite and are not reported: dropping the Celery dispatch is caught by `test_enqueue_failure_does_not_raise`, and the `events_from_spans` survivors are caught by `test_ingest_hardening.py`.
   - 18 backend module slices were covered: 969 mutants, all sites except a seeded sample of 150 of 247 in `dsl.py` and 120 of 225 in `counterexample.py`. The SDK had 16 hand-picked mutants.
   - Every survivor below was then read by hand. Equivalent mutants are not reported: cache sizes, log arguments, default values the code never reads, and extra parentheses in the test-only pretty-printer.
-- **Replaying the confirmed survivors**: `backend/scripts/mutants_audit4.py`. Each listed mutant goes into a temporary copy of `backend/` and `sdk/`, its tests run, and the script exits 1 while any mutant survives:
+- **Replaying the confirmed survivors**: `backend/scripts/mutants_audit4.py`. Each listed mutant goes into a temporary copy of the repo, the whole backend or SDK suite runs, and the script exits 1 while any mutant survives:
 
   ```
   $ python backend/scripts/mutants_audit4.py
   ```
 
-  A fixing sub-goal is done when its findings' mutants are killed.
+  The unmutated copy must pass first. For each kill the script prints the failing test, and that test should be one the fixing sub-goal added: the flaky timing test in A4-3 can kill a mutant by accident.
 - **Strict-xfail tests**: findings a test can state directly are in `backend/tests/audit/test_audit_4.py`, marked `xfail(strict=True)`. They are A4-6 and A4-10.
 - **Test-quality scan**: every `test_*` function without an `assert`, `pytest.raises` or assert helper (6, all Hypothesis tests that assert through a shared helper, which is fine); skipped tests; parametrisations with no cases; wall-clock assertions.
 
@@ -151,7 +151,7 @@ with patch.object(monitor, "MAX_GROUPS", 0):        # mutant: no violation, m.fa
 ```
 
 - **Effect if it regresses**: a `block` policy with a `>=`/`>` count lets violating events through once a trace passes 1 000 distinct names, and about one CI run in ten stays green.
-- **Fix**: add the repro as an `@example` (or a plain test), so `mutants_audit4.py A4-9` is killed every time.
+- **Fix**: add the repro as a plain test or an `@example`. The mutant is not in `mutants_audit4.py`, because a fresh Hypothesis run kills it most of the time.
 
 ### A4-10 · low · Tests that can never fail
 
