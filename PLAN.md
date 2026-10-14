@@ -284,6 +284,30 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest -q` · `cd sdk && pytest -q` · `python backend/scripts/mutants_audit4.py`
 - **Result:** `mutants_audit4.py` (all findings, full suites, local Postgres 16) kills every mutant with a test this sub-goal added. A4-2: `sdk/tests/test_async_paths.py`. A4-3: single-sample wall-clock asserts are the median of 3 to 20 runs (`tests/timing.py`); p95 budgets stay with `bench_policy.py`. A4-4: `engine` runs on Postgres for tests marked `postgres` (`tests/api/test_postgres.py`: upsert dedup, row lock across workers with per-worker in-process locks) and for every test under `TEST_DB=postgres`, which CI runs over `tests/api`, `tests/audit` and `test_audit2.py`; the marker skips only where no Postgres is reachable and `CI` is unset. A4-5: solver timeout spy and no budget warning from `check_verdicts`. A4-6: `backend/.coveragerc` (greenlet), CI floors 72 % backend (74.6 % now), 90 % policy code (98 % now), 80 % SDK (84 % now). A4-7: `tests/api/test_frontend_contract.py` checks every `frontend/src/api` call against OpenAPI routes and `types/policy.ts` fields and optionality against the schemas (the mutant script now copies `frontend`). A4-8: `/check` and events route 429 tests. A4-9: deterministic repro in `test_monitor.py`. A4-10: empty stub tests removed, viewer assertion exact, stale skip gone. Not done: A4-11 (other lows), A4-12 (lockfile).
 
+### SG-A5.1 Policy cost linear in its size (AUDIT-5 A5-1 critical)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-5
+- **Scope:** every pass over a parsed formula visits each distinct node once: `monitor.Plan._add`, the plan cache key (`plan_for`'s `repr` and `_plan`'s hash of the `Policy`), `encode.TraceEncoding._encode`, `counterexample._nodes`, and anything else that recurses over the AST. Backstop: create, update and validate reject a policy whose expanded size or source length is over a documented cap (422 `invalid_policy`). No AST or contract change.
+- **Acceptance:** `test_policy_cost_is_linear_in_source_size` passes unmarked; a 30-level doubling-tag policy can be created (or is rejected with a 422) and `/check`, an append and a batch check on it each finish within their budget rows; existing differential and fixture tests unchanged.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -k linear tests/policy -q` · `python backend/scripts/bench_policy.py --path live --assert-budget`
+
+### SG-A5.2 Minimal counterexamples for large count bounds (AUDIT-5 A5-2 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-5
+- **Scope:** counts with bounds of 16 and more (plain, `by name`, `by kind`) get minimal counterexamples within the 500 ms row at 200 events, e.g. an "at least k" counter linear in window × bound for any bound up to the window size, or a deletion pass seeded with the count's hits. `bench_policy.py --path counterexample` gains a bound-40 case.
+- **Acceptance:** `test_large_bound_count_counterexample_is_minimal` passes unmarked; the SG3 sufficiency and minimality property tests pass with bounds up to 64; counterexample bench row met with the new case.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -k large_bound tests/policy/test_counterexample.py -q` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
+
+### SG-A5.3 A blocked append does not end enforcement (AUDIT-5 A5-3 high)
+- **Owner:** unassigned · **Status:** proposed; default picked below reverses SG4's "nothing stored" on a 403, confirm before dispatch if that was deliberate · **Depends:** AUDIT-5
+- **Scope:** on a `block` 403 the server still rejects the events but stores the blocking violation (`mode: "live"`, published and alerted like other live rows) and keeps the trace open. The SDK treats a `policy_block` 403 as a refused batch, not a dead stream: it drops the refused events, renumbers the rest, keeps checking against the server, and sends `final` on exit. Response shapes unchanged.
+- **Acceptance:** both A5-3 tests pass unmarked; under a status-based `block` policy, a guarded call after a refused append is checked by the server; the trace closes and gets its batch check; SG-A1.1's "403 exactly when `/check` says `allowed: false`" tests still pass.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -k "blocked_append" tests/api/test_event_ingest.py tests/api/test_precheck.py -q` · `cd sdk && pytest -q`
+
+### SG-A5.4 AUDIT-5 mediums (A5-4, A5-5)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** the per-counterexample budget holds on every path, including encoding and SMT parsing (estimate nested `count … by` size up front and fall back at once; check the deadline in `_group_count`) (A5-4); `Trace.add_event` assigns seqs under the trace's lock (A5-5). A5-6 (RecursionError → 422) rides along.
+- **Acceptance:** `test_counterexample_encoding_stays_within_what_the_budget_can_parse`, `test_deeply_nested_policy_is_a_validation_error` and `sdk/tests/test_audit_5.py` pass unmarked; full backend and SDK suites green.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -q && pytest -q` · `cd sdk && pytest -q`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -294,6 +318,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A2 | Performance under load | Load at 2× the SG4 rate, long traces (5 000 events), 50 policies, Redis restarts mid-trace; every budget row checked. |
 | A3 | API/SDK consistency; done, see `AUDIT-3.md`: 4 high → SG-A3.1 to SG-A3.3 | OpenAPI vs pydantic vs TS types vs SDK models; error codes; legacy payload compatibility. |
 | A4 | Test coverage and quality; done, see `AUDIT-4.md`: 1 high → SG-A4.1 | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
+| A5 | Round 2: correctness and performance; done, see `AUDIT-5.md`: 1 critical, 2 high → SG-A5.1 to SG-A5.3 | Round-1 fixes re-checked; checkers probed outside the bench shapes (tag reuse, large count bounds, nested `count by`, 10 000-event traces); end to end through the app and SDK. |
 
 ## Interface contracts
 
@@ -436,3 +461,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: Audit A4 (test coverage) done: 0 critical, 1 high, 7 medium, 4 low in AUDIT-4.md; SG-A4.1 and SG-A4.2 proposed (tests and CI only, no contract change).
 - 2026-10-14: SG-A4.1 done (test sessions no longer share a connection).
 - 2026-10-14: SG-A4.2 done (A4 mediums: every replayed mutant killed; coverage and a Postgres run in CI).
+- 2026-10-14: Audit A5 (round 2, correctness and performance) done: 1 critical, 2 high, 2 medium, 5 low in AUDIT-5.md; SG-A5.1 to SG-A5.4 proposed. Round-1 fixes hold.
