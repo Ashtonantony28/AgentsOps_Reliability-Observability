@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import deque
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Hashable, Iterator, Sequence
@@ -38,8 +39,9 @@ def _bv(value: int, width: int) -> str:
     return f"(_ bv{value} {width})"
 
 
-# only `count ... by name` over globbed names needs the string theory, which can fail to terminate
-_STRING_TIMEOUT_MS = 2000
+# only `count ... by name` over globbed names needs the string theory, which can fail to terminate;
+# its checks share this budget per counterexample, after which the events not yet ruled out are kept
+_STRING_BUDGET_S = 1.0
 _SYMBOL = re.compile(r"[a-z_]+\d+")
 _BV_CMP = {"<": "bvult", "<=": "bvule", "==": "=", "!=": "=", ">=": "bvuge", ">": "bvugt"}
 
@@ -120,7 +122,9 @@ class FactEncoding(TraceEncoding):
         self.name_mode = ("string" if by_name and self.globs else "code" if by_name
                           else "pattern" if self.globs else None)
         # every code is a bit-vector, so that apart from string names the problem is solved by bit-blasting
-        self.widths = {"k": _width(len(KINDS) - 1), "s": _width(len(self.statuses))}
+        # kinds outside the 5 only come from stored spans; an unconstrained event may take those too
+        self.kinds = list(dict.fromkeys([*KINDS, *(e.kind for e in events), *(m.kind for m in ms if m.kind)]))
+        self.widths = {"k": _width(len(self.kinds) - 1), "s": _width(len(self.statuses))}
         self.widths.update({f"v{j}_": _width(len(c)) for j, c in enumerate(self.attrs.values())})
         if self.name_mode == "string":
             self.strings = _Strings({c for e in events for c in e.name} | {c for g in self.globs for c in g})
@@ -135,8 +139,8 @@ class FactEncoding(TraceEncoding):
         self.assumptions = []
         for i, e in enumerate(self.events):
             self.assumptions.append(self.declare("Bool", "ev_a"))
-            observed = [f"(= {self._var('k', i)} {self._code('k', KINDS.index(e.kind))})"]
-            self._in_range(self._var("k", i), len(KINDS) - 1, i)
+            observed = [f"(= {self._var('k', i)} {self._code('k', self.kinds.index(e.kind))})"]
+            self._in_range(self._var("k", i), len(self.kinds) - 1, i)
             if self.name_mode:
                 observed.append(f"(= {self._var('n', i)} {self._observed_name(e.name)})")
             if self.name_mode == "pattern":
@@ -180,13 +184,14 @@ class FactEncoding(TraceEncoding):
         n = self._var("n", i)
         if self.name_mode == "string":
             return f"(or {' '.join(f'(str.in_re {n} {self.strings.regex(g)})' for g in globs)})"
-        hits = [f"(= {n} {self._code('n', c)})" for c, p in enumerate(self.patterns) if p & set(globs)]
+        wanted = set(globs)
+        hits = [f"(= {n} {self._code('n', c)})" for c, p in enumerate(self.patterns) if p & wanted]
         return "false" if not hits else "true" if len(hits) == len(self.patterns) else f"(or {' '.join(hits)})"
 
     def _atom(self, m: ast.Match, i: int) -> str:
         terms = []
         if m.kind is not None:
-            terms.append(f"(= {self._var('k', i)} {self._code('k', KINDS.index(m.kind))})")
+            terms.append(f"(= {self._var('k', i)} {self._code('k', self.kinds.index(m.kind))})")
         if m.globs:
             terms.append(self._name_in(m.globs, i))
         if m.status is not None:
@@ -203,7 +208,7 @@ class FactEncoding(TraceEncoding):
         return [self._short(self._atom(m, i)) for i in range(len(self.events))]
 
     def _count(self, f: ast.Count, xs: list[str]) -> list[str]:
-        w = _width(max(len(xs), f.bound))
+        w = _width(max(len(xs), f.bound, 0))
         one, zero = _bv(1, w), _bv(0, w)
         out, prev = [], zero
         for i in range(len(xs)):
@@ -215,6 +220,9 @@ class FactEncoding(TraceEncoding):
                 v = "n" if f.by == "name" else "k"
                 same = [f"(ite (and {xs[j]} (= {self._var(v, j)} {self._var(v, i)})) {one} {zero})" for j in range(i)]
                 c = self.define("c", f"(bvadd (ite {xs[i]} {one} {zero}) {' '.join(same) or zero})", f"(_ BitVec {w})")
+            if f.bound < 0:  # only ASTs built in code; the DSL has no negative bounds
+                out.append("true" if f.op in (">", ">=", "!=") else "false")
+                continue
             cmp = f"({_BV_CMP[f.op]} {c} {_bv(f.bound, w)})"
             out.append(f"(not {cmp})" if f.op == "!=" else cmp)
         return out
@@ -238,9 +246,9 @@ class _Entailment:
     def __init__(self, formula: ast.Formula, events: Sequence[Event]):
         self.encoding = enc = FactEncoding(events, formula)
         self.ctx = z3.Context()  # the global context is not thread-safe
-        if enc.name_mode == "string":
+        self.deadline = time.monotonic() + _STRING_BUDGET_S if enc.name_mode == "string" else None
+        if self.deadline:
             self.solver = z3.Solver(ctx=self.ctx)
-            self.solver.set("timeout", _STRING_TIMEOUT_MS)
         else:
             self.solver = z3.SolverFor("QF_FD", ctx=self.ctx)
         goal = enc.values(formula)[-1]
@@ -252,6 +260,8 @@ class _Entailment:
 
     def core(self, known) -> set[int] | None:
         """A subset of `known` whose facts entail a violation, or None if `known` does not (or the solver gave up)."""
+        if self.deadline:
+            self.solver.set("timeout", max(1, int((self.deadline - time.monotonic()) * 1000)))
         asts = [self.lits[i].as_ast() for i in sorted(known)]
         # the C call skips the per-literal sort checks of Solver.check, which dominate on long traces
         result = z3.Z3_solver_check_assumptions(self.ctx.ref(), self.solver.solver, len(asts), (z3.Ast * len(asts))(*asts))
@@ -272,8 +282,10 @@ def minimal_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_s
     if core is None:
         raise ValueError(f"{policy.policy.name} is not violated at seq {at_seq}")
     for i in sorted(core):
-        # deletion pass; an event found needed stays needed as the core shrinks. Giving up keeps the event.
+        # deletion pass; an event found needed stays needed as the core shrinks
         smaller = check.core(core - {i}) if i in core else None
         if smaller is not None:
             core = smaller
+        elif check.gave_up:
+            break
     return tuple(window[i].seq for i in sorted(core))

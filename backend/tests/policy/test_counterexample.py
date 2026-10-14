@@ -143,6 +143,9 @@ def test_doc_examples():
      (0, 1)),
     (Match(status="ok"), [ev(0, st="error")], (0,)),
     (Match(attrs=(("n", 1),)), [ev(0, n=True)], (0,)),
+    # kinds outside the 5 come from stored spans
+    (Implies(Match(kind="agent"), Once(event("confirmation"))), [ev(0, "a", "agent"), ev(1, "b", "agent")], (0, 1)),
+    (Count(Match(kind="llm"), "<", -1), [ev(0), ev(1)], ()),
 ])
 def test_cases(formula, events, expected):
     assert cx(formula, events) == expected
