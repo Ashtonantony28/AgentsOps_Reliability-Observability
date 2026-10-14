@@ -14,8 +14,27 @@ _INLINE_MAX = 40
 
 # matching is deliberately not shared with reference.py: the reference evaluator is an independent oracle
 @lru_cache(maxsize=4096)
-def glob_regex(glob: str) -> re.Pattern:
-    return re.compile("".join(".*" if c == "*" else "." if c == "?" else re.escape(c) for c in glob), re.S)
+def _glob_parts(glob: str) -> tuple[tuple[re.Pattern, int], ...]:
+    return tuple((re.compile("".join("." if c == "?" else re.escape(c) for c in part), re.S), len(part))
+                 for part in glob.split("*"))
+
+
+def glob_match(glob: str, name: str) -> bool:
+    """Star-free parts are fixed-length; the middle ones are found leftmost-first, so nothing re-splits
+    (no backtracking; at worst len(name) x len(glob))."""
+    (first, n), *rest = _glob_parts(glob)
+    if not rest:
+        return first.fullmatch(name) is not None
+    if first.match(name) is None:
+        return False
+    pos = n
+    for part, _ in rest[:-1]:
+        m = part.search(name, pos)
+        if m is None:
+            return False
+        pos = m.end()
+    last, n = rest[-1]
+    return len(name) - n >= pos and last.fullmatch(name, len(name) - n) is not None
 
 
 def attr_equal(actual: Any, expected: Any) -> bool:
@@ -24,7 +43,7 @@ def attr_equal(actual: Any, expected: Any) -> bool:
 
 def matches(m: ast.Match, e: Event) -> bool:
     return ((m.kind is None or e.kind == m.kind)
-            and (not m.globs or any(glob_regex(g).fullmatch(e.name) for g in m.globs))
+            and (not m.globs or any(glob_match(g, e.name) for g in m.globs))
             and (m.status is None or e.status == m.status)
             and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
 

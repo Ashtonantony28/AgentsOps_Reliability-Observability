@@ -19,7 +19,7 @@ from app.policy.checker import check_trace, check_verdicts, compile_policy
 from app.policy.counterexample import (FactEncoding, _Entailment, _nodes, bounded_counterexample,
                                       minimal_counterexample, name_patterns)
 from app.policy.dsl import CMPS, KINDS, parse
-from app.policy.encode import glob_regex
+from app.policy.encode import glob_match
 from app.policy.events import Event
 from app.policy.reference import truth
 from tests.policy.fixture_policies import event, fixture_policies, tool
@@ -196,10 +196,10 @@ def test_name_patterns():
 @given(st.lists(st.text("ab*?", min_size=1, max_size=3), min_size=1, max_size=3).map(tuple))
 def test_name_patterns_match_brute_force(globs):
     names = [""] + ["".join(t) for n in range(1, 8) for t in itertools.product("abx", repeat=n)]
-    brute = {frozenset(g for g in globs if glob_regex(g).fullmatch(n)) for n in names}
+    brute = {frozenset(g for g in globs if glob_match(g, n)) for n in names}
     got = dict(name_patterns(globs))
     assert set(got) == brute
-    assert all(frozenset(g for g in globs if glob_regex(g).fullmatch(n)) == p for p, n in got.items())
+    assert all(frozenset(g for g in globs if glob_match(g, n)) == p for p, n in got.items())
 
 
 def test_solver_giving_up_returns_every_event(monkeypatch):

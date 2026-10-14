@@ -357,10 +357,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Result:** soft delete. `trace_policies.archived_at` (migration `0005_policy_archive`); `DELETE` sets it, and an archived policy is a 404 to `PUT`/`DELETE`, never enforced (`active_policies`, so live, batch, whole-trace ingest and `/check`), and left out of `GET /api/trace-policies` unless `?include_archived=true`. `TracePolicyOut` and the TS type gain `archived_at`. The unique `(org_id, name)` index is partial (`archived_at IS NULL`) so a deleted policy's name can be reused. Its violations stay in the trace view, `violations.csv`, the summary and the `policy_violations` alert count. The SQLite test engine turns on foreign keys (A6-9); nothing else depended on them being off. 0001-0004 are Postgres-only, so 0005 is tested both ways on Postgres (full chain) and on SQLite (from a `create_all` schema); downgrading keeps archived policies (and their violations), disabled and renamed to their ids.
 
 ### SG-A7.1 Linear-time glob matching (AUDIT-7 A7-1 critical)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-7
+- **Owner:** SG-A7.1 thread · **Status:** done · **Depends:** AUDIT-7
 - **Scope:** `encode.glob_regex`/`matches` (and `reference.py`'s own matcher, and `counterexample._hits`) match `*` and `?` without regex backtracking, e.g. the two-pointer wildcard algorithm; semantics unchanged (whole name, case-sensitive, code points).
 - **Acceptance:** both A7-1 tests pass unmarked; `*a` x 10 + `b` against a 255-character name of `a`s matches (false) in under 1 ms; differential, fixture and counterexample tests unchanged; live and precheck bench rows met.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_7.py -k glob tests/policy -q` · `python backend/scripts/bench_policy.py --path live --assert-budget`
+- **Result:** both pass; A7-1 markers removed. `encode.glob_match` (replaces `glob_regex`) splits a glob at `*` into fixed-length parts matched leftmost-first; `reference.glob_match` is an independent two-pointer matcher; both checked equal to the naive recursive oracle on 2 000 generated cases. `*a` x 10 + `b` against 255 `a`s: 0.15 ms (encode), 0.25 ms (reference). Live p95 0.06 ms; batch, counterexample and precheck rows met.
 
 ### SG-A7.2 Batch check linear in atoms x events (AUDIT-7 A7-2 high)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-7

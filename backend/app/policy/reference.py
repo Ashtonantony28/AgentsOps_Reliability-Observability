@@ -1,6 +1,4 @@
 import operator
-import re
-from functools import lru_cache
 from typing import Any, Mapping, Optional, Sequence
 
 from app.policy.ast import (
@@ -11,13 +9,23 @@ from app.policy.events import Event
 _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">=": operator.ge, ">": operator.gt}
 
 
-@lru_cache(maxsize=1024)
-def _glob(g: str) -> re.Pattern:
-    return re.compile("".join(".*" if c == "*" else "." if c == "?" else re.escape(c) for c in g), re.S)
-
-
 def glob_match(glob: str, name: str) -> bool:
-    return _glob(glob).fullmatch(name) is not None
+    """Two-pointer wildcard match: on a mismatch, retry from the last `*` one character further."""
+    g = n = 0
+    star, mark = -1, 0
+    while n < len(name):
+        if g < len(glob) and glob[g] == "*":
+            star, mark = g, n
+            g += 1
+        elif g < len(glob) and glob[g] in ("?", name[n]):
+            g += 1
+            n += 1
+        elif star >= 0:
+            mark += 1
+            g, n = star + 1, mark
+        else:
+            return False
+    return all(c == "*" for c in glob[g:])
 
 
 def attr_equal(attrs: Mapping[str, Any], key: str, value: Any) -> bool:
