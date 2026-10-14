@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 INT32_MAX = 2**31 - 1  # Postgres INTEGER
+MAX_TRACE_EVENTS = 10_000  # bounds the batch policy check (AUDIT-2 A2-2)
 
 
 class ToolCallIn(BaseModel):
@@ -39,8 +40,8 @@ class TraceIn(BaseModel):
     environment: str = Field("dev", max_length=32)
     agent_version: str = Field("1.0.0", max_length=64)
     error_message: Optional[str] = None
-    tool_calls: List[ToolCallIn] = []
-    events: List[EventIn] = []
+    tool_calls: List[ToolCallIn] = Field(default_factory=list, max_length=MAX_TRACE_EVENTS)
+    events: List[EventIn] = Field(default_factory=list, max_length=MAX_TRACE_EVENTS)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     timestamp: Optional[datetime] = None
 
@@ -55,6 +56,14 @@ class TraceIn(BaseModel):
 
 class TraceBulkIn(BaseModel):
     traces: List[Any]  # validated one by one so a bad trace rejects only itself
+
+    @model_validator(mode="after")
+    def _check_size(self):
+        n = sum(len(t.get(k)) for t in self.traces if isinstance(t, dict)
+                for k in ("events", "tool_calls") if isinstance(t.get(k), list))
+        if n > MAX_TRACE_EVENTS:
+            raise ValueError(f"at most {MAX_TRACE_EVENTS} events per request")
+        return self
 
 
 class SpanOut(BaseModel):

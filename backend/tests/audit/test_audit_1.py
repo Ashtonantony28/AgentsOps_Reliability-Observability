@@ -46,7 +46,6 @@ async def test_block_policy_added_mid_trace_blocks_next_violation(client, db, or
 
 # A1-H2: the batch verdict waits on counterexamples, whose time is unbounded outside the string theory
 
-@pytest.mark.xfail(strict=True, reason="A1-H2: one failing counterexample drops every violation of the trace")
 def test_counterexample_failure_keeps_verdicts(monkeypatch):
     (a,) = parse('policy a: always not tool("drop_db")')
     (b,) = parse(RETRY_CAP)
@@ -62,7 +61,6 @@ def test_counterexample_failure_keeps_verdicts(monkeypatch):
     assert [(v.policy_id, v.at_seq) for v in got] == [("a", 0), ("b", 4)]
 
 
-@pytest.mark.xfail(strict=True, reason="A1-H2: nested `count by name` counterexample is exponential (80 events ~11 s)")
 def test_nested_count_by_counterexample_is_bounded():
     (p,) = parse(NESTED)
     events = _named(80)
@@ -72,7 +70,6 @@ def test_nested_count_by_counterexample_is_bounded():
     assert time.monotonic() - start < 2.0
 
 
-@pytest.mark.xfail(strict=True, reason="A1-H2: top-level `count by name` counterexample at 200 events ~7 s, budget 500 ms")
 def test_retry_cap_counterexample_meets_budget():
     (p,) = parse(RETRY_CAP)
     events = _named(200)
@@ -97,7 +94,6 @@ def test_counterexample_holds_for_unseen_kind():
 
 # A1-L2: `count by name` plus globs falls back to the 1 s string-theory budget and keeps every unresolved event
 
-@pytest.mark.xfail(strict=True, reason="A1-L2: string-theory budget runs out; all 80 events kept where 5 suffice")
 def test_globbed_count_by_name_counterexample_is_minimal():
     (p,) = parse('policy p: always tool("delete_*") -> not once (count(status("error")) by name > 3)')
     events = _named(79) + [Event(79, "tool", "delete_x", "success", {})]
