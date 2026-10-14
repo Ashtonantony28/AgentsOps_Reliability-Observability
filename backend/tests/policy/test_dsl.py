@@ -114,6 +114,16 @@ def test_tags_inline_and_nest():
         And(Match(kind="tool", globs=("del*",)), Match(attrs=(("env", "prod"),))), Previously(Match(kind="confirmation")))
 
 
+def test_size_caps():
+    tags = 'tag t0 = tool("a")\n' + "".join(f"tag t{i} = @t{i - 1} and @t{i - 1}\n" for i in range(1, 31))
+    assert parse(tags + "policy ok: always @t9")  # 1023 nodes; @t10 is 2047
+    with pytest.raises(PolicyParseError, match="over 2000 atoms and operators") as e:
+        parse(tags + "policy big:\n  always not @t30")
+    assert (e.value.line, e.value.col) == (32, 1)
+    with pytest.raises(PolicyParseError, match="over 20000 characters"):
+        parse("#" * 20_001)
+
+
 def test_empty_and_tag_only_sources():
     assert parse("") == []
     assert parse("  # nothing\n") == []

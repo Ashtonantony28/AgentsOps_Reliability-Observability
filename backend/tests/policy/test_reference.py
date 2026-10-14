@@ -120,8 +120,10 @@ def test_count_by():
 
 
 def test_shared_tag_nodes_are_evaluated_once():
-    src = 'tag t0 = tool("a")\n' + "".join(f"tag t{i} = @t{i-1} or not @t{i-1}\n" for i in range(1, 40))
-    p = parse(src + "policy p: always @t39")[0]
+    f = Match(kind="tool", globs=("a",))
+    for _ in range(39):  # what tags inline to; parse caps the expanded size
+        f = Or(f, Not(f))
+    p = Policy("p", "medium", f)
     assert evaluate(p, trace("a", ("llm", "b"))) == []
 
 

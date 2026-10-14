@@ -221,3 +221,24 @@ def test_count_by_values_never_collide_with_the_overflow_markers():
     m = Monitor(_compiled([p]))
     for i, name in enumerate(["\0?", "\0", "\0\0", "a"]):
         assert m.step(Event(i, "tool", name, "success", {})) == [] and m.failing == []
+
+
+def test_shared_subformulas_cost_their_distinct_nodes():
+    """A5-1: tags make a formula a DAG; 2^40 leaves, 42 distinct nodes."""
+    f = ast.Match(kind="tool", globs=("a",))
+    for _ in range(40):
+        f = ast.And(f, f)
+    p = ast.Policy("p", "high", ast.Not(f))
+    events = [Event(i, "tool", "a" if i else "b", "success", {}) for i in range(3)]
+    plan = monitor.plan_for(p)
+    assert len(plan.nodes) == 42 and monitor.plan_for(p) is plan
+    [v] = check_trace(_compiled([p]), events)
+    assert (v.at_seq, v.counterexample) == (1, (1,))
+    assert [x.at_seq for x in _stream(_compiled([p]), events)] == [1]
+
+
+def test_plan_digest_is_by_content():
+    a = parse('tag t = tool("a")\npolicy p severity high: always not (@t and @t)')[0]
+    b = parse('policy p severity high: always not (tool("a") and tool("a"))')[0]
+    assert monitor.plan_for(a).digest == monitor.plan_for(b).digest
+    assert monitor.plan_for(a).digest != monitor.plan_for(replace(b, severity="low")).digest

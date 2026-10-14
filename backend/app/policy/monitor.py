@@ -4,11 +4,10 @@ Same recurrences as the linear Z3 encoding, evaluated on concrete values so a li
 """
 import hashlib
 import operator
-from functools import lru_cache
 from typing import Any
 
 from app.policy import ast
-from app.policy.encode import _match_key, matches
+from app.policy.encode import Dag, matches
 from app.policy.events import Event
 
 _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">=": operator.ge,
@@ -36,40 +35,33 @@ def _count_group(groups: dict, g: str, hit: bool) -> tuple[int, int]:
     return int(hit), hi
 
 
-@lru_cache(maxsize=4096)
-def _plan(key: str, policy: ast.Policy) -> "Plan":
-    return Plan(policy.formula, hashlib.sha256(key.encode()).hexdigest()[:16])
+_plans: dict[int, tuple[ast.Policy, "Plan"]] = {}
+_PLANS_MAX = 4096
 
 
 def plan_for(policy: ast.Policy) -> "Plan":
-    """Plans are immutable and cached; the digest changes with the formula, name or severity."""
-    return _plan(repr((policy.name, policy.severity, policy.formula)), policy)
+    """Plans are immutable and cached per policy object; the digest changes with the formula, name or severity."""
+    hit = _plans.get(id(policy))
+    if hit is not None and hit[0] is policy:
+        return hit[1]
+    plan = Plan(policy)
+    if len(_plans) >= _PLANS_MAX:
+        _plans.pop(next(iter(_plans)), None)
+    _plans[id(policy)] = (policy, plan)  # holding `policy` keeps its id from being reused while cached
+    return plan
 
 
 class Plan:
     """`formula` flattened to nodes in evaluation order (children first), shared subformulas evaluated once."""
 
-    def __init__(self, formula: ast.Formula, digest: str):
-        self.nodes: list[tuple[str, Any, tuple[int, ...]]] = []
-        self._index: dict[Any, int] = {}
-        self.root = self._add(formula)[1]
+    def __init__(self, policy: ast.Policy):
+        dag = Dag()
+        self.root = dag.add(policy.formula)
+        self.nodes: list[tuple[str, Any, tuple[int, ...]]] = [
+            (type(f).__name__, f if isinstance(f, (ast.Match, ast.Count)) else None, kids)
+            for f, kids in zip(dag.nodes, dag.kids)]
         self.count_by = [k for k, (op, f, _) in enumerate(self.nodes) if op == "Count" and f.by]
-        self.digest = digest
-
-    def _add(self, f: ast.Formula) -> tuple[Any, int]:
-        op = type(f).__name__
-        if isinstance(f, ast.Match):
-            key, payload, kids = _match_key(f), f, ()
-        elif isinstance(f, ast.Count):
-            k, i = self._add(f.pred)
-            key, payload, kids = (op, k, f.op, f.bound, f.by), f, (i,)
-        else:
-            subs = [self._add(f.arg)] if hasattr(f, "arg") else [self._add(f.left), self._add(f.right)]
-            key, payload, kids = (op, *(k for k, _ in subs)), None, tuple(i for _, i in subs)
-        if key not in self._index:
-            self._index[key] = len(self.nodes)
-            self.nodes.append((op, payload, kids))
-        return key, self._index[key]
+        self.digest = hashlib.sha256(repr((policy.name, policy.severity, list(dag.keys))).encode()).hexdigest()[:16]
 
     def initial(self) -> list:
         return [({} if f.by else 0) if op == "Count" else _INIT.get(op) for op, f, _ in self.nodes]

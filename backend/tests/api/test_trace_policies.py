@@ -93,6 +93,18 @@ async def test_create_invalid_source_422(client, auth_headers):
     assert (await client.get(URL, headers=auth_headers)).json() == []
 
 
+async def test_oversized_policy_422(client, auth_headers):
+    """A5-1: tags inline as shared nodes, so 750 bytes can expand to 2^30 leaves; create, update and validate refuse it."""
+    src = ('tag t0 = tool("a")\n' + "".join(f"tag t{i} = @t{i - 1} and @t{i - 1}\n" for i in range(1, 31))
+           + "policy p severity high:\n  always not @t30\n")
+    assert "over 2000 atoms" in _err(await client.post(URL, json={"source": src}, headers=auth_headers),
+                                     422, "invalid_policy")["message"]
+    p = await _create(client, auth_headers)
+    _err(await client.put(f"{URL}/{p['id']}", json={"source": src}, headers=auth_headers), 422, "invalid_policy")
+    r = await client.post(f"{URL}/validate", json={"source": src}, headers=auth_headers)
+    assert r.json()["ok"] is False
+
+
 async def test_duplicate_name_409(client, auth_headers):
     await _create(client, auth_headers)
     r = await client.post(URL, json={"source": 'policy alpha:\n  always tool("x")'}, headers=auth_headers)

@@ -34,6 +34,41 @@ def _match_key(m: ast.Match) -> Hashable:
     return ("M", m.kind, m.globs, m.status, tuple((k, type(v).__name__, v) for k, v in m.attrs))
 
 
+class Dag:
+    """Distinct subformulas, children first. Tags make a formula a DAG whose tree can be exponentially larger,
+    so each node object is visited once and equal subformulas get one index."""
+
+    def __init__(self):
+        self.nodes: list[ast.Formula] = []
+        self.kids: list[tuple[int, ...]] = []
+        self.keys: dict[Hashable, int] = {}
+        self._seen: dict[int, tuple[ast.Formula, int]] = {}
+
+    def add(self, f: ast.Formula) -> int:
+        hit = self._seen.get(id(f))
+        if hit is not None and hit[0] is f:
+            return hit[1]
+        if isinstance(f, ast.Match):
+            kids, key = (), _match_key(f)
+        elif isinstance(f, ast.Count):
+            kids = (self.add(f.pred),)
+            key = ("Count", *kids, f.op, f.bound, f.by)
+        elif isinstance(f, (ast.Not, ast.Once, ast.Historically, ast.Previously)):
+            kids = (self.add(f.arg),)
+            key = (type(f).__name__, *kids)
+        elif isinstance(f, (ast.And, ast.Or, ast.Implies, ast.Since)):
+            kids = (self.add(f.left), self.add(f.right))
+            key = (type(f).__name__, *kids)
+        else:
+            raise TypeError(f"not a formula node: {f!r}")
+        if key not in self.keys:
+            self.keys[key] = len(self.nodes)
+            self.nodes.append(f)
+            self.kids.append(kids)
+        self._seen[id(f)] = (f, self.keys[key])
+        return self.keys[key]
+
+
 class TraceEncoding:
     """Event facts and policy formulas over `events` as SMT-LIB terms, built once and shared across policies.
 
@@ -47,11 +82,16 @@ class TraceEncoding:
         self.decls: list[str] = []
         self.defs: list[str] = []
         self.facts: list[list[str]] = [[] for _ in self.events]
-        self._by_key: dict[Hashable, list[str]] = {}
+        self._dag = Dag()
+        self._values: list[list[str]] = []
         self._fresh = 0
 
     def values(self, f: ast.Formula) -> list[str]:
-        return self._encode(f)[1]
+        root, dag = self._dag.add(f), self._dag
+        for k in range(len(self._values), len(dag.nodes)):
+            g = dag.nodes[k]
+            self._values.append(getattr(self, f"_{type(g).__name__.lower()}")(g, *(self._values[j] for j in dag.kids[k])))
+        return self._values[root]
 
     def smt2(self, *extra: str) -> str:
         asserts = self.defs + [lit for fs in self.facts for lit in fs] + list(extra)
@@ -71,24 +111,6 @@ class TraceEncoding:
     def _short(self, term: str) -> str:
         # shared subterms are repeated in the text; naming long ones keeps the encoding linear
         return term if len(term) <= _INLINE_MAX else self.define("b", term)
-
-    def _encode(self, f: ast.Formula) -> tuple[Hashable, list[str]]:
-        if isinstance(f, ast.Match):
-            key, args = _match_key(f), ()
-        elif isinstance(f, (ast.Not, ast.Once, ast.Historically, ast.Previously)):
-            k, xs = self._encode(f.arg)
-            key, args = (type(f).__name__, k), (xs,)
-        elif isinstance(f, ast.Count):
-            k, xs = self._encode(f.pred)
-            key, args = ("Count", k, f.op, f.bound, f.by), (xs,)
-        elif isinstance(f, (ast.And, ast.Or, ast.Implies, ast.Since)):
-            (kl, xs), (kr, ys) = self._encode(f.left), self._encode(f.right)
-            key, args = (type(f).__name__, kl, kr), (xs, ys)
-        else:
-            raise TypeError(f"not a formula node: {f!r}")
-        if key not in self._by_key:
-            self._by_key[key] = getattr(self, f"_{type(f).__name__.lower()}")(f, *args)
-        return key, self._by_key[key]
 
     def _match(self, m: ast.Match) -> list[str]:
         if m == ast.Match():

@@ -16,6 +16,8 @@ RESERVED = frozenset(
 FUTURE = frozenset(("eventually", "next", "until"))
 UNARY = {"not": Not, "once": Once, "historically": Historically, "previously": Previously}
 TEMPORAL = frozenset(("once", "historically", "previously", "since", "count"))
+MAX_SOURCE_CHARS = 20_000
+MAX_FORMULA_SIZE = 2_000  # atoms and operators of a policy with its tags expanded
 
 _TOKEN = re.compile(
     r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<comment>\#[^\n]*)"
@@ -101,6 +103,7 @@ class _Parser:
         self.tags: dict[str, Formula] = {}
         self.policy_names: set[str] = set()
         self.in_tag = False
+        self.sizes: dict[int, int] = {}
 
     @property
     def tok(self) -> Token:
@@ -169,8 +172,19 @@ class _Parser:
         self.expect(":")
         self.expect("always")
         formula = self.formula()
+        if self.size(formula) > MAX_FORMULA_SIZE:
+            raise PolicyParseError(start.line, start.col,
+                                   f"policy has over {MAX_FORMULA_SIZE} atoms and operators with its tags expanded")
         end = self.toks[self.i - 1].end
         return Policy(name.value, severity, formula, self.src[start.start:end])
+
+    def size(self, f: Formula) -> int:
+        # tags are shared nodes, so a tree walk can be exponential in the source; each node is counted once
+        if id(f) not in self.sizes:
+            kids = (f.left, f.right) if hasattr(f, "left") else (f.pred,) if isinstance(f, Count) else (
+                (f.arg,) if hasattr(f, "arg") else ())
+            self.sizes[id(f)] = 1 + sum(self.size(k) for k in kids)
+        return self.sizes[id(f)]
 
     def formula(self) -> Formula:
         left = self.or_expr()
@@ -329,6 +343,8 @@ class _Parser:
 
 
 def parse(src: str) -> list[Policy]:
+    if len(src) > MAX_SOURCE_CHARS:
+        raise PolicyParseError(1, 1, f"source is over {MAX_SOURCE_CHARS} characters")
     return _Parser(src).source()
 
 
