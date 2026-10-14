@@ -70,7 +70,8 @@ async def drain_notifications() -> None:
     await asyncio.gather(*_notifications, return_exceptions=True)
 
 
-async def check_and_publish(db: AsyncSession, trace_id: str) -> list[TracePolicyViolation]:
-    rows = await tps.check_completed_trace(db, trace_id)
+async def check_and_publish(db: AsyncSession, trace_id: str,
+                            counterexamples: bool = True) -> list[TracePolicyViolation]:
+    rows = await tps.check_completed_trace(db, trace_id, counterexamples)
     await publish_violations(db, rows)
     return rows

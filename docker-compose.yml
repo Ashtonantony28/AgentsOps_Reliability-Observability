@@ -68,7 +68,26 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A app.celery_app.celery worker --beat --loglevel=info
+    command: celery -A app.celery_app.celery worker -Q celery --beat --loglevel=info
+    volumes:
+      - ./backend:/app
+
+  policy-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.celery_app.celery worker -Q policy -n policy@%h --loglevel=info
     volumes:
       - ./backend:/app
 

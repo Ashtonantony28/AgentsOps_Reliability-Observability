@@ -1,6 +1,7 @@
 """Minimal counterexamples (PLAN.md, design decision 4): the fewest events whose facts alone entail a violation."""
 from __future__ import annotations
 
+import logging
 import re
 import time
 from collections import deque
@@ -16,6 +17,8 @@ from app.policy.encode import TraceEncoding, attr_equal, glob_regex
 if TYPE_CHECKING:
     from app.policy.checker import CompiledPolicy
     from app.policy.events import Event
+
+log = logging.getLogger(__name__)
 
 
 def _nodes(f: ast.Formula) -> Iterator[ast.Formula]:
@@ -39,10 +42,12 @@ def _bv(value: int, width: int) -> str:
     return f"(_ bv{value} {width})"
 
 
-# only `count ... by name` over globbed names needs the string theory, which can fail to terminate;
-# its checks share this budget per counterexample, after which the events not yet ruled out are kept
-_STRING_BUDGET_S = 1.0
+# every counterexample gets this budget; once it runs out, the events not yet ruled out are kept
+BUDGET_S = 2.0
+# beyond this many glob automaton states (overlapping globs can reach 2^k) names are strings instead
+_MAX_NAME_STATES = 512
 _SYMBOL = re.compile(r"[a-z_]+\d+")
+_UNARY_MAX = 16
 _BV_CMP = {"<": "bvult", "<=": "bvule", "==": "=", "!=": "=", ">=": "bvuge", ">": "bvugt"}
 
 
@@ -76,11 +81,11 @@ def _step(glob: str, positions: frozenset[int], c: str) -> frozenset[int]:
 
 
 @lru_cache(maxsize=256)
-def name_patterns(globs: tuple[str, ...]) -> tuple[tuple[frozenset[str], str], ...]:
+def name_patterns(globs: tuple[str, ...]) -> tuple[tuple[frozenset[str], str], ...] | None:
     """Every subset of `globs` that is exactly the set some name matches, each with a shortest such name.
 
-    Breadth-first search over the product of the globs' automata. Characters no glob mentions all behave
-    alike, so one of them stands for the rest.
+    Breadth-first search over the product of the globs' automata, None past `_MAX_NAME_STATES` states.
+    Characters no glob mentions all behave alike, so one of them stands for the rest.
     """
     chars = sorted({c for g in globs for c in g} - {"*", "?"})
     other = next(chr(0xE000 + i) for i in range(len(chars) + 1) if chr(0xE000 + i) not in chars)
@@ -92,6 +97,8 @@ def name_patterns(globs: tuple[str, ...]) -> tuple[tuple[frozenset[str], str], .
         for c in chars + [other]:
             nxt = tuple(_step(g, ps, c) for g, ps in zip(globs, state))
             if nxt not in names:
+                if len(names) == _MAX_NAME_STATES:
+                    return None
                 names[nxt] = names[state] + c
                 todo.append(nxt)
     return tuple(out.items())
@@ -104,12 +111,14 @@ class FactEncoding(TraceEncoding):
     over every possible event (any of the 5 kinds, any name, status and attrs), so entailment is exact.
     Statuses and attr values are only compared with policy constants, so each is a code: one per constant,
     plus one for anything else (for attrs, also a missing key). A name is, depending on what the policy asks
-    of it, the set of policy globs it matches, an identity code (for `count by name`), or a string if both.
+    of it, the set of policy globs it matches, an identity code (for `count by name`), or a string
+    if both, or if the globs overlap too much to enumerate.
     """
 
     def __init__(self, events: Sequence[Event], formula: ast.Formula):
         super().__init__(events)
         self._vars: set[str] = set()
+        self._lazy: dict[str, Any] = {}
         nodes = list(_nodes(formula))
         ms = [m for m in nodes if isinstance(m, ast.Match)]
         self.statuses = list(dict.fromkeys(m.status for m in ms if m.status is not None))
@@ -119,8 +128,9 @@ class FactEncoding(TraceEncoding):
                 self.attrs.setdefault(k, {}).setdefault(_typed(v), v)
         self.globs = tuple(dict.fromkeys(g for m in ms for g in m.globs))
         by_name = any(isinstance(c, ast.Count) and c.by == "name" for c in nodes)
-        self.name_mode = ("string" if by_name and self.globs else "code" if by_name
-                          else "pattern" if self.globs else None)
+        patterns = name_patterns(self.globs) if self.globs and not by_name else None
+        self.name_mode = ("code" if by_name and not self.globs else "pattern" if patterns
+                          else "string" if self.globs else None)
         # every code is a bit-vector, so that apart from string names the problem is solved by bit-blasting
         # kinds outside the 5 only come from stored spans; an unconstrained event may take those too
         self.kinds = list(dict.fromkeys([*KINDS, *(e.kind for e in events), *(m.kind for m in ms if m.kind)]))
@@ -133,7 +143,7 @@ class FactEncoding(TraceEncoding):
             self.name_codes = {n: i for i, n in enumerate(dict.fromkeys(e.name for e in events))}
             self.widths["n"] = _width(len(self.name_codes) + len(self.events))
         elif self.name_mode == "pattern":
-            self.patterns = [p for p, _ in name_patterns(self.globs)]
+            self.patterns = [p for p, _ in patterns]
             self.widths["n"] = _width(len(self.patterns) - 1)
 
         self.assumptions = []
@@ -150,6 +160,24 @@ class FactEncoding(TraceEncoding):
                 observed.append(f"(= {self._var(prefix, i)} {self._code(prefix, code)})")
                 self._in_range(self._var(prefix, i), len(consts), i)
             self.facts[i].append(f"(=> {self.assumptions[i]} (and {' '.join(observed)}))")
+
+    def cone(self, goal: str, deadline: float) -> list[str]:
+        """The definitions `goal` depends on, building lazy ones on the way; the rest only slow the solver down."""
+        body: dict[str, str] = {}
+        seen, todo, indexed = set(), [goal], 0
+        while todo:
+            for name in _SYMBOL.findall(todo.pop()):
+                if name in self._lazy:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("counterexample encoding over budget")
+                    self.defs.append(f"(= {name} {self._lazy.pop(name)()})")
+                if indexed < len(self.defs):
+                    body.update((d[3:d.index(" ", 3)], d) for d in self.defs[indexed:])
+                    indexed = len(self.defs)
+                if name in body and name not in seen:
+                    seen.add(name)
+                    todo.append(body[name])
+        return [d for d in self.defs if d[3:d.index(" ", 3)] in seen]
 
     def _in_range(self, var: str, hi: int, i: int) -> None:
         if hi + 1 < 2 ** _width(hi):
@@ -208,51 +236,73 @@ class FactEncoding(TraceEncoding):
         return [self._short(self._atom(m, i)) for i in range(len(self.events))]
 
     def _count(self, f: ast.Count, xs: list[str]) -> list[str]:
-        w = _width(max(len(xs), f.bound, 0))
-        one, zero = _bv(1, w), _bv(0, w)
-        out, prev = [], zero
-        for i in range(len(xs)):
-            if f.by is None:
-                c = self.define("c", f"(bvadd {prev} (ite {xs[i]} {one} {zero}))", f"(_ BitVec {w})")
-                prev = c
-            else:
-                # the group of event i depends on its facts, so every earlier event is compared with it
-                v = "n" if f.by == "name" else "k"
-                same = [f"(ite (and {xs[j]} (= {self._var(v, j)} {self._var(v, i)})) {one} {zero})" for j in range(i)]
-                c = self.define("c", f"(bvadd (ite {xs[i]} {one} {zero}) {' '.join(same) or zero})", f"(_ BitVec {w})")
-            if f.bound < 0:  # only ASTs built in code; the DSL has no negative bounds
-                out.append("true" if f.op in (">", ">=", "!=") else "false")
-                continue
-            cmp = f"({_BV_CMP[f.op]} {c} {_bv(f.bound, w)})"
-            out.append(f"(not {cmp})" if f.op == "!=" else cmp)
+        if f.bound < 0:  # only ASTs built in code; the DSL has no negative bounds
+            return ["true" if f.op in (">", ">=", "!=") else "false"] * len(xs)
+        # a count is only compared with its bound, so it may saturate one past it; small ones are kept in unary,
+        # as "at least k" literals, which unit propagation decides without bit-blasted adders
+        bound = min(f.bound, len(xs) + 1)
+        if f.by is not None:
+            # quadratic in the window, so a position's term is only built if the goal depends on it (see `cone`)
+            out = [self.declare("Bool", "q") for _ in xs]
+            for i, q in enumerate(out):
+                self._lazy[q] = lambda i=i: self._group_count(f, xs, i, bound)
+            return out
+        out, c = [], None
+        for x in xs:
+            c = self._add(c, x, bound, len(xs))
+            out.append(self._short(self._compare(f.op, bound, c, len(xs))))
         return out
 
+    def _group_count(self, f: ast.Count, xs: list[str], i: int, bound: int) -> str:
+        # the group of event i depends on its facts, so every earlier event is compared with it
+        v = "n" if f.by == "name" else "k"
+        c = None
+        for j in range(i):
+            if xs[j] != "false":
+                same = f"(= {self._var(v, j)} {self._var(v, i)})"
+                c = self._add(c, same if xs[j] == "true" else self.define("b", f"(and {xs[j]} {same})"), bound, i + 1)
+        return self._compare(f.op, bound, self._add(c, xs[i], bound, i + 1), i + 1)
 
-def _cone(defs: list[str], goal: str) -> list[str]:
-    """The definitions `goal` depends on; the rest only slow the solver down."""
-    body = {d[3:d.index(" ", 3)]: d for d in defs}  # each is "(= name term)"
-    seen, todo = set(), [goal]
-    while todo:
-        for name in _SYMBOL.findall(todo.pop()):
-            if name in body and name not in seen:
-                seen.add(name)
-                todo.append(body[name])
-    return [d for d in defs if d[3:d.index(" ", 3)] in seen]
+    def _add(self, c: list[str] | str | None, t: str, bound: int, n: int) -> list[str] | str:
+        """The count `c` (None for zero) after one more event, counted when `t` holds."""
+        if bound + 1 > _UNARY_MAX:
+            w = _width(max(n, bound))
+            return self.define("c", f"(bvadd {c or _bv(0, w)} (ite {t} {_bv(1, w)} {_bv(0, w)}))", f"(_ BitVec {w})")
+        ge = c or ["false"] * (bound + 1)  # ge[k]: the count is at least k + 1
+        if t == "false":
+            return ge
+        out = []
+        for k, g in enumerate(ge):
+            below = "true" if k == 0 else ge[k - 1]
+            step = "false" if below == "false" else t if below == "true" else f"(and {t} {below})"
+            term = g if step == "false" or g == "true" else step if g == "false" else f"(or {g} {step})"
+            out.append(term if term in ("true", "false") else self.define("c", term))
+        return out
+
+    @staticmethod
+    def _compare(op: str, bound: int, c: list[str] | str, n: int) -> str:
+        if isinstance(c, str):
+            cmp = f"({_BV_CMP[op]} {c} {_bv(bound, _width(max(n, bound)))})"
+            return f"(not {cmp})" if op == "!=" else cmp
+        above, reached = c[bound], "true" if bound == 0 else c[bound - 1]
+        return {">": above, ">=": reached, "<=": _neg(above), "<": _neg(reached),
+                "==": f"(and {reached} {_neg(above)})", "!=": f"(or {_neg(reached)} {above})"}[op]
+
+
+def _neg(term: str) -> str:
+    return {"true": "false", "false": "true"}.get(term, f"(not {term})")
 
 
 class _Entailment:
     """Solver for "`formula` is true at the last event", to be checked under a subset of the event assumptions."""
 
-    def __init__(self, formula: ast.Formula, events: Sequence[Event]):
+    def __init__(self, formula: ast.Formula, events: Sequence[Event], deadline: float):
         self.encoding = enc = FactEncoding(events, formula)
         self.ctx = z3.Context()  # the global context is not thread-safe
-        self.deadline = time.monotonic() + _STRING_BUDGET_S if enc.name_mode == "string" else None
-        if self.deadline:
-            self.solver = z3.Solver(ctx=self.ctx)
-        else:
-            self.solver = z3.SolverFor("QF_FD", ctx=self.ctx)
+        self.deadline = deadline
+        self.solver = z3.Solver(ctx=self.ctx) if enc.name_mode == "string" else z3.SolverFor("QF_FD", ctx=self.ctx)
         goal = enc.values(formula)[-1]
-        enc.defs = _cone(enc.defs, goal)
+        enc.defs = enc.cone(goal, deadline)
         self.solver.from_string(enc.smt2(goal))
         self.lits = [z3.Bool(name, self.ctx) for name in enc.assumptions]
         self.index = {lit.get_id(): i for i, lit in enumerate(self.lits)}
@@ -260,8 +310,7 @@ class _Entailment:
 
     def core(self, known) -> set[int] | None:
         """A subset of `known` whose facts entail a violation, or None if `known` does not (or the solver gave up)."""
-        if self.deadline:
-            self.solver.set("timeout", max(1, int((self.deadline - time.monotonic()) * 1000)))
+        self.solver.set("timeout", max(1, int((self.deadline - time.monotonic()) * 1000)))
         asts = [self.lits[i].as_ast() for i in sorted(known)]
         # the C call skips the per-literal sort checks of Solver.check, which dominate on long traces
         result = z3.Z3_solver_check_assumptions(self.ctx.ref(), self.solver.solver, len(asts), (z3.Ast * len(asts))(*asts))
@@ -272,13 +321,20 @@ class _Entailment:
 
 
 def minimal_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_seq: int) -> tuple[int, ...]:
+    """Within `BUDGET_S`; past it, a sufficient superset (at worst every event up to `at_seq`), logged."""
     window = [e for e in events if e.seq <= at_seq]
     if not window or window[-1].seq != at_seq:
         raise ValueError(f"no event with seq {at_seq}")
-    check = _Entailment(policy.policy.formula, window)
-    core = check.core(range(len(window)))
-    if core is None and check.gave_up:
-        return tuple(e.seq for e in window)  # sufficient, if not minimal
+    deadline = time.monotonic() + BUDGET_S
+    try:
+        check = _Entailment(policy.policy.formula, window, deadline)
+    except TimeoutError:
+        check = None
+    core = check and check.core(range(len(window)))
+    if core is None and (check is None or check.gave_up):
+        log.warning("counterexample for %s at seq %d over budget: keeping all %d events",
+                    policy.policy.name, at_seq, len(window))
+        return tuple(e.seq for e in window)
     if core is None:
         raise ValueError(f"{policy.policy.name} is not violated at seq {at_seq}")
     for i in sorted(core):
@@ -287,5 +343,7 @@ def minimal_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_s
         if smaller is not None:
             core = smaller
         elif check.gave_up:
+            log.warning("counterexample for %s at seq %d over budget: %d events, may not be minimal",
+                        policy.policy.name, at_seq, len(core))
             break
     return tuple(window[i].seq for i in sorted(core))

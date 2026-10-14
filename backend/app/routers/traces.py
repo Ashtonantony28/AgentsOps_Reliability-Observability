@@ -76,7 +76,7 @@ async def append_events(trace_uid: Annotated[str, Path(max_length=128)], req: Ev
     except PolicyViolation as e:
         raise HTTPException(403, detail={"error": "policy_block", "rule": e.rule_name, "message": str(e)})
     except TraceConflict as e:
-        raise HTTPException(409, detail={"error": e.code, "message": e.message, **e.details})
+        raise HTTPException(e.status, detail={"error": e.code, "message": e.message, **e.details})
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
     return EventsAppendOut(accepted=len(req.events), violations=[ViolationOut.model_validate(r) for r in rows])

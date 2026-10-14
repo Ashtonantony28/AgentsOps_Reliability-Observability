@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Span, Trace, TracePolicy, TracePolicyViolation
-from app.policy.checker import CompiledPolicy, Monitor, Violation, check_trace, compile_policy
+from app.policy.checker import CompiledPolicy, Monitor, Violation, check_trace, check_verdicts, compile_policy
 from app.policy.dsl import PolicyParseError, parse
 from app.policy.events import Event, events_from_spans
 from app.redis import get_redis
@@ -151,14 +151,16 @@ def blocking_violations(policies: Active, events: Sequence[Event]) -> list[Viola
     return [v for e in events for v in m.step(e)]
 
 
-async def check_completed_trace(db: AsyncSession, trace_id: str) -> list[TracePolicyViolation]:
+async def check_completed_trace(db: AsyncSession, trace_id: str,
+                                counterexamples: bool = True) -> list[TracePolicyViolation]:
     """Batch check of a completed trace; re-running it stores nothing new."""
     trace = await db.get(Trace, trace_id)
     if trace is None or (trace.meta or {}).get("stream") == "open":
         return []
     policies = await active_policies(db, trace.org_id, trace.agent_id, trace.environment)
     spans = (await db.execute(select(Span).where(Span.trace_id == trace_id))).scalars().all()
-    violations = check_trace([c for _, c in policies], events_from_spans(spans))
+    check = check_trace if counterexamples else check_verdicts
+    violations = check([c for _, c in policies], events_from_spans(spans))
     rows = await record_violations(db, trace, policies, violations, "batch")
     # live rows were stored before counterexamples existed; fill them in from the batch result
     with_cx = {v.policy_id: list(v.counterexample) for v in violations if v.counterexample}
