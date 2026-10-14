@@ -40,9 +40,13 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
       - run: pytest -q
+      - run: pytest tests/policy/test_differential.py -q --hypothesis-profile=ci
       - run: alembic upgrade head && alembic downgrade -1 && alembic upgrade head
       - name: bench (dry run)
         run: python backend/scripts/bench_policy.py --dry-run
+        working-directory: .
+      - name: bench (batch budget)
+        run: python backend/scripts/bench_policy.py --path batch --assert-budget
         working-directory: .
 
   sdk:
