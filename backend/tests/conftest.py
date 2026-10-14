@@ -1,15 +1,19 @@
+import os
 import sys
 import uuid
 
 import fakeredis.aioredis
 import pytest
+import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import app.database
 import app.redis
 import app.routers.ws
 import app.services.trace_service
+from app.config import settings
 from app.database import Base, get_db
 from app.main import app as fastapi_app
 from app.middleware.auth import hash_api_key, make_access_token
@@ -21,12 +25,53 @@ def sample_text():
     return "Contact me at jane.doe@example.com or 555-123-4567"
 
 
+PG_TEST_DB = "agentops_test"
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "postgres: runs on Postgres; skipped where none is reachable, except in CI")
+
+
+@pytest.fixture(scope="session")
+def pg_url():
+    """A fresh Postgres database with the current schema, created once per session."""
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    url = sa.engine.URL.create("postgresql+psycopg2", username=settings.POSTGRES_USER,
+                               password=settings.POSTGRES_PASSWORD, host=host, port=settings.POSTGRES_PORT)
+    admin = sa.create_engine(url.set(database=settings.POSTGRES_DB), isolation_level="AUTOCOMMIT",
+                             connect_args={"connect_timeout": 2})
+    try:
+        with admin.connect() as c:
+            c.execute(sa.text(f"DROP DATABASE IF EXISTS {PG_TEST_DB} WITH (FORCE)"))
+            c.execute(sa.text(f"CREATE DATABASE {PG_TEST_DB}"))
+    except sa.exc.OperationalError as e:
+        admin.dispose()
+        if os.environ.get("CI"):
+            raise
+        pytest.skip(f"postgres not reachable at {host}: {e.orig}")
+    sync = sa.create_engine(url.set(database=PG_TEST_DB))
+    Base.metadata.create_all(sync)
+    sync.dispose()
+    yield url.set(drivername="postgresql+asyncpg", database=PG_TEST_DB)
+    with admin.connect() as c:
+        c.execute(sa.text(f"DROP DATABASE IF EXISTS {PG_TEST_DB} WITH (FORCE)"))
+    admin.dispose()
+
+
 @pytest.fixture
-async def engine(tmp_path):
-    # A file database with a connection per session: a session sees only what others have committed.
-    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", connect_args={"timeout": 30})
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def engine(request, tmp_path):
+    # TEST_DB=postgres runs every database test on Postgres; the `postgres` marker runs one test there.
+    if os.environ.get("TEST_DB") == "postgres" or request.node.get_closest_marker("postgres"):
+        # no pool: the websocket tests' sessions run on another thread's event loop
+        eng = create_async_engine(request.getfixturevalue("pg_url"), poolclass=NullPool)
+        async with eng.begin() as conn:
+            tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+            await conn.execute(sa.text(f"TRUNCATE {tables} CASCADE"))
+    else:
+        # A file database with a connection per session: a session sees only what others have committed.
+        eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", connect_args={"timeout": 30})
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield eng
     await eng.dispose()
 

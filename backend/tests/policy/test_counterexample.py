@@ -283,6 +283,18 @@ def test_deletion_pass_over_budget_keeps_core_so_far(monkeypatch, caplog):
     assert set(got) >= {0, 1} and "may not be minimal" in caplog.text
 
 
+def test_each_solver_call_is_bounded_by_the_remaining_budget(monkeypatch):
+    real, timeouts = z3.Solver.set, []
+
+    def spy(self, *args, **kw):
+        timeouts.extend(v for k, v in zip(args[::2], args[1::2]) if k == "timeout")
+        return real(self, *args, **kw)
+
+    monkeypatch.setattr(z3.Solver, "set", spy)
+    assert cx(Implies(tool("x"), Once(event("confirmation"))), [ev(0, "y"), ev(1, "x")]) == (0, 1)
+    assert timeouts and all(0 < t <= counterexample.BUDGET_S * 1000 for t in timeouts), timeouts
+
+
 def test_saturated_counts_match_large_bounds():
     events = [ev(i, "a") for i in range(4)]
     for op, bound, expected in [("<=", 2, (0, 1, 2, 3)), (">", 9, ()), ("<", 10**20, ()), ("==", 10**20, ()),
@@ -303,6 +315,7 @@ def test_check_trace_keeps_verdicts_without_counterexamples(monkeypatch, caplog)
         ("a", 0, (0,)), ("b", 2, (1, 2))]
     assert [(v.policy_id, v.at_seq, v.counterexample) for v in check_verdicts([a, b], events)] == [
         ("a", 0, (0,)), ("b", 2, (0, 1, 2))]
+    assert "check budget spent" not in caplog.text  # verdicts alone search nothing, so spend no budget
     monkeypatch.setattr(checker, "CHECK_BUDGET_S", -1)
     assert [v.counterexample for v in check_trace([a, b], events)] == [(0,), (0, 1, 2)]
     assert "check budget spent" in caplog.text

@@ -59,7 +59,7 @@ MUTANTS = [
 def _pytest(rel, text, cwd, args) -> subprocess.CompletedProcess:
     with tempfile.TemporaryDirectory() as tmp:
         ignore = shutil.ignore_patterns(".venv", "__pycache__", ".hypothesis", "node_modules", "*.egg-info")
-        for d in ("backend", "sdk", ".github") if cwd == "backend" else ("sdk",):
+        for d in ("backend", "sdk", "frontend", ".github") if cwd == "backend" else ("sdk",):
             shutil.copytree(ROOT / d, Path(tmp) / d, ignore=ignore)
         if rel:
             (Path(tmp) / rel).write_text(text)
