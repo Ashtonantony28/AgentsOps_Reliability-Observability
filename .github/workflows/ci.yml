@@ -48,6 +48,9 @@ jobs:
       - name: bench (batch budget)
         run: python backend/scripts/bench_policy.py --path batch --assert-budget
         working-directory: .
+      - name: bench (counterexample budget)
+        run: python backend/scripts/bench_policy.py --path counterexample --assert-budget
+        working-directory: .
       - name: bench (live and ingest budgets)
         run: |
           python backend/scripts/bench_policy.py --path live --assert-budget

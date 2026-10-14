@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from app.policy.ast import Policy
+from app.policy.counterexample import minimal_counterexample
 from app.policy.encode import first_violations
 from app.policy.events import Event
 from app.policy.monitor import plan_for
@@ -31,7 +32,8 @@ def compile_policy(policy_id: str, policy: Policy) -> CompiledPolicy:
 
 def check_trace(policies: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[Violation]:
     firsts = first_violations([p.policy.formula for p in policies], events)
-    return [Violation(p.policy_id, p.policy.name, p.policy.severity, at, (), f"{p.policy.name} violated at seq {at}")
+    return [Violation(p.policy_id, p.policy.name, p.policy.severity, at, minimal_counterexample(p, events, at),
+                      f"{p.policy.name} violated at seq {at}")
             for p, at in zip(policies, firsts) if at is not None]
 
 

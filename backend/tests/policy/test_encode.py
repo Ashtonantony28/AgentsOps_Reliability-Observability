@@ -51,7 +51,7 @@ def test_violation_fields():
     p = Policy("confirm", "high", Implies(tool("delete_*"), Once(event("confirmation"))))
     events = [ev(0, "delete_a"), ev(1, "ok", "confirmation"), ev(2, "delete_b")]
     assert check_trace([compile_policy("id-1", p)], events) == [
-        Violation("id-1", "confirm", "high", 0, (), "confirm violated at seq 0")]
+        Violation("id-1", "confirm", "high", 0, (0,), "confirm violated at seq 0")]
     assert check_trace([compile_policy("id-1", p)], events[1:]) == []
     assert check_trace([], events) == []
 

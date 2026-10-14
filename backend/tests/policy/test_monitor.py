@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import fakeredis.aioredis
 import pytest
@@ -26,6 +27,11 @@ def _stream(compiled, events, monitor=None):
     return [v for e in events for v in m.step(e)]
 
 
+def _batch(compiled, events):
+    # the live Monitor leaves counterexamples to the batch check that follows it
+    return [replace(v, counterexample=()) for v in check_trace(compiled, events)]
+
+
 def _firsts(violations):
     return {v.policy_id: v.at_seq for v in violations}
 
@@ -34,7 +40,7 @@ def _firsts(violations):
 def test_fixture_streaming_matches_check_trace(fx):
     compiled = [compile_policy(p.name, p) for p in parse(fx.source)]
     streamed = _stream(compiled, fx.events)
-    assert sorted(streamed, key=lambda v: v.policy_id) == sorted(check_trace(compiled, fx.events),
+    assert sorted(streamed, key=lambda v: v.policy_id) == sorted(_batch(compiled, fx.events),
                                                                  key=lambda v: v.policy_id)
     assert _firsts(streamed) == {x.policy: x.at_seq for x in fx.expected}
 
@@ -73,7 +79,7 @@ def test_agrees_with_reference_on_arbitrary_atoms(ps, events):
 @given(st.lists(vocab_policies, min_size=1, max_size=3), traces(max_size=30))
 def test_agrees_with_check_trace(ps, events):
     compiled = _compiled(ps)
-    assert _stream(compiled, events) == sorted(check_trace(compiled, events), key=lambda v: (v.at_seq, int(v.policy_id)))
+    assert _stream(compiled, events) == sorted(_batch(compiled, events), key=lambda v: (v.at_seq, int(v.policy_id)))
 
 
 @settings(deadline=None, max_examples=500)
