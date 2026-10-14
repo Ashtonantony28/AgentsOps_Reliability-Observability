@@ -20,6 +20,10 @@ API_KEY_ROUTES = [
     ("POST", "/api/traces/uid-1/events", {"agent_id": "a1", "events": [EVENT], "final": True}),
 ]
 ALL = [r[:3] for r in JWT_ROUTES] + API_KEY_ROUTES
+IMPLEMENTED = {"/api/trace-policies", "/api/trace-policies/p1", "/api/trace-policies/validate",
+               "/api/traces/uid-1/events"}
+JWT_STUBS = [r for r in JWT_ROUTES if r[1] not in IMPLEMENTED]
+API_KEY_STUBS = [r for r in API_KEY_ROUTES if r[1] not in IMPLEMENTED]
 _ids = lambda routes: [f"{r[0]} {r[1]}" for r in routes]  # noqa: E731
 
 
@@ -38,7 +42,7 @@ async def test_requires_auth(client, method, path, body):
     assert r.status_code == 401, r.text
 
 
-@pytest.mark.parametrize("method,path,body,admin_only", JWT_ROUTES, ids=_ids(JWT_ROUTES))
+@pytest.mark.parametrize("method,path,body,admin_only", JWT_STUBS, ids=_ids(JWT_STUBS))
 async def test_jwt_routes_501_for_admin(client, auth_headers, method, path, body, admin_only):
     _assert_501(await _call(client, method, path, body, auth_headers))
 
@@ -50,10 +54,10 @@ async def test_jwt_routes_viewer(client, viewer_headers, method, path, body, adm
         assert r.status_code == 403, r.text
         assert r.json()["error"]["message"] == "insufficient_role"
     else:
-        _assert_501(r)
+        assert r.status_code != 403, r.text
 
 
-@pytest.mark.parametrize("method,path,body", API_KEY_ROUTES, ids=_ids(API_KEY_ROUTES))
+@pytest.mark.parametrize("method,path,body", API_KEY_STUBS, ids=_ids(API_KEY_STUBS))
 async def test_api_key_routes_501(client, api_key_headers, method, path, body):
     _assert_501(await _call(client, method, path, body, api_key_headers))
 

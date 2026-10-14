@@ -98,6 +98,7 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
 
 ### Fixture gate
 SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch budget met. Recorded here with the commit hash before SG3/SG4 start.
+- **Passed** at `10a4a3e` (SG2 merge, PR #4).
 
 ### SG3 Minimal counterexamples
 - **Owner:** unassigned · **Status:** proposed · **Depends:** fixture gate
@@ -109,7 +110,7 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest tests/policy/test_counterexample.py -q` · `python scripts/bench_policy.py --path counterexample --assert-budget`
 
 ### SG4 Checker service (batch + live)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** fixture gate
+- **Owner:** SG4 thread · **Status:** done · **Depends:** fixture gate
 - **Scope:** `Monitor` (incremental), Celery task `check_completed_trace`, event-append endpoint and `/ws/ingest` event messages, monitor state in Redis, `TracePolicy` CRUD router + `validate`, persistence of `PolicyViolation`, `action=block` returning 403 like existing `PolicyViolation`.
 - **Acceptance:**
   - For every fixture, streaming events one by one through `Monitor` yields the same violations as `check_trace` on the whole trace (same `at_seq`).
@@ -118,6 +119,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - Completed traces are checked exactly once (idempotent on re-delivery).
   - Live and ingest-overhead budget rows met; load test at 500 events/s for 60 s keeps p95 within budget.
 - **Verify:** `cd backend && pytest tests/policy/test_monitor.py tests/api/test_trace_policies.py tests/api/test_event_ingest.py -q` · `python scripts/bench_policy.py --path live --assert-budget` · `python scripts/bench_policy.py --load 500 --seconds 60`
+- **Result:** all three verify commands pass (149 tests across the three files; full backend suite green). Live `Monitor.step` p95 ≈ 0.02 ms, ingest restore+step+snapshot p95 ≈ 0.2 ms; load test 30 000 events at 500/s over 50 interleaved traces: step p95 ≈ 0.05 ms, ingest p95 ≈ 0.4 ms. CI now runs the live, ingest and load benches.
+  - `Monitor` (`checker.py`, plan in `monitor.py`) evaluates the same state-carrying recurrences as the Z3 encoding on concrete values, so a step needs no solver. It is checked against `check_trace` on every fixture and on Hypothesis traces, and against `reference.evaluate` on 3 000 cases; seeded mutants (since, previously, count by) are caught. `step` raises `ValueError` on any seq other than `next_seq`. Snapshots are JSON carrying each policy's id and formula digest; `restore` raises `ValueError` on any mismatch.
+  - Live path (`trace_service.append_events`, REST and `/ws/ingest`): per-trace Redis lock; spans in the DB are the source of truth, and the Redis monitor state (`policy:monitor:{trace_id}`, 24 h TTL) is a cache that is rebuilt from spans when missing, stale or for a changed policy set (violations found while rebuilding are recorded too). A streamed trace is marked `meta.stream = "open"` until `final`; appending to a final or whole-ingested trace is 409 `trace_closed`, seq gaps/dups 409 `seq_conflict` with `expected_seq`. A `block` violation rejects the whole request (403, nothing stored, `policy_block` audit row); legacy `forbid_tool` rules also apply to appended events.
+  - Whole-trace ingest runs only `block` policies inline (via `Monitor`, 403 as before) and queues `check_completed_trace` when any trace policy applies; `final` on the events path queues it too. The task is idempotent through `ON CONFLICT DO NOTHING` on `(trace_id, policy_id, policy_version)` and returns only new rows (for SG5a to publish). It also fills in counterexamples on live rows once SG3 wires them into `check_trace`.
+  - Test-only dependency: `fakeredis[lua]` + `lupa` (Redis lock scripts).
 
 ### SG5a Integration: pipeline, alerts, reports
 - **Owner:** unassigned · **Status:** proposed · **Depends:** SG3, SG4
@@ -282,3 +288,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG0 in review.
 - 2026-10-14: SG0 merged (`aa2f27a`). SG1 done.
 - 2026-10-14: SG2 done. With SG1 merged, its merge meets the fixture gate.
+- 2026-10-14: SG4 done.

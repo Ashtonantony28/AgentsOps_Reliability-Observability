@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 import app.database
 import app.redis
 import app.routers.ws
+import app.services.trace_service
 from app.database import Base, get_db
 from app.main import app as fastapi_app
 from app.middleware.auth import hash_api_key, make_access_token
@@ -57,7 +58,19 @@ def redis(monkeypatch):
 
 
 @pytest.fixture
-def app_(session_maker, redis, monkeypatch):
+def enqueued(monkeypatch):
+    """Trace ids queued for the batch policy check, instead of sending them to Celery."""
+    ids: list[str] = []
+
+    async def _enqueue(trace_id):
+        ids.append(trace_id)
+
+    monkeypatch.setattr(app.services.trace_service, "enqueue_trace_check", _enqueue)
+    return ids
+
+
+@pytest.fixture
+def app_(session_maker, redis, enqueued, monkeypatch):
     async def _get_db():
         async with session_maker() as session:
             yield session

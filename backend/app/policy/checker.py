@@ -1,9 +1,11 @@
+import json
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from app.policy.ast import Policy
 from app.policy.encode import first_violations
 from app.policy.events import Event
+from app.policy.monitor import plan_for
 
 
 @dataclass(frozen=True)
@@ -34,18 +36,49 @@ def check_trace(policies: Sequence[CompiledPolicy], events: Sequence[Event]) -> 
 
 
 class Monitor:
+    """Live checker: one `step` per event in seq order, state serialisable between steps."""
+
     def __init__(self, policies: Sequence[CompiledPolicy]):
         self.policies = list(policies)
+        self._plans = [plan_for(p.policy) for p in self.policies]
+        self._states = [plan.initial() for plan in self._plans]
+        self._done = [False] * len(self.policies)
+        self.next_seq = 0
 
     def step(self, event: Event) -> list[Violation]:
-        raise NotImplementedError
+        if event.seq != self.next_seq:
+            raise ValueError(f"expected seq {self.next_seq}, got {event.seq}")
+        self.next_seq += 1
+        out = []
+        for i, (p, plan) in enumerate(zip(self.policies, self._plans)):
+            if not plan.step(self._states[i], event) and not self._done[i]:
+                self._done[i] = True
+                out.append(Violation(p.policy_id, p.policy.name, p.policy.severity, event.seq, (),
+                                     f"{p.policy.name} violated at seq {event.seq}"))
+        return out
 
     def snapshot(self) -> bytes:
-        raise NotImplementedError
+        return json.dumps({"v": 1, "n": self.next_seq, "p": [
+            [p.policy_id, plan.digest, done, state]
+            for p, plan, done, state in zip(self.policies, self._plans, self._done, self._states)
+        ]}, separators=(",", ":")).encode()
 
     @classmethod
     def restore(cls, policies: Sequence[CompiledPolicy], blob: bytes) -> "Monitor":
-        raise NotImplementedError
+        """Raises ValueError unless `blob` is a snapshot of a Monitor over the same policies, in order."""
+        m = cls(policies)
+        try:
+            data = json.loads(blob)
+            rows, m.next_seq = data["p"], data["n"]
+            if data["v"] != 1 or len(rows) != len(m.policies):
+                raise ValueError
+            for i, (p, plan, (pid, digest, done, state)) in enumerate(zip(m.policies, m._plans, rows)):
+                if pid != p.policy_id or digest != plan.digest or len(state) != len(plan.nodes):
+                    raise ValueError
+                m._done[i], m._states[i] = done, state
+        except (ValueError, KeyError, TypeError) as e:
+            raise ValueError("snapshot does not match these policies") from e
+        return m
 
 
 def would_violate(policies: Sequence[CompiledPolicy], prefix: Sequence[Event], candidate: Event) -> list[Violation]:

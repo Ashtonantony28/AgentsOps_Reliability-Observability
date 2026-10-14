@@ -25,6 +25,7 @@ aiosmtplib==3.0.1
 reportlab==4.1.0
 z3-solver==5.1.0.0
 aiosqlite==0.22.1
-fakeredis==2.39.0
+fakeredis[lua]==2.39.0
+lupa==2.8
 hypothesis==6.169.0
 pytest-cov==7.1.0

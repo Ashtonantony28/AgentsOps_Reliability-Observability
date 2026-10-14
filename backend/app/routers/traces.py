@@ -22,7 +22,7 @@ from app.schemas.trace import (
     TraceOut,
 )
 from app.services.report_service import traces_to_csv
-from app.services.trace_service import PolicyViolation, ingest_trace
+from app.services.trace_service import PolicyViolation, TraceConflict, append_events as append_trace_events, ingest_trace
 
 router = APIRouter(prefix="/api/traces", tags=["traces"])
 
@@ -60,7 +60,16 @@ async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Dep
 @router.post("/{trace_uid}/events", response_model=EventsAppendOut, status_code=202)
 async def append_events(trace_uid: str, req: EventsAppendIn, request: Request, db: AsyncSession = Depends(get_db)):
     org, api_key = await authenticate_api_key(request, db)
-    raise HTTPException(501, "not_implemented")
+    await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
+    try:
+        _trace, rows = await append_trace_events(db, org.id, trace_uid, req)
+    except PolicyViolation as e:
+        raise HTTPException(403, detail={"error": "policy_block", "rule": e.rule_name, "message": str(e)})
+    except TraceConflict as e:
+        raise HTTPException(409, detail={"error": e.code, "message": e.message, **e.details})
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+    return EventsAppendOut(accepted=len(req.events), violations=[ViolationOut.model_validate(r) for r in rows])
 
 
 # ---- Query (JWT authed) ----

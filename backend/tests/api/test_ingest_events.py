@@ -146,7 +146,8 @@ def test_ws_ingest(app_, api_key, agent, session_maker):
         with tc.websocket_connect(f"/ws/ingest?api_key={api_key}") as ws:
             ws.send_text(json.dumps({"type": "events", "trace_uid": "u1", "agent_id": agent.id,
                                      "events": [{"seq": 0, "name": "delete_user"}], "final": True}))
-            assert ws.receive_json() == {"ok": False, "error": "not_implemented"}
+            streamed = ws.receive_json()
+            assert streamed["ok"] is True and streamed["accepted"] == 1 and streamed["violations"] == []
 
             ws.send_text(json.dumps({"type": "events", "trace_uid": "u1", "agent_id": agent.id,
                                      "events": [{"seq": -1, "name": "x"}]}))
