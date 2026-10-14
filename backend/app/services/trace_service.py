@@ -28,6 +28,7 @@ class PolicyViolation(Exception):
         self.rule_name = rule_name
         self.rule_id = rule_id
         self.violations = violations  # set for a trace policy block: the violations of the refused event
+        self.target = "event"  # "trace" when a legacy rule matched the trace's input/output text, not an event
 
 
 class TraceConflict(Exception):
@@ -275,8 +276,16 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
 
         refused = None
         try:
-            legacy = _event_trace(agent, trace.environment, req.events, req.input, req.output)
+            legacy = _event_trace(agent, trace.environment, req.events)
             policy_note = await evaluate_policies(db, org_id, agent, legacy, req.events)
+            if req.input or req.output:
+                text = _event_trace(agent, trace.environment, [], req.input, req.output)
+                try:
+                    text_note = await evaluate_policies(db, org_id, agent, text, [])
+                    policy_note = policy_note or text_note
+                except PolicyViolation as pv:
+                    pv.target = "trace"
+                    raise
             policies = await tps.active_policies(db, org_id, agent.id, trace.environment)
             monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)
             blocking = {row.id: c.policy.name for row, c in policies if row.action == "block"}

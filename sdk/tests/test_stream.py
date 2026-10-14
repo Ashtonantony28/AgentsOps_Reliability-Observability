@@ -364,3 +364,12 @@ def test_refused_empty_final_push_ends_the_push(client, server):
     with client.trace(stream=True) as t:
         t.add_event("tool", "a")
     assert seqs(server) == [[0], []] and [e["name"] for e in t.events] == ["a"]
+
+
+def test_block_on_trace_text_stops_streaming_and_keeps_events(client, server):
+    server.queue("events", (403, {"error": {"code": "policy_block", "message": "PII detected",
+                                            "details": {"rule": "no-pii", "target": "trace"}}}))
+    with client.trace(stream=True, input="mail jane.doe@example.com") as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert seqs(server) == [[0]] and [e["name"] for e in t.events] == ["a", "b"] and t._dead

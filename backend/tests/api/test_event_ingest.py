@@ -336,7 +336,8 @@ def test_ws_events_messages(app_, api_key, agent, session_maker):
                 ("confirm_before_delete", 0, "live")]
             assert send(ws, [ev(5, "a")]) == {"ok": False, "error": "seq_conflict", "expected_seq": 1,
                                               "message": "events must continue at seq 1 without gaps"}
-            assert send(ws, [ev(1, "drop_db")]) == {"ok": False, "error": "policy_block", "rule": "no_drop"}
+            assert send(ws, [ev(1, "drop_db")]) == {"ok": False, "error": "policy_block", "rule": "no_drop",
+                                                   "target": "event"}
             assert send(ws, [ev(1, "search")], final=True)["ok"] is True
             assert send(ws, [ev(2, "x")])["error"] == "trace_closed"
 
@@ -447,3 +448,21 @@ async def test_streamed_input_is_scanned_by_legacy_injection_rule(client, db, or
     r = await client.post("/api/traces/u1/events", headers=api_key_headers,
                           json={"agent_id": agent.id, "events": [ev(0, "search")], "input": "hello"})
     assert r.status_code == 202
+
+
+async def test_legacy_block_on_streamed_text_targets_the_trace(client, db, org, agent, api_key_headers):
+    db.add(PolicyRule(org_id=org.id, name="no-pii", rule={"forbid_pii": True}, action="block"))
+    db.add(PolicyRule(org_id=org.id, name="flag", rule={"forbid_tool": "search"}, action="warn"))
+    await db.commit()
+    body = {"agent_id": agent.id, "events": [ev(0, "search")]}
+    r = await client.post("/api/traces/u1/events", headers=api_key_headers, json={**body, "input": "a@b.co"})
+    assert r.status_code == 403 and (r.json()["error"]["details"]["rule"], r.json()["error"]["details"]["target"]) == (
+        "no-pii", "trace")
+    r = await client.post("/api/traces/u1/events", headers=api_key_headers,
+                          json={**body, "events": [ev(0, "x", input={"to": "a@b.co"})]})
+    assert r.status_code == 403 and r.json()["error"]["details"]["target"] == "event"
+    assert (await client.post("/api/traces/u1/events", headers=api_key_headers, json=body)).status_code == 202
+    r = await client.post("/api/traces/u1/events", headers=api_key_headers,
+                          json={"agent_id": agent.id, "events": [], "final": True, "output": "a@b.co"})
+    assert r.status_code == 403 and r.json()["error"]["details"]["target"] == "trace"
+    assert len(await _rows(db, Span)) == 1
