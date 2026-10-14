@@ -100,7 +100,9 @@ def test_stops_streaming_on_rejection_but_keeps_checking(client, server, caplog,
             result = t.check("c")
     assert seqs(server) == [[0]]
     assert server.routes() == ["events", "check"]  # checked against the events the server holds
-    assert server.bodies("check")[0]["trace_uid"] == t.trace_id
+    body = server.bodies("check")[0]
+    assert body["trace_uid"] == t.trace_id
+    assert [e["name"] for e in body["prefix"]] == ["a", "b"] and body["candidate"]["seq"] == 2  # undelivered events
     assert not result.allowed and result.error is None
     assert client._queue.empty()
     assert "stopped streaming" in caplog.text and caplog.text.count("stopped streaming") == 1

@@ -142,7 +142,7 @@ async def check_candidate(req: PolicyCheckIn, request: Request, db: AsyncSession
     try:
         return await precheck(db, org.id, req)
     except TraceConflict as e:
-        raise HTTPException(409, detail={"error": e.code, "message": e.message, **e.details})
+        raise HTTPException(e.status, detail={"error": e.code, "message": e.message, **e.details})
     except ValueError as e:
         raise HTTPException(404, detail=str(e))
 

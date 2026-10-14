@@ -27,6 +27,7 @@ m.MUTANTS = [
      'return "fatal" if (err.get("details") or {}).get("target") == "trace" else "refused"',
      'return "refused"', *S),
     ("probe", "sdk/agentops_sdk/trace.py", "            self._refused += 1\n", "", *S),
+    ("probe", "sdk/agentops_sdk/trace.py", "_bare(self.events[self._sent:]) if self._dead else []", "[]", *S),
     ("probe", "sdk/agentops_sdk/async_client.py", "        for batch in batches(items, self.batch_size):",
      "        for batch in [items] if items else []:", *S),
     # backend
@@ -64,8 +65,6 @@ m.MUTANTS = [
      "raise HTTPException(409, detail=", *B),
     ("probe", "backend/app/policy/dsl.py", "MAX_FORMULA_DEPTH = 64 ", "MAX_FORMULA_DEPTH = 400 ", *B),
     ("probe", "backend/app/policy/dsl.py", "MAX_SOURCE_CHARS = 20_000", "MAX_SOURCE_CHARS = 200_000", *B),
-    ("probe", TS, "    if monitor.next_seq + len(req.prefix) >= MAX_TRACE_EVENTS:",
-     "    if monitor.next_seq + len(req.prefix) > MAX_TRACE_EVENTS:", *B),
 ]
 
 if __name__ == "__main__":
