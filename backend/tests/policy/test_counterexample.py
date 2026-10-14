@@ -2,8 +2,10 @@ import ctypes
 import itertools
 import random
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import z3
@@ -11,7 +13,9 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from app.policy.ast import And, Count, Implies, Match, Not, Once, Policy, Previously
-from app.policy.checker import check_trace, compile_policy
+import app.policy.checker as checker
+from app.policy import counterexample
+from app.policy.checker import check_trace, check_verdicts, compile_policy
 from app.policy.counterexample import _Entailment, _nodes, minimal_counterexample, name_patterns
 from app.policy.dsl import CMPS, KINDS, parse
 from app.policy.encode import glob_regex
@@ -48,7 +52,7 @@ def decode(strings, value):
 
 def witness(formula, events, known):
     """Events that keep the facts of `known` and make `formula` true at the last one, decoded from a solver model."""
-    check = _Entailment(formula, events)
+    check = _Entailment(formula, events, time.monotonic() + 60)
     if check.core(known) is not None:
         return None
     enc, model = check.encoding, check.solver.model()
@@ -227,3 +231,84 @@ def test_bench_workload_needs_every_event():
     assert minimal_counterexample(p, events, events[-1].seq) == tuple(range(len(events)))
     shifted = [replace(e, seq=e.seq + 5) for e in events]
     assert minimal_counterexample(p, shifted, shifted[-1].seq) == tuple(e.seq for e in shifted)
+
+
+@settings(PROPERTY, max_examples=300)
+@given(st.one_of(_grouped, st.builds(Once, _grouped),
+                 st.builds(Count, formulas(vocab_atoms, max_leaves=3), st.sampled_from(CMPS), st.integers(0, 10))),
+       _few_names, st.data())
+def test_sufficient_and_minimal_bit_vector_counts(formula, events, data):
+    with patch.object(counterexample, "_UNARY_MAX", 0):
+        _assert_sufficient_and_minimal(formula, events, data)
+
+
+@settings(PROPERTY, max_examples=200)
+@given(formulas(st.one_of(vocab_atoms, _globbed), max_leaves=4), _few_names, st.data())
+def test_sufficient_and_minimal_with_string_names(formula, events, data):
+    name_patterns.cache_clear()
+    try:
+        with patch.object(counterexample, "_MAX_NAME_STATES", 1):
+            _assert_sufficient_and_minimal(formula, events, data)
+    finally:
+        name_patterns.cache_clear()
+
+
+def test_overlapping_globs_use_strings():
+    globs = tuple(f"*{c}*" for c in "abcdefghijklm")
+    name_patterns.cache_clear()
+    assert name_patterns(globs) is None and name_patterns(globs[:3]) is not None
+    assert cx(Not(Match(kind="tool", globs=globs)), [ev(0, "abc")]) == (0,)
+    assert cx(Implies(Match(kind="tool", globs=globs), Once(event("confirmation"))),
+              [ev(0, "zz"), ev(1, "m")]) == (0, 1)
+
+
+def test_encoding_over_budget_keeps_every_event(monkeypatch, caplog):
+    f = Count(Match(kind="tool"), "<=", 1, by="name")
+    events = [ev(0, "ab"), ev(1, "b"), ev(2, "ab")]
+    assert cx(f, events) == (0, 2)
+    monkeypatch.setattr(counterexample, "BUDGET_S", -1)
+    assert cx(f, events) == (0, 1, 2)
+    assert "over budget: keeping all 3 events" in caplog.text
+
+
+def test_deletion_pass_over_budget_keeps_core_so_far(monkeypatch, caplog):
+    real, calls = z3.Z3_solver_check_assumptions, []
+
+    def first_only(*a):
+        calls.append(1)
+        return real(*a) if len(calls) == 1 else z3.Z3_L_UNDEF
+
+    monkeypatch.setattr(z3, "Z3_solver_check_assumptions", first_only)
+    got = cx(Implies(tool("x"), Once(event("confirmation"))), [ev(0, "y"), ev(1, "x")])
+    assert set(got) >= {0, 1} and "may not be minimal" in caplog.text
+
+
+def test_saturated_counts_match_large_bounds():
+    events = [ev(i, "a") for i in range(4)]
+    for op, bound, expected in [("<=", 2, (0, 1, 2, 3)), (">", 9, ()), ("<", 10**20, ()), ("==", 10**20, ()),
+                                ("!=", 4, (0, 1, 2, 3)), (">=", 5, ())]:
+        f = Count(Match(kind="tool"), op, bound, by="name")
+        bad = [i for i, ok in enumerate(truth(f, events)) if not ok]
+        if bad:
+            assert cx(f, events, at=bad[0]) == expected[:bad[0] + 1], (op, bound)
+        else:
+            assert expected == (), (op, bound)
+
+
+def test_check_trace_keeps_verdicts_without_counterexamples(monkeypatch, caplog):
+    a, b = compile_policy("a", parse('policy a: always not tool("drop_db")')[0]), \
+        compile_policy("b", Policy("b", "high", Count(Match(kind="tool"), "<=", 1, by="name")))
+    events = [ev(0, "drop_db"), ev(1, "x"), ev(2, "x")]
+    assert [(v.policy_id, v.at_seq, v.counterexample) for v in check_trace([a, b], events)] == [
+        ("a", 0, (0,)), ("b", 2, (1, 2))]
+    assert [(v.policy_id, v.at_seq, v.counterexample) for v in check_verdicts([a, b], events)] == [
+        ("a", 0, (0,)), ("b", 2, (0, 1, 2))]
+    monkeypatch.setattr(checker, "CHECK_BUDGET_S", -1)
+    assert [v.counterexample for v in check_trace([a, b], events)] == [(0,), (0, 1, 2)]
+    assert "check budget spent" in caplog.text
+
+
+def test_count_by_bench_case():
+    events = bench_policy.count_by_trace()
+    p = compile_policy("p", bench_policy.synthetic_policies()[2])
+    assert minimal_counterexample(p, events, events[-1].seq) == (49, 99, 149, 199)

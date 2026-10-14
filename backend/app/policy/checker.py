@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -7,6 +9,10 @@ from app.policy.counterexample import minimal_counterexample
 from app.policy.encode import first_violations
 from app.policy.events import Event
 from app.policy.monitor import plan_for
+
+log = logging.getLogger(__name__)
+
+CHECK_BUDGET_S = 30.0  # for all of one trace's counterexamples, each also bounded by counterexample.BUDGET_S
 
 
 @dataclass(frozen=True)
@@ -31,10 +37,34 @@ def compile_policy(policy_id: str, policy: Policy) -> CompiledPolicy:
 
 
 def check_trace(policies: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[Violation]:
-    firsts = first_violations([p.policy.formula for p in policies], events)
-    return [Violation(p.policy_id, p.policy.name, p.policy.severity, at, minimal_counterexample(p, events, at),
-                      f"{p.policy.name} violated at seq {at}")
-            for p, at in zip(policies, firsts) if at is not None]
+    """Verdicts never wait on counterexamples: one that fails, or would start after `CHECK_BUDGET_S`, is every
+    event up to the violation (sufficient, not minimal)."""
+    return _check(policies, events, time.monotonic() + CHECK_BUDGET_S)
+
+
+def check_verdicts(policies: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[Violation]:
+    """`check_trace` without the counterexample search."""
+    return _check(policies, events, None)
+
+
+def _check(policies: Sequence[CompiledPolicy], events: Sequence[Event], deadline: float | None) -> list[Violation]:
+    out = []
+    for p, at in zip(policies, first_violations([p.policy.formula for p in policies], events)):
+        if at is None:
+            continue
+        cx = None
+        if deadline is not None and time.monotonic() < deadline:
+            try:
+                cx = minimal_counterexample(p, events, at)
+            except Exception:
+                log.exception("counterexample for %s at seq %d failed", p.policy.name, at)
+        elif deadline is not None:
+            log.warning("check budget spent: counterexample for %s at seq %d keeps every event", p.policy.name, at)
+        if cx is None:
+            cx = tuple(e.seq for e in events if e.seq <= at)
+        out.append(Violation(p.policy_id, p.policy.name, p.policy.severity, at, cx,
+                             f"{p.policy.name} violated at seq {at}"))
+    return out
 
 
 class Monitor:

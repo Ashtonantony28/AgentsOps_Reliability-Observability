@@ -193,25 +193,35 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Result:** verify passes (2 + 121 tests). `Monitor.step` still returns first violations only (contract and snapshot unchanged) and now also sets `Monitor.failing`, the ids of every policy false at that event; `append_events` returns 403 on the first event where a `block` policy is in `failing`. New tests: every violating fixture logged then switched to block (each later violation 403, `/check` agrees, live rows match the reference on stored events), and a Hypothesis check of `failing` against `reference.evaluate` across restores. A policy that stays false once false (e.g. an unwindowed count cap logged, then switched to block) now blocks every later event of that trace, as `/check` already reported; `final` with no events still closes it. A1-M1 (SDK history) left as is: the real fix sends a prefix in `PolicyCheckIn`, a contract change.
 
 ### SG-A1.2 Bound counterexample time, never at the verdict's expense (from A1-H2)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-1
+- **Owner:** SG-A1.2/A2.1/A2.2 thread · **Status:** done · **Depends:** AUDIT-1
 - **Scope:** `check_trace` / `check_completed_trace` record every violation even when a counterexample is slow or fails (store verdicts first, or fall back to a sufficient non-minimal counterexample); a per-counterexample time budget on every solver mode, not only strings; make `count … by name/kind` counterexamples fast enough for the budget row.
 - **Acceptance:**
   - The three A1-H2 tests in `tests/audit/test_audit_1.py` pass with their `xfail` markers removed.
   - A whole-ingested 1 000-event trace with the retry-cap and nested `count by` policies stores both violations within the Celery time limit, with a sufficient counterexample (property-checked as in SG3).
   - Counterexample budget row met on a `count … by name` worst case, added to `bench_policy.py --path counterexample`.
 - **Verify:** `cd backend && pytest tests/audit -q -k "counterexample or retry_cap" && pytest tests/policy/test_counterexample.py -q && python scripts/bench_policy.py --path counterexample --assert-budget`
+- **Result:** verify passes; done together with SG-A2.1 and SG-A2.2, details under SG-A2.1. The three A1-H2 tests and A1-L2's (string budget no longer runs out) pass without markers. `check_trace` computes every verdict first; a counterexample that raises, or that would start after 30 s of counterexamples for the trace (`CHECK_BUDGET_S`), is every seq up to `at_seq`, logged. Every solver mode now has the per-counterexample budget (`BUDGET_S` = 2 s, encoding included), after which it keeps the events not yet ruled out, logged. 1 000 whole-ingested events with the retry cap and the nested `count by`: both rows stored in about 3 s, retry cap minimal (`test_long_count_by_trace_stores_every_verdict`). The `Violation` contract is unchanged, so a degraded counterexample is only flagged in the logs.
 
 ### SG-A2.1 Bounded counterexamples (AUDIT-2 A2-1 critical, A2-7)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none. Same root cause as SG-A1.2 (found independently); run both in one thread.
+- **Owner:** SG-A1.2/A2.1/A2.2 thread · **Status:** done · **Depends:** none. Same root cause as SG-A1.2 (found independently); run both in one thread.
 - **Scope:** `count … by` counterexamples are about cubic in the window (7.5 s at 200 events, 53 s at 352) and overlapping globs are 2^k. Make `minimal_counterexample` meet its budget row for those shapes, or time-box it and fall back to a sufficient (non-minimal) set, without changing the `Violation` contract.
 - **Acceptance:** `count … by name` counterexample for a 200-event window within the counterexample row (p95 ≤ 500 ms); worst case for any policy and trace ≤ 5 s with a sufficient result; 13 overlapping globs ≤ 500 ms; SG3 sufficiency/minimality property tests still pass; the bench gains a `count by` counterexample case in CI; xfail markers removed.
 - **Verify:** `cd backend && pytest tests/test_audit2.py -k "count_by_name or overlapping_globs" tests/policy/test_counterexample.py -q` · `python backend/scripts/bench_audit2.py countby 200 400` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
+- **Result:** all three pass; markers removed. `countby` 66 ms at 200 events, 108 ms at 400, 293 ms at 1 000 (was 7.5 s, 63 s, did not finish); 13 overlapping globs 49 ms (was about 2 s); `bench_audit2.py batch 500` p2 139 ms (was 53 s). Counterexample bench row p95 101 ms with the new `count by` case (it alternates p0's delete trace with p2 on `count_by_trace`).
+  - Counts saturate one past their bound and, up to 15, are encoded in unary ("at least k" literals) rather than bit-vector adders, which the SAT solver could not refute quickly; larger bounds keep the adders. `count … by` terms are quadratic, so each position's term is built only if the goal depends on it. Together these took the retry cap from 37 ms per solver call to under 1 ms.
+  - Glob-match sets are enumerated only up to 512 automaton states; past that, names fall back to the string theory, which is budgeted like every mode.
+  - New property tests: sufficiency and minimality with the bit-vector counts forced and with string names forced, plus saturation at bounds up to 10^20.
+  - Open: a nested `count … by` (e.g. `not once (count(…) by name > 3)`) is still quadratic in the window: 0.5 s at 80 events, then the 2 s budget keeps every event from about 150 events on.
 
 ### SG-A2.2 Bounded batch pipeline (AUDIT-2 A2-2 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none (pairs with SG-A2.1)
+- **Owner:** SG-A1.2/A2.1/A2.2 thread · **Status:** done · **Depends:** none (pairs with SG-A2.1)
 - **Scope:** cap events per trace and per request (413/422 with a clear code), a soft time limit on `check_completed_trace` that records an unchecked or partial result instead of losing it, a dedicated Celery queue for policy checks so alerting and anomaly tasks are never behind them, and violations of other policies stored even when one policy's counterexample is slow.
 - **Acceptance:** a trace over the cap is rejected on every ingest path; a batch check that hits the soft limit still stores each policy's violation row (empty or partial counterexample) and logs it; with two poisoned traces queued, a normal trace is checked and `evaluate_alert_rules` runs within 10 s (Celery repro in AUDIT-2.md); full backend suite green.
 - **Verify:** `cd backend && pytest -q` · AUDIT-2.md **Celery repro** with `celery -A app.celery_app worker -c 2`
+- **Result:** `pytest -q` 962 passed. Celery repro (Postgres 16, `-Q celery -c 2 --beat` and `-Q policy -c 2` workers): the normal trace was checked after 1 s (was 299 s), each 800-event poison trace in 1.4 s with both its rows (was hard-killed, 0 rows), and `evaluate_alert_rules` ran every minute throughout.
+  - Caps: `MAX_TRACE_EVENTS` = 10 000 (`app/schemas/trace.py`). `TraceIn.events`/`tool_calls` and `EventsAppendIn.events` over it are 422 `too_long` (REST, and per trace in bulk; `/ws/ingest` answers `invalid_payload`); a bulk request over it in total is 422; an append that would take a streamed trace past it is 413 `trace_too_long` with `max_events` (`/ws/ingest`: `{"ok": false, "error": "trace_too_long"}`).
+  - `check_completed_trace` has `soft_time_limit=240` (hard 300). Past the soft limit it logs an error and stores the verdicts with every-event counterexamples (`check_verdicts`, no solver), so a trace is never left with no rows.
+  - Policy checks are routed to a `policy` queue. `docker-compose*.yml` run the existing worker with `-Q celery --beat` and a new `policy-worker` with `-Q policy`; a deployment with one worker must add `-Q celery,policy` or batch checks are never consumed.
 
 ### SG-A2.3 Precheck and append after monitor-state loss (AUDIT-2 A2-3 high, A2-5)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** none
@@ -371,3 +381,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG6 done.
 - 2026-10-14: A1 done (`AUDIT-1.md`): no critical, 2 high (SG-A1.1, SG-A1.2), 1 medium, 2 low.
 - 2026-10-14: Audit A2 (performance) done: 1 critical, 2 high, 4 medium, 3 low in AUDIT-2.md; SG-A2.1 to SG-A2.4 proposed.
+- 2026-10-14: SG-A1.2, SG-A2.1 and SG-A2.2 done.

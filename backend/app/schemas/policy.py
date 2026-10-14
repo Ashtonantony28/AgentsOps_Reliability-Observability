@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
-from app.schemas.trace import EventIn
+from app.schemas.trace import MAX_TRACE_EVENTS, EventIn
 
 PolicySeverity = Literal["info", "low", "medium", "high", "critical"]
 PolicyAction = Literal["log", "alert", "block"]
@@ -89,7 +89,7 @@ class PolicyCheckOut(BaseModel):
 
 class EventsAppendIn(BaseModel):
     agent_id: str
-    events: List[EventIn]
+    events: List[EventIn] = Field(max_length=MAX_TRACE_EVENTS)
     final: bool = False
 
 

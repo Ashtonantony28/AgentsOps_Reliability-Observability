@@ -25,6 +25,8 @@ celery.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_time_limit=300,
+    # batch policy checks get their own worker, so a backlog of them never delays alerting
+    task_routes={"app.tasks.policy_tasks.*": {"queue": "policy"}},
 )
 
 celery.conf.beat_schedule = {

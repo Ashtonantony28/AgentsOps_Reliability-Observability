@@ -3,10 +3,12 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from starlette.testclient import TestClient
 
+from app.celery_app import celery
 from app.database import Base
 from app.middleware.auth import make_access_token
 from app.models import (
@@ -247,7 +249,7 @@ async def test_alert_notifications_are_dispatched(client, db, org, agent, api_ke
 async def test_celery_task_checks_publishes_and_closes_redis(monkeypatch, session_maker, db, org, agent, redis):
     calls = []
 
-    async def fake_check(s, trace_id):
+    async def fake_check(s, trace_id, counterexamples):
         calls.append(trace_id)
         return []
 
@@ -261,6 +263,33 @@ async def test_celery_task_checks_publishes_and_closes_redis(monkeypatch, sessio
     monkeypatch.setattr(policy_tasks, "async_sessionmaker", lambda *a, **k: session_maker)
     assert await asyncio.to_thread(policy_tasks.check_completed_trace.run, "t1") == 0
     assert calls == ["t1"] and closed == [True]
+
+
+async def test_celery_task_past_soft_limit_stores_verdicts(monkeypatch, session_maker, caplog):
+    calls = []
+
+    async def fake_check(s, trace_id, counterexamples):
+        calls.append(counterexamples)
+        if counterexamples:
+            raise SoftTimeLimitExceeded()
+        return ["row"]
+
+    async def fake_close():
+        pass
+
+    monkeypatch.setattr(policy_tasks, "check_and_publish", fake_check)
+    monkeypatch.setattr(policy_tasks, "close_redis", fake_close)
+    monkeypatch.setattr(policy_tasks, "async_sessionmaker", lambda *a, **k: session_maker)
+    assert await asyncio.to_thread(policy_tasks.check_completed_trace.run, "t1") == 1
+    assert calls == [True, False] and "soft time limit" in caplog.text
+
+
+def test_policy_checks_have_their_own_queue():
+    route = celery.amqp.router.route
+    assert route({}, policy_tasks.check_completed_trace.name)["queue"].name == "policy"
+    assert route({}, alert_tasks.evaluate_alert_rules.name)["queue"].name == "celery"
+    assert (policy_tasks.check_completed_trace.soft_time_limit, policy_tasks.check_completed_trace.time_limit) == \
+        (240, 300)
 
 
 async def test_metric_counts_window_severity_and_agent(db, org, agent):

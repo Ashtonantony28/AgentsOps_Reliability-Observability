@@ -13,7 +13,7 @@ from app.policy.checker import Monitor
 from app.policy.events import Event, event_inputs
 from app.redis import get_redis
 from app.schemas.policy import EventsAppendIn, PolicyCheckIn, PolicyCheckOut, ViolationOut
-from app.schemas.trace import EventIn, TraceIn
+from app.schemas.trace import MAX_TRACE_EVENTS, EventIn, TraceIn
 from app.services import trace_policy_service as tps
 from app.services.security_service import detect_pii, injection_score, mask_pii
 from app.services.violation_service import publish_violations
@@ -29,10 +29,15 @@ class PolicyViolation(Exception):
 
 class TraceConflict(Exception):
     """Appending to this trace would reorder, duplicate or reopen events (HTTP 409)."""
+    status = 409
 
     def __init__(self, code: str, message: str, **details):
         super().__init__(message)
         self.code, self.message, self.details = code, message, details
+
+
+class TraceTooLong(TraceConflict):
+    status = 413
 
 
 def _naive_utc(ts: Optional[datetime]) -> Optional[datetime]:
@@ -216,6 +221,9 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
         if [e.seq for e in req.events] != list(range(next_seq, next_seq + len(req.events))):
             raise TraceConflict("seq_conflict", f"events must continue at seq {next_seq} without gaps",
                                 expected_seq=next_seq)
+        if next_seq + len(req.events) > MAX_TRACE_EVENTS:
+            raise TraceTooLong("trace_too_long", f"a trace holds at most {MAX_TRACE_EVENTS} events",
+                               max_events=MAX_TRACE_EVENTS)
         if trace is None:
             trace = Trace(org_id=org_id, agent_id=agent.id, trace_uid=trace_uid, environment=agent.environment,
                           agent_version=agent.current_version, meta={"stream": "open"})

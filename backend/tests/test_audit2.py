@@ -37,7 +37,6 @@ def _ms(f) -> float:
     return (time.perf_counter() - t) * 1000
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2 A2-1: count-by counterexample is cubic in the window (SG-A2.1)")
 def test_count_by_name_counterexample_meets_budget():
     p = compile_policy("retry", ast.Policy("retry_cap", "medium", RETRY_CAP))
     events = retry_trace(200)
@@ -47,7 +46,6 @@ def test_count_by_name_counterexample_meets_budget():
     assert ms <= 500, f"{ms:.0f} ms for 200 events (counterexample budget p95 500 ms)"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2 A2-7: glob-match sets are enumerated exhaustively (SG-A2.1)")
 def test_overlapping_globs_counterexample_meets_budget():
     globs = tuple(f"*{c}*" for c in string.ascii_lowercase[:13])
     name_patterns.cache_clear()
