@@ -39,7 +39,6 @@ BACKTRACKING = 'policy redos severity high:\n  always not tool("' + "*a" * 7 + '
 
 # A7-1: globs compile to backtracking regexes (`.*a.*a...b`); 7 stars against 50 characters take over a second, and
 # 10 stars against a 255-character name never finish, on the API event loop
-@pytest.mark.xfail(strict=True, reason="A7-1: globs are matched by backtracking regexes, exponential in the stars")
 def test_glob_matching_is_not_exponential():
     m = Monitor([_compiled(BACKTRACKING)])
     t = time.perf_counter()
@@ -47,7 +46,6 @@ def test_glob_matching_is_not_exponential():
     assert time.perf_counter() - t < 0.1
 
 
-@pytest.mark.xfail(strict=True, reason="A7-1: /check runs the backtracking glob match on the event loop")
 async def test_check_with_a_backtracking_glob_returns_quickly(client, db, org, agent, api_key_headers):
     await _policy(db, org, BACKTRACKING, action="block")
     t = time.perf_counter()

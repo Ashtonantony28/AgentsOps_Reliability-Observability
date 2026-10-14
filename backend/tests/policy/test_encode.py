@@ -9,7 +9,7 @@ from hypothesis import given, settings
 from app.policy.ast import And, Count, Historically, Implies, Match, Not, Once, Or, Policy, Previously, Since
 from app.policy.checker import Violation, check_trace, compile_policy
 from app.policy.dsl import parse
-from app.policy.encode import TraceEncoding, attr_equal, first_violations, glob_regex, matches
+from app.policy.encode import TraceEncoding, attr_equal, first_violations, glob_match, matches
 from app.policy.events import Event
 from tests.policy.fixture_policies import BODIES, attr, event, fixture_policies, status, tool
 from tests.policy.fixtures import load_fixtures
@@ -59,7 +59,7 @@ def test_violation_fields():
     ("A*", "a", False), ("*", "", True), ("a?c", "a\nc", True), ("$", "$", True), ("^a", "^a", True),
 ])
 def test_glob(glob, name, ok):
-    assert bool(glob_regex(glob).fullmatch(name)) is ok
+    assert glob_match(glob, name) is ok
 
 
 @pytest.mark.parametrize("actual,expected,ok", [

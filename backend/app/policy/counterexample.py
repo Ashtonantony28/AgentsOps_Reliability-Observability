@@ -12,7 +12,7 @@ import z3
 
 from app.policy import ast
 from app.policy.dsl import KINDS
-from app.policy.encode import Dag, TraceEncoding, attr_equal, glob_regex
+from app.policy.encode import Dag, TraceEncoding, attr_equal, glob_match
 
 if TYPE_CHECKING:
     from app.policy.checker import CompiledPolicy
@@ -253,7 +253,7 @@ class FactEncoding(TraceEncoding):
         return self._code("n", self.blocks[self._hits(name)][0])
 
     def _hits(self, name: str) -> frozenset[str]:
-        return frozenset(g for g in self.globs if glob_regex(g).fullmatch(name))
+        return frozenset(g for g in self.globs if glob_match(g, name))
 
     def _coded(self, e: Event):
         if self.statuses:

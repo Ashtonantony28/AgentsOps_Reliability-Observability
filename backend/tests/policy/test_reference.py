@@ -1,9 +1,11 @@
 import operator
+import time
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from app.policy import encode
 from app.policy.ast import (
     And, Count, Historically, Implies, Match, Not, Once, Or, Policy, Previously, Since,
 )
@@ -55,6 +57,20 @@ def test_fixture_first_violation(fx):
 ])
 def test_glob(glob, name, ok):
     assert glob_match(glob, name) is ok
+
+
+@settings(max_examples=2000)
+@given(st.text("ab*?", max_size=6), st.text("abx", max_size=8))
+def test_glob_matchers_agree_with_naive(glob, name):
+    assert glob_match(glob, name) is encode.glob_match(glob, name) is _glob(glob, name)
+
+
+@pytest.mark.parametrize("match", [glob_match, encode.glob_match])
+def test_glob_does_not_backtrack(match):
+    glob = "*a" * 10 + "b"
+    t = time.perf_counter()
+    assert not match(glob, "a" * 255) and match(glob, "a" * 254 + "b")
+    assert time.perf_counter() - t < 0.1
 
 
 @pytest.mark.parametrize("m,e,ok", [
