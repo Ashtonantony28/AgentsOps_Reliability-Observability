@@ -34,6 +34,7 @@ async def active_policies(db: AsyncSession, org_id: str, agent_id: str, environm
     rows = (await db.execute(
         select(TracePolicy).where(
             TracePolicy.org_id == org_id, TracePolicy.enabled == True,  # noqa: E712
+            TracePolicy.archived_at.is_(None),
             or_(TracePolicy.agent_id.is_(None), TracePolicy.agent_id == agent_id),
             or_(TracePolicy.environment.is_(None), TracePolicy.environment == environment),
         ).order_by(TracePolicy.id)

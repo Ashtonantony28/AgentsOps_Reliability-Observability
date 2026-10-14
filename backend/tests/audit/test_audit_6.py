@@ -76,8 +76,7 @@ async def test_concurrent_guarded_calls_respect_a_count_policy(db, org, sdk_clie
     assert len(ran) == 1
 
 
-# A6-8: deleting a policy deletes every violation it recorded (ON DELETE CASCADE), on Postgres only
-@pytest.mark.xfail(ON_POSTGRES, strict=True, reason="A6-8: policy delete cascades to its violation history")
+# A6-8: deleting a policy deleted every violation it recorded (ON DELETE CASCADE); it now archives the policy
 async def test_deleting_a_policy_keeps_its_violation_history(client, db, org, agent, api_key_headers, auth_headers):
     p = await _policy(db, org, NEEDS_PRIOR, action="log")
     r = await client.post("/api/traces/t1/events", headers=api_key_headers,
@@ -89,8 +88,7 @@ async def test_deleting_a_policy_keeps_its_violation_history(client, db, org, ag
     assert "needs_prior" in r.text
 
 
-# A6-9: SQLite enforces no foreign keys, so the default suite cannot see A6-8 or any other cascade
-@pytest.mark.xfail(not ON_POSTGRES, strict=True, reason="A6-9: the SQLite test engine never enables foreign keys")
+# A6-9: the SQLite test engine enforced no foreign keys, so the default suite could not see A6-8
 async def test_test_database_enforces_foreign_keys(db, org, agent):
     db.add(TracePolicyViolation(
         org_id=org.id, trace_id="no-such-trace", agent_id=agent.id, policy_id="no-such-policy", policy_name="p",

@@ -9,7 +9,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 
-import app.models  # noqa: F401 - register models
+from app.models import Organization, TracePolicy
 from app.config import settings
 from app.database import Base
 
@@ -90,7 +90,7 @@ def test_migration_0002_roundtrip(pg):
         assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2]
         assert _seqs(c, "t1") == [("first", 0), ("second", 1), ("third", 2)]
         assert _seqs(c, "t2") == [("tie_a", 0), ("tie_b", 1)]
-        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0004_alert_rule_context"
+        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0005_policy_archive"
     insp = sa.inspect(pg)
     assert NEW_TABLES <= set(insp.get_table_names())
     span_cols = {col["name"]: col for col in insp.get_columns("spans")}
@@ -134,6 +134,12 @@ def test_migration_0002_roundtrip(pg):
                           " VALUES ('r1', 'o1', 'R', 'policy_violations', '>=', 1)"))
         assert c.execute(sa.text("SELECT context FROM alert_rules WHERE id = 'r1'")).scalar() == {}
 
+    _check_archive(pg)
+
+    command.downgrade(cfg, "0004_alert_rule_context")
+    with pg.connect() as c:
+        assert c.execute(sa.text("SELECT id FROM trace_policies ORDER BY id")).scalars().all() == ["p0", "p1", "p4"]
+        assert c.execute(sa.text("SELECT id FROM policy_violations ORDER BY id")).scalars().all() == ["v0", "v1"]
     command.downgrade(cfg, "0003_policy_not_null")
     assert "context" not in {col["name"] for col in sa.inspect(pg).get_columns("alert_rules")}
     command.downgrade(cfg, "0001_init")
@@ -148,6 +154,18 @@ def test_migration_0002_roundtrip(pg):
     assert NEW_TABLES <= set(sa.inspect(pg).get_table_names())
 
 
+def _check_archive(eng):
+    """At 0005: archived policies may share a name with each other and with one live policy."""
+    policy = lambda pid, archived_at=None: TracePolicy.__table__.insert().values(
+        id=pid, org_id="o1", name="Q", source="x", archived_at=archived_at)
+    with eng.begin() as c:
+        c.execute(policy("p2", datetime(2026, 1, 1)))
+        c.execute(policy("p3", datetime(2026, 1, 2)))
+        c.execute(policy("p4"))
+    with eng.begin() as c, pytest.raises(sa.exc.IntegrityError):
+        c.execute(policy("p5"))
+
+
 def _diff_table(d):
     for part in d[1:]:
         if isinstance(part, sa.Table):
@@ -160,3 +178,27 @@ def _diff_table(d):
         if isinstance(part, str):
             return part
     return None
+
+
+def test_migration_0005_on_sqlite(tmp_path, monkeypatch):
+    """The app migrates Postgres only and 0001-0004 are Postgres-only; 0005 runs both ways on SQLite too."""
+    url = f"sqlite:///{tmp_path}/m.db"
+    monkeypatch.setattr(type(settings), "db_url_sync", property(lambda _: url))
+    eng = sa.create_engine(url)
+    Base.metadata.create_all(eng)
+    cfg = Config()
+    cfg.set_main_option("script_location", str(BACKEND / "migrations"))
+    command.stamp(cfg, "head")
+    command.downgrade(cfg, "0004_alert_rule_context")
+    assert "archived_at" not in {col["name"] for col in sa.inspect(eng).get_columns("trace_policies")}
+    with eng.begin() as c:
+        c.execute(Organization.__table__.insert().values(id="o1", name="O", slug="o"))
+        c.execute(sa.text("INSERT INTO trace_policies (id, org_id, name, source, severity, action, enabled, version,"
+                          " created_at, updated_at) VALUES ('p1', 'o1', 'P', 'x', 'low', 'log', 1, 1, :t, :t)"),
+                  {"t": datetime(2026, 1, 1)})
+    command.upgrade(cfg, "head")
+    _check_archive(eng)
+    command.downgrade(cfg, "0004_alert_rule_context")
+    with eng.connect() as c:
+        assert c.execute(sa.text("SELECT id FROM trace_policies ORDER BY id")).scalars().all() == ["p1", "p4"]
+    eng.dispose()

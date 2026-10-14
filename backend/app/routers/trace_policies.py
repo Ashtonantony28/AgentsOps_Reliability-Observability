@@ -50,7 +50,8 @@ def _name_taken(name: str) -> HTTPException:
 
 
 async def _check_name_free(db: AsyncSession, org_id: str, name: str, exclude_id: str | None = None) -> None:
-    q = select(TracePolicy.id).where(TracePolicy.org_id == org_id, TracePolicy.name == name)
+    q = select(TracePolicy.id).where(TracePolicy.org_id == org_id, TracePolicy.name == name,
+                                     TracePolicy.archived_at.is_(None))
     if exclude_id:
         q = q.where(TracePolicy.id != exclude_id)
     if (await db.execute(q)).first():
@@ -67,7 +68,8 @@ async def _check_agent(db: AsyncSession, org_id: str, agent_id: str | None) -> N
 
 async def _get_policy(db: AsyncSession, org_id: str, policy_id: str) -> TracePolicy:
     p = (await db.execute(
-        select(TracePolicy).where(TracePolicy.id == policy_id, TracePolicy.org_id == org_id)
+        select(TracePolicy).where(TracePolicy.id == policy_id, TracePolicy.org_id == org_id,
+                                  TracePolicy.archived_at.is_(None))
     )).scalar_one_or_none()
     if not p:
         raise HTTPException(404, "policy_not_found")
@@ -90,10 +92,13 @@ def _audit(ctx: AuthContext, action: str, policy_id: str, details: dict) -> Audi
 
 
 @router.get("", response_model=List[TracePolicyOut])
-async def list_trace_policies(ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(
-        select(TracePolicy).where(TracePolicy.org_id == ctx.org_id).order_by(TracePolicy.name)
-    )).scalars().all()
+async def list_trace_policies(include_archived: bool = False, ctx: AuthContext = Depends(get_current_user),
+                              db: AsyncSession = Depends(get_db)):
+    q = select(TracePolicy).where(TracePolicy.org_id == ctx.org_id)
+    if not include_archived:
+        q = q.where(TracePolicy.archived_at.is_(None))
+    q = q.order_by(TracePolicy.name, TracePolicy.archived_at.is_not(None), TracePolicy.archived_at)
+    rows = (await db.execute(q)).scalars().all()
     return [TracePolicyOut.model_validate(r) for r in rows]
 
 
@@ -184,6 +189,6 @@ async def delete_trace_policy(
 ):
     p = await _get_policy(db, ctx.org_id, policy_id)
     db.add(_audit(ctx, "trace_policy_delete", p.id, {"name": p.name}))
-    await db.delete(p)
+    p.archived_at = datetime.utcnow()  # archived, not deleted, so its violations stay in alerts and reports
     await db.commit()
     return {"ok": True}
