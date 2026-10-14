@@ -1,9 +1,11 @@
+import dataclasses
 import uuid
 
 import pytest
 from sqlalchemy import func, select
 
 from app.models import Agent, AuditLog, Organization, Span, Trace, TracePolicy, TracePolicyViolation
+from app.policy import reference
 from app.policy.dsl import parse, pretty
 from tests.policy.fixtures import load_fixtures
 
@@ -194,3 +196,32 @@ async def test_precheck_predicts_the_live_block(client, db, org, agent, api_key_
         allowed = (await _check(client, api_key_headers, agent, payload, "fx")).json()["allowed"]
         r = await _append(client, api_key_headers, agent, "fx", [payload])
         assert (allowed, r.status_code) == ((True, 202) if e.seq < first_block else (False, 403)), r.text
+
+
+@pytest.mark.parametrize("fx", [f for f in load_fixtures() if f.expected], ids=lambda f: f.name)
+async def test_block_after_a_logged_violation_blocks_every_later_one(client, db, org, agent, api_key_headers, redis, fx):
+    """Policies log their first violation, then switch to block: every later violating event is a 403, the precheck
+    agrees, and live rows stay one per policy at the reference's first violation of the stored events."""
+    policies = parse(fx.source)
+    rows = [await _policy(db, org, pretty(p), action="log") for p in policies]
+    first = min(x.at_seq for x in fx.expected)
+    stored = list(fx.events[:first + 1])
+    for e in stored:
+        payload = ev(e.seq, e.name, e.kind, status=e.status, attrs=dict(e.attrs))
+        assert (await _append(client, api_key_headers, agent, "fx", [payload])).status_code == 202
+    for row in rows:
+        row.action = "block"
+    await db.commit()
+    for e in fx.events[first + 1:]:
+        e = dataclasses.replace(e, seq=len(stored))
+        violates = any(reference.evaluate(p, stored + [e])[-1:] == [e.seq] for p in policies)
+        payload = ev(e.seq, e.name, e.kind, status=e.status, attrs=dict(e.attrs))
+        allowed = (await _check(client, api_key_headers, agent, payload, "fx")).json()["allowed"]
+        r = await _append(client, api_key_headers, agent, "fx", [payload])
+        assert (allowed, r.status_code) == ((False, 403) if violates else (True, 202)), r.text
+        if not violates:
+            stored.append(e)
+    live = (await db.execute(select(TracePolicyViolation).execution_options(populate_existing=True))).scalars()
+    names = {row.id: row.name for row in rows}
+    assert sorted((names[v.policy_id], v.at_seq) for v in live) == \
+        sorted((p.name, seqs[0]) for p in policies if (seqs := reference.evaluate(p, stored)))

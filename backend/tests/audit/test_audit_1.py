@@ -23,9 +23,8 @@ def _named(n, last="x"):
            [Event(i, "tool", last, "error", {}) for i in range(n - 4, n)]
 
 
-# A1-H1: a live `block` policy stops blocking after its first recorded (non-blocked) violation
+# A1-H1 (SG-A1.1): a live `block` policy keeps blocking after its first recorded (non-blocked) violation
 
-@pytest.mark.xfail(strict=True, reason="A1-H1: Monitor.step reports a policy once, so later events are not blocked")
 async def test_block_after_action_change_still_blocks(client, db, org, agent, api_key_headers):
     p = await _policy(db, org, NO_DROP, action="log")
     assert (await _append(client, api_key_headers, agent, "u", [ev(0, "drop_db")])).status_code == 202
@@ -36,7 +35,6 @@ async def test_block_after_action_change_still_blocks(client, db, org, agent, ap
     assert r.status_code == 403, r.text
 
 
-@pytest.mark.xfail(strict=True, reason="A1-H1: a violation found while rebuilding marks the block policy done")
 async def test_block_policy_added_mid_trace_blocks_next_violation(client, db, org, agent, api_key_headers):
     assert (await _append(client, api_key_headers, agent, "u", [ev(0, "drop_db")])).status_code == 202
     await _policy(db, org, NO_DROP, action="block")

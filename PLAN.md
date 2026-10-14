@@ -183,13 +183,14 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - Open: a streamed trace sends only events, so its `output`, tokens, cost and status never reach the server (`EventsAppendIn` has no field for them). Legacy `PolicyRule` block rules (`forbid_tool`, PII, injection) are not part of the precheck. After a fatal stream rejection (403, `seq_conflict`) the SDK stops streaming that trace and the server-side trace stays open. Without `stream=True` a check has no history. Checks are rate-limited with ingest, so with the default fail-open a rate-limited org's checks allow everything. The endpoint never writes a rebuilt monitor back to Redis, so a trace whose state expired replays its spans on each check until the next append.
 
 ### SG-A1.1 Live block enforcement after a recorded violation (from A1-H1)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-1
+- **Owner:** SG-A1.1 thread · **Status:** done · **Depends:** AUDIT-1
 - **Scope:** `append_events` must block every event that violates a `block` policy, not only the policy's first violation in the trace; recording stays one row per (trace, policy, version). Likely `Monitor.step` keeps reporting first violations while blocking uses `Monitor.check`-style per-event values. Snapshot format may change (stop-and-report if it touches the `Monitor` contract).
 - **Acceptance:**
   - Both A1-H1 tests in `tests/audit/test_audit_1.py` pass with their `xfail` markers removed.
   - For every violating fixture streamed one event per request under a `block` policy that was `log` for the first violation, each later violating event is a 403 and `/check` returns `allowed: false` exactly when the append would be a 403.
   - Live rows unchanged: still one per (trace, policy, version), same `at_seq` as `check_trace`.
 - **Verify:** `cd backend && pytest tests/audit -q -k block && pytest tests/api/test_event_ingest.py tests/api/test_precheck.py -q`
+- **Result:** verify passes (2 + 121 tests). `Monitor.step` still returns first violations only (contract and snapshot unchanged) and now also sets `Monitor.failing`, the ids of every policy false at that event; `append_events` returns 403 on the first event where a `block` policy is in `failing`. New tests: every violating fixture logged then switched to block (each later violation 403, `/check` agrees, live rows match the reference on stored events), and a Hypothesis check of `failing` against `reference.evaluate` across restores. A1-M1 (SDK history) left as is: the real fix sends a prefix in `PolicyCheckIn`, a contract change.
 
 ### SG-A1.2 Bound counterexample time, never at the verdict's expense (from A1-H2)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-1

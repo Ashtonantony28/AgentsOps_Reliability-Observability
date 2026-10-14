@@ -45,15 +45,19 @@ class Monitor:
         self._plans = [plan_for(p.policy) for p in self.policies]
         self._states = [plan.initial() for plan in self._plans]
         self._done = [False] * len(self.policies)
+        self.failing: list[str] = []  # ids of the policies false at the last stepped event, violated before or not
         self.next_seq = 0
 
     def step(self, event: Event) -> list[Violation]:
         if event.seq != self.next_seq:
             raise ValueError(f"expected seq {self.next_seq}, got {event.seq}")
         self.next_seq += 1
-        out = []
+        out, self.failing = [], []
         for i, (p, plan) in enumerate(zip(self.policies, self._plans)):
-            if not plan.step(self._states[i], event) and not self._done[i]:
+            if plan.step(self._states[i], event):
+                continue
+            self.failing.append(p.policy_id)
+            if not self._done[i]:
                 self._done[i] = True
                 out.append(Violation(p.policy_id, p.policy.name, p.policy.severity, event.seq, (),
                                      f"{p.policy.name} violated at seq {event.seq}"))
