@@ -271,10 +271,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k "non_streamed or counterexample" -q` · `cd sdk && pytest -q` · `cd frontend && npx tsc --noEmit && npm test -- --run`
 
 ### SG-A4.1 Test database that does not hide missing commits (AUDIT-4 A4-1 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none (tests only)
+- **Owner:** thread SG-A4.1 · **Status:** done · **Depends:** none (tests only)
 - **Scope:** the `engine`/`session_maker` fixtures stop sharing one connection between sessions (a file-backed SQLite with a normal pool, or Postgres where CI has it), so a session sees only committed rows; tests that relied on the sharing are fixed, not the code under test. Add a test that a batch check's rows and filled-in counterexamples are visible from a fresh session.
 - **Acceptance:** `python backend/scripts/mutants_audit4.py A4-1` reports the mutant killed by the new test; full backend suite green with no code change outside `tests/`.
 - **Verify:** `cd backend && pytest -q` · `python backend/scripts/mutants_audit4.py A4-1`
+- **Result:** `engine` is a per-test SQLite file under `tmp_path` with the default pool, so each session has its own connection; no existing test relied on the sharing. `test_batch_check_commits_rows_and_counterexamples` reads a batch check's rows and filled-in counterexamples from a fresh session and kills the A4-1 mutant. For SG-A4.2: a Postgres run (A4-4) can swap the URL in this one fixture; sessions now hold real SQLite write locks, so a test that writes from two sessions at once waits up to the 30 s `timeout` instead of interleaving.
 
 ### SG-A4.2 AUDIT-4 mediums (A4-2 to A4-8)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** SG-A4.1 for A4-4 if Postgres becomes the test database
@@ -432,3 +433,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG-A1.2, SG-A2.1 and SG-A2.2 done.
 - 2026-10-14: Audit A3 (API/SDK consistency) done: 0 critical, 4 high, 7 medium, 4 low in AUDIT-3.md; SG-A3.1 to SG-A3.5 proposed (SG-A3.1 and SG-A3.5 change the interface contract).
 - 2026-10-14: Audit A4 (test coverage) done: 0 critical, 1 high, 7 medium, 4 low in AUDIT-4.md; SG-A4.1 and SG-A4.2 proposed (tests and CI only, no contract change).
+- 2026-10-14: SG-A4.1 done (test sessions no longer share a connection).

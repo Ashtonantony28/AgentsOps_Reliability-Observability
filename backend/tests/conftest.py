@@ -5,7 +5,6 @@ import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 import app.database
 import app.redis
@@ -23,12 +22,9 @@ def sample_text():
 
 
 @pytest.fixture
-async def engine():
-    eng = create_async_engine(
-        "sqlite+aiosqlite://",
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
-    )
+async def engine(tmp_path):
+    # A file database with a connection per session: a session sees only what others have committed.
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", connect_args={"timeout": 30})
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield eng

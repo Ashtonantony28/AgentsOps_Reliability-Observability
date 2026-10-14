@@ -253,6 +253,23 @@ async def test_batch_check_after_stream_adds_counterexamples(client, db, org, ag
     assert (row.mode, row.counterexample) == ("live", [1])
 
 
+async def test_batch_check_commits_rows_and_counterexamples(client, db, session_maker, org, agent, api_key_headers,
+                                                             enqueued, monkeypatch):
+    p = await _policy(db, org, CONFIRM)
+    await client.post("/api/traces/ingest", headers=api_key_headers, json={
+        "agent_id": agent.id, "tool_calls": [{"name": "search"}, {"name": "delete_user"}]})
+    (tid,) = enqueued
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "search"), ev(1, "delete_user")], final=True)
+    (streamed,) = await _rows(db, Trace, Trace.id != tid)
+    await tps.check_completed_trace(db, tid)
+    monkeypatch.setattr(tps, "check_trace", lambda ps, es: [Violation(p.id, p.name, "high", 1, (1,), "m")])
+    await tps.check_completed_trace(db, streamed.id)
+    async with session_maker() as fresh:
+        rows = await _rows(fresh, TracePolicyViolation)
+    assert sorted((r.trace_id == tid, r.mode, r.counterexample) for r in rows) == [
+        (False, "live", [1]), (True, "batch", [0, 1])]
+
+
 async def test_enqueue_failure_does_not_raise(monkeypatch, caplog):
     def boom(trace_id):
         raise ConnectionError("broker down")
