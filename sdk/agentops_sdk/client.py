@@ -10,13 +10,14 @@ from typing import Any, Optional
 
 import httpx
 
+from agentops_sdk.precheck import CheckResult, PrecheckMixin
 from agentops_sdk.trace import Trace
 from agentops_sdk.utils import append_to_disk, disk_buffer_path, drain_disk
 
 log = logging.getLogger("agentops_sdk")
 
 
-class AgentOpsClient:
+class AgentOpsClient(PrecheckMixin):
     def __init__(
         self,
         api_key: str,
@@ -26,6 +27,8 @@ class AgentOpsClient:
         agent_version: str = "1.0.0",
         flush_interval_s: float = 2.0,
         batch_size: int = 50,
+        fail_closed: bool = False,
+        check_timeout_s: float = 2.0,
     ):
         if not api_key:
             raise ValueError("api_key is required")
@@ -36,6 +39,8 @@ class AgentOpsClient:
         self.agent_version = agent_version
         self.flush_interval_s = flush_interval_s
         self.batch_size = batch_size
+        self.fail_closed = fail_closed
+        self.check_timeout_s = check_timeout_s
 
         self._queue: Queue = Queue()
         self._stop = threading.Event()
@@ -51,7 +56,7 @@ class AgentOpsClient:
 
     def trace(self, *, input: str = "", session_id: Optional[str] = None,
               agent_id: Optional[str] = None, environment: Optional[str] = None,
-              agent_version: Optional[str] = None) -> Trace:
+              agent_version: Optional[str] = None, stream: bool = False) -> Trace:
         return Trace(
             agent_id=agent_id or self.agent_id,
             environment=environment or self.environment,
@@ -59,6 +64,7 @@ class AgentOpsClient:
             session_id=session_id,
             input=input,
             _client=self,
+            stream=stream,
         )
 
     def enqueue(self, payload: dict) -> None:
@@ -121,7 +127,8 @@ _singleton: Optional[AgentOpsClient] = None
 
 def init(*, api_key: str, agent_id: str, base_url: str = "http://localhost:8000",
          environment: str = "dev", agent_version: str = "1.0.0",
-         flush_interval_s: float = 2.0, batch_size: int = 50) -> AgentOpsClient:
+         flush_interval_s: float = 2.0, batch_size: int = 50, fail_closed: bool = False,
+         check_timeout_s: float = 2.0) -> AgentOpsClient:
     global _singleton
     if _singleton is not None:
         _singleton.close()
@@ -129,19 +136,32 @@ def init(*, api_key: str, agent_id: str, base_url: str = "http://localhost:8000"
         api_key=api_key, agent_id=agent_id, base_url=base_url,
         environment=environment, agent_version=agent_version,
         flush_interval_s=flush_interval_s, batch_size=batch_size,
+        fail_closed=fail_closed, check_timeout_s=check_timeout_s,
     )
     return _singleton
 
 
 def trace(*, input: str = "", session_id: Optional[str] = None,
           agent_id: Optional[str] = None, environment: Optional[str] = None,
-          agent_version: Optional[str] = None) -> Trace:
+          agent_version: Optional[str] = None, stream: bool = False) -> Trace:
+    return _require().trace(
+        input=input, session_id=session_id, agent_id=agent_id,
+        environment=environment, agent_version=agent_version, stream=stream,
+    )
+
+
+def _require() -> AgentOpsClient:
     if _singleton is None:
         raise RuntimeError("agentops.init() must be called first")
-    return _singleton.trace(
-        input=input, session_id=session_id, agent_id=agent_id,
-        environment=environment, agent_version=agent_version,
-    )
+    return _singleton
+
+
+def check(name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
+    return _require().check(name, kind=kind, input=input, **attrs)
+
+
+async def acheck(name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
+    return await _require().acheck(name, kind=kind, input=input, **attrs)
 
 
 def atrace(*args, **kwargs) -> Trace:
