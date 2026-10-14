@@ -24,8 +24,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # archived names may repeat, which the full unique index cannot hold; their violations go with them
-    op.execute("DELETE FROM trace_policies WHERE archived_at IS NOT NULL")
+    # archived names may repeat, which the full unique index cannot hold: keep them disabled under their ids
+    op.execute("UPDATE trace_policies SET name = id, enabled = false WHERE archived_at IS NOT NULL")
     op.drop_index("ix_trace_policy_org_name", table_name="trace_policies")
     op.create_index("ix_trace_policy_org_name", "trace_policies", ["org_id", "name"], unique=True)
     with op.batch_alter_table("trace_policies") as batch:

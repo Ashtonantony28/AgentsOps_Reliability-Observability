@@ -137,8 +137,8 @@ def test_migration_0002_roundtrip(pg):
     _check_archive(pg)
 
     command.downgrade(cfg, "0004_alert_rule_context")
+    _check_unarchived(pg)
     with pg.connect() as c:
-        assert c.execute(sa.text("SELECT id FROM trace_policies ORDER BY id")).scalars().all() == ["p0", "p1", "p4"]
         assert c.execute(sa.text("SELECT id FROM policy_violations ORDER BY id")).scalars().all() == ["v0", "v1"]
     command.downgrade(cfg, "0003_policy_not_null")
     assert "context" not in {col["name"] for col in sa.inspect(pg).get_columns("alert_rules")}
@@ -164,6 +164,14 @@ def _check_archive(eng):
         c.execute(policy("p4"))
     with eng.begin() as c, pytest.raises(sa.exc.IntegrityError):
         c.execute(policy("p5"))
+
+
+def _check_unarchived(eng):
+    """After downgrading 0005: archived policies are kept, disabled and renamed to their ids."""
+    with eng.connect() as c:
+        rows = c.execute(sa.text("SELECT id, name, enabled FROM trace_policies WHERE name = 'Q' OR id IN ('p2', 'p3')"
+                                 " ORDER BY id")).all()
+    assert [tuple(r) for r in rows] == [("p2", "p2", False), ("p3", "p3", False), ("p4", "Q", True)]
 
 
 def _diff_table(d):
@@ -199,6 +207,5 @@ def test_migration_0005_on_sqlite(tmp_path, monkeypatch):
     command.upgrade(cfg, "head")
     _check_archive(eng)
     command.downgrade(cfg, "0004_alert_rule_context")
-    with eng.connect() as c:
-        assert c.execute(sa.text("SELECT id FROM trace_policies ORDER BY id")).scalars().all() == ["p1", "p4"]
+    _check_unarchived(eng)
     eng.dispose()

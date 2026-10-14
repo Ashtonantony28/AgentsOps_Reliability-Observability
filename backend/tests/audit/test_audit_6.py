@@ -1,7 +1,6 @@
 """AUDIT-6.md (API, SDK and test quality, round 2) findings as failing tests; each is xfail(strict=True) until its
 sub-goal fixes it. These run on SQLite and, in CI, on Postgres; each fails on both unless its marker says otherwise."""
 import asyncio
-import os
 import sys
 import uuid
 from pathlib import Path
@@ -23,7 +22,6 @@ from app.models import (  # noqa: E402
 from app.middleware.auth import make_access_token  # noqa: E402
 from app.policy.dsl import parse  # noqa: E402
 
-ON_POSTGRES = os.environ.get("TEST_DB") == "postgres"
 ONE_DELETE = 'policy one_delete severity high:\n  always count(tool("delete_*")) <= 1'
 NEEDS_PRIOR = 'policy needs_prior severity low:\n  always previously event("confirmation")'
 

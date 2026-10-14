@@ -69,7 +69,7 @@ async def _check_agent(db: AsyncSession, org_id: str, agent_id: str | None) -> N
 async def _get_policy(db: AsyncSession, org_id: str, policy_id: str) -> TracePolicy:
     p = (await db.execute(
         select(TracePolicy).where(TracePolicy.id == policy_id, TracePolicy.org_id == org_id,
-                                  TracePolicy.archived_at.is_(None))
+                                  TracePolicy.archived_at.is_(None)).with_for_update()
     )).scalar_one_or_none()
     if not p:
         raise HTTPException(404, "policy_not_found")
