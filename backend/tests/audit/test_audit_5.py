@@ -30,7 +30,6 @@ def _doubling_tags(levels: int) -> str:
 
 
 # A5-1: tags are inlined as shared nodes, but every checker walks the formula as a tree
-@pytest.mark.xfail(strict=True, reason="A5-1: a 750-byte policy takes exponential time in the monitor and encoder")
 def test_policy_cost_is_linear_in_source_size():
     script = f"""
 import sys

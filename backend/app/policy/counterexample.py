@@ -6,13 +6,13 @@ import re
 import time
 from collections import deque
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Hashable, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, Hashable, Sequence
 
 import z3
 
 from app.policy import ast
 from app.policy.dsl import KINDS
-from app.policy.encode import TraceEncoding, attr_equal, glob_regex
+from app.policy.encode import Dag, TraceEncoding, attr_equal, glob_regex
 
 if TYPE_CHECKING:
     from app.policy.checker import CompiledPolicy
@@ -21,13 +21,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _nodes(f: ast.Formula) -> Iterator[ast.Formula]:
-    yield f
-    if isinstance(f, (ast.And, ast.Or, ast.Implies, ast.Since)):
-        yield from _nodes(f.left)
-        yield from _nodes(f.right)
-    elif not isinstance(f, ast.Match):
-        yield from _nodes(f.pred if isinstance(f, ast.Count) else f.arg)
+def _nodes(f: ast.Formula) -> list[ast.Formula]:
+    dag = Dag()
+    dag.add(f)
+    return dag.nodes
 
 
 def _typed(v: Any) -> Hashable:
