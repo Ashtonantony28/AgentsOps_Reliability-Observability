@@ -74,11 +74,23 @@ def test_migration_0002_roundtrip(pg):
             c.execute(sa.text("INSERT INTO spans (id, trace_id, name, started_at) VALUES (:i, :t, :n, :s)"),
                       {"i": sid, "t": tid, "n": name, "s": ts})
 
+    command.upgrade(cfg, "0002_trace_policies")
+    with pg.begin() as c:  # rows written before 0003 may carry NULLs
+        c.execute(sa.text("INSERT INTO trace_policies (id, org_id, name, source, severity, created_at)"
+                          " VALUES ('p0', 'o1', 'P0', 'x', NULL, NULL)"))
+        c.execute(sa.text(
+            "INSERT INTO policy_violations (id, org_id, trace_id, agent_id, policy_id, policy_name, policy_version,"
+            " severity, at_seq, mode, detected_at)"
+            " VALUES ('v0', 'o1', 't2', 'a1', 'p0', 'P0', 1, 'low', 0, 'live', NULL)"))
+
     command.upgrade(cfg, "head")
     with pg.connect() as c:
+        p0 = c.execute(sa.text("SELECT severity, action, created_at FROM trace_policies WHERE id = 'p0'")).one()
+        v0 = c.execute(sa.text("SELECT counterexample, message, detected_at FROM policy_violations")).one()
+        assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2]
         assert _seqs(c, "t1") == [("first", 0), ("second", 1), ("third", 2)]
         assert _seqs(c, "t2") == [("tie_a", 0), ("tie_b", 1)]
-        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0002_trace_policies"
+        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0003_policy_not_null"
     insp = sa.inspect(pg)
     assert NEW_TABLES <= set(insp.get_table_names())
     span_cols = {col["name"]: col for col in insp.get_columns("spans")}
@@ -97,12 +109,26 @@ def test_migration_0002_roundtrip(pg):
         diff = compare_metadata(MigrationContext.configure(c), Base.metadata)
     touched = NEW_TABLES | {"spans"}
     structural = [d for d in diff if not isinstance(d, list) and _diff_table(d) in touched]
-    assert structural == [], structural  # nullability drift (list entries) is repo-wide, as in 0001
+    assert structural == [], structural
+    ours = lambda t, col: t in NEW_TABLES or (t == "spans" and col in ("seq", "attrs"))
+    nullable = [m[2:4] for d in diff if isinstance(d, list) for m in d if m[0] == "modify_nullable" and ours(*m[2:4])]
+    assert nullable == [], nullable
 
     with pg.begin() as c, pytest.raises(sa.exc.IntegrityError):
         c.execute(sa.text("UPDATE spans SET seq = 0 WHERE id = 's3'"))
 
-    command.downgrade(cfg, "-1")
+    with pg.begin() as c:
+        c.execute(sa.text("INSERT INTO trace_policies (id, org_id, name, source) VALUES ('p1', 'o1', 'P', 'x')"))
+        c.execute(sa.text(
+            "INSERT INTO policy_violations (id, org_id, trace_id, agent_id, policy_id, policy_name, policy_version,"
+            " severity, at_seq, mode) VALUES ('v1', 'o1', 't1', 'a1', 'p1', 'P', 1, 'high', 0, 'batch')"))
+        p1 = c.execute(sa.text("SELECT severity, action FROM trace_policies WHERE id = 'p1'")).one()
+        assert p1 == ("medium", "log")
+        ce, msg, det = c.execute(sa.text(
+            "SELECT counterexample, message, detected_at FROM policy_violations WHERE id = 'v1'")).one()
+        assert (ce, msg) == ([], "") and det is not None
+
+    command.downgrade(cfg, "0001_init")
     insp = sa.inspect(pg)
     assert not NEW_TABLES & set(insp.get_table_names())
     assert {"seq", "attrs"}.isdisjoint(col["name"] for col in insp.get_columns("spans"))

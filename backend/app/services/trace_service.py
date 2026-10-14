@@ -2,7 +2,7 @@ import json
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from redis.exceptions import LockError
 from sqlalchemy import func, select
@@ -41,35 +41,46 @@ def _naive_utc(ts: Optional[datetime]) -> Optional[datetime]:
 
 async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: TraceIn,
                             events: Optional[list[EventIn]] = None) -> Optional[str]:
+    """Raises on the first matching `block` rule; otherwise returns the first warning, if any."""
     events = event_inputs(trace) if events is None else events
     rules = (await db.execute(
         select(PolicyRule).where(PolicyRule.org_id == org_id, PolicyRule.enabled == True)  # noqa
     )).scalars().all()
+    note = None
     for r in rules:
         rule = r.rule or {}
         if rule.get("agent_id") and rule["agent_id"] != agent.id:
             continue
         if rule.get("environment") and rule["environment"] != trace.environment:
             continue
-        if rule.get("forbid_tool"):
-            tool = rule["forbid_tool"]
-            for ev in events:
-                if ev.kind == "tool" and ev.name == tool:
-                    if r.action == "block":
-                        raise PolicyViolation(f"tool '{tool}' forbidden by policy", r.name)
-                    return f"warn: tool {tool} flagged"
-        if rule.get("forbid_pii"):
-            if detect_pii(trace.input) or detect_pii(trace.output):
-                if r.action == "block":
-                    raise PolicyViolation("PII detected (blocked by policy)", r.name)
-                return "warn: pii detected"
-        if rule.get("block_on_injection"):
-            score, _ = injection_score(trace.input)
-            if score >= rule.get("injection_threshold", 0.34):
-                if r.action == "block":
-                    raise PolicyViolation("prompt injection detected", r.name)
-                return "warn: injection detected"
-    return None
+        hits = []
+        tool = rule.get("forbid_tool")
+        if tool and any(ev.name == tool for ev in events):  # every kind: `kind` is client-chosen
+            hits.append((f"tool '{tool}' forbidden by policy", f"warn: tool {tool} flagged"))
+        if rule.get("forbid_pii") and (detect_pii(trace.input) or detect_pii(trace.output)):
+            hits.append(("PII detected (blocked by policy)", "warn: pii detected"))
+        if rule.get("block_on_injection") and \
+                injection_score(trace.input)[0] >= rule.get("injection_threshold", 0.34):
+            hits.append(("prompt injection detected", "warn: injection detected"))
+        if hits and r.action == "block":
+            raise PolicyViolation(hits[0][0], r.name)
+        if hits and note is None:
+            note = hits[0][1]
+    return note
+
+
+def _text(payloads: list[Any]) -> str:
+    """String leaves of event payloads, so text rules can scan streamed traces."""
+    out, stack = [], list(payloads)
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            stack.extend(v.values())
+        elif isinstance(v, list):
+            stack.extend(v)
+    return "\n".join(out)
 
 
 def _events(events: list[EventIn]) -> list[Event]:
@@ -210,8 +221,10 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             await db.flush()
 
         try:
-            legacy = TraceIn.model_construct(agent_id=agent.id, environment=trace.environment, input="",
-                                             output="", events=req.events, tool_calls=[])
+            legacy = TraceIn.model_construct(agent_id=agent.id, environment=trace.environment,
+                                             input=_text([e.input for e in req.events]),
+                                             output=_text([e.output for e in req.events]),
+                                             events=req.events, tool_calls=[])
             policy_note = await evaluate_policies(db, org_id, agent, legacy, req.events)
             policies = await tps.active_policies(db, org_id, agent.id, trace.environment)
             monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)

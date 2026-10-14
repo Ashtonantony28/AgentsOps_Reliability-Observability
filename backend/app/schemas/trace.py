@@ -4,18 +4,18 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ToolCallIn(BaseModel):
-    name: str
+    name: str = Field(max_length=255)
     input: Dict[str, Any] = {}
     output: Dict[str, Any] = {}
     latency_ms: int = 0
-    status: str = "success"
+    status: str = Field("success", max_length=32)
 
 
 class EventIn(BaseModel):
     seq: int = Field(ge=0)
     kind: Literal["tool", "llm", "retrieval", "confirmation", "custom"] = "tool"
-    name: str = Field(min_length=1)
-    status: str = "success"
+    name: str = Field(min_length=1, max_length=255)
+    status: str = Field("success", max_length=32)
     input: Dict[str, Any] = {}
     output: Dict[str, Any] = {}
     attrs: Dict[str, Any] = {}
@@ -24,18 +24,18 @@ class EventIn(BaseModel):
 
 
 class TraceIn(BaseModel):
-    trace_id: Optional[str] = None
+    trace_id: Optional[str] = Field(None, max_length=128)
     agent_id: str
-    session_id: Optional[str] = None
+    session_id: Optional[str] = Field(None, max_length=128)
     input: str = ""
     output: str = ""
-    status: str = "success"
+    status: str = Field("success", max_length=32)
     latency_ms: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
-    environment: str = "dev"
-    agent_version: str = "1.0.0"
+    environment: str = Field("dev", max_length=32)
+    agent_version: str = Field("1.0.0", max_length=64)
     error_message: Optional[str] = None
     tool_calls: List[ToolCallIn] = []
     events: List[EventIn] = []
@@ -52,7 +52,7 @@ class TraceIn(BaseModel):
 
 
 class TraceBulkIn(BaseModel):
-    traces: List[TraceIn]
+    traces: List[Any]  # validated one by one so a bad trace rejects only itself
 
 
 class SpanOut(BaseModel):
