@@ -385,7 +385,7 @@ async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limi
 
 async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyCheckOut:
     """Evaluates `req.candidate` as the next event after the stored trace and `req.prefix` (their own seqs are
-    ignored); stores nothing."""
+    ignored); stores nothing. A trace at the event cap is still answered: the schema bounds the prefix."""
     agent = (await db.execute(
         select(Agent).where(Agent.id == req.agent_id, Agent.org_id == org_id)
     )).scalar_one_or_none()
@@ -408,9 +408,6 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     else:
         last = (await db.execute(select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
         monitor = await tps.precheck_monitor(db, trace.id, compiled, 0 if last is None else last + 1)
-    if monitor.next_seq + len(req.prefix) >= MAX_TRACE_EVENTS:
-        raise TraceTooLong("trace_too_long", f"a trace holds at most {MAX_TRACE_EVENTS} events",
-                           max_events=MAX_TRACE_EVENTS)
     for e in req.prefix:
         monitor.step(Event(monitor.next_seq, e.kind, e.name, e.status, dict(e.attrs)))
     c = req.candidate

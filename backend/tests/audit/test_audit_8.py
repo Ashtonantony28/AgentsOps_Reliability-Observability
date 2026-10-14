@@ -43,7 +43,6 @@ def _after_idle() -> float:
 
 
 # A8-1: once a stream stops, checks are judged on the server's events only; the SDK's undelivered ones are ignored
-@pytest.mark.xfail(strict=True, reason="A8-1: checks of a stopped stream leave out the events the SDK still holds")
 async def test_check_after_idle_close_sees_undelivered_events(db, org, sdk_client):
     await _policy(db, org, NO_EXFIL)
     async with sdk_client.trace(stream=True) as t:
@@ -58,7 +57,6 @@ async def test_check_after_idle_close_sees_undelivered_events(db, org, sdk_clien
 
 
 # A8-1: at the event cap /check answers 409, which the SDK reads as an outage and allows
-@pytest.mark.xfail(strict=True, reason="A8-1: a check of a trace at the event cap fails open")
 async def test_check_at_the_event_cap_does_not_allow(db, org, sdk_client, monkeypatch):
     monkeypatch.setattr(trace_service, "MAX_TRACE_EVENTS", 3)
     await _policy(db, org, NO_EXFIL)
@@ -161,9 +159,8 @@ def test_ws_ingest_stops_after_the_key_is_revoked(app_, api_key, agent, session_
         assert send(ws, 1)["ok"] is False
 
 
-# A8-5: /check answers 409 for trace_too_long where the append answers 413
-@pytest.mark.xfail(strict=True, reason="A8-5: /check and the append disagree on the trace_too_long status")
-async def test_check_and_append_agree_on_trace_too_long(client, agent, api_key_headers, monkeypatch):
+# A8-5: /check answered 409 for trace_too_long where the append answers 413; it now answers a trace at the cap
+async def test_check_answers_a_trace_at_the_event_cap(client, agent, api_key_headers, monkeypatch):
     monkeypatch.setattr(trace_service, "MAX_TRACE_EVENTS", 1)
     r = await client.post("/api/traces/u1/events", headers=api_key_headers,
                           json={"agent_id": agent.id, "events": [{"seq": 0, "name": "a"}]})
@@ -171,9 +168,10 @@ async def test_check_and_append_agree_on_trace_too_long(client, agent, api_key_h
     append = await client.post("/api/traces/u1/events", headers=api_key_headers,
                                json={"agent_id": agent.id, "events": [{"seq": 1, "name": "a"}]})
     check = await client.post("/api/trace-policies/check", headers=api_key_headers,
-                              json={"agent_id": agent.id, "trace_uid": "u1", "candidate": {"seq": 0, "name": "a"}})
-    assert append.json()["error"]["code"] == check.json()["error"]["code"] == "trace_too_long"  # control
-    assert check.status_code == append.status_code == 413
+                              json={"agent_id": agent.id, "trace_uid": "u1", "prefix": [{"seq": 1, "name": "a"}],
+                                    "candidate": {"seq": 0, "name": "a"}})
+    assert append.status_code == 413 and append.json()["error"]["code"] == "trace_too_long"  # control
+    assert check.status_code == 200 and check.json()["allowed"] is True
 
 
 # A8-6: a streamed trace's tool calls (add_tool_call) are never streamed, and its checks send no prefix either

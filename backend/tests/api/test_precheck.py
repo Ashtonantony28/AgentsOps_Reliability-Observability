@@ -364,15 +364,16 @@ async def test_prefix_follows_the_stored_events_and_its_seqs_are_ignored(client,
     assert await _count(db, Span) == 1
 
 
-async def test_prefix_past_the_trace_cap_is_409(client, db, org, agent, api_key_headers, monkeypatch):
+async def test_prefix_past_the_trace_cap_is_still_checked(client, db, org, agent, api_key_headers, monkeypatch):
     from app.services import trace_service
     monkeypatch.setattr(trace_service, "MAX_TRACE_EVENTS", 3)
     await _policy(db, org, NO_DROP)
     assert (await _append(client, api_key_headers, agent, "u1", [ev(0, "a")])).status_code == 202
-    r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b")], ev(2, "c"), "u1")
-    assert r.status_code == 200
-    r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b"), ev(2, "c")], ev(3, "d"), "u1")
-    assert r.status_code == 409 and r.json()["error"]["details"]["max_events"] == 3
+    r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b"), ev(2, "c"), ev(3, "d")], ev(4, "e"), "u1")
+    assert r.status_code == 200 and r.json()["allowed"] is True
+    r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b"), ev(2, "c"), ev(3, "d")], ev(4, "drop_db"),
+                            "u1")
+    assert r.json()["allowed"] is False and r.json()["violations"][0]["at_seq"] == 4
 
 
 async def test_check_uses_the_stored_traces_environment(client, db, org, agent, api_key_headers):

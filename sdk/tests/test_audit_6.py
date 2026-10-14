@@ -48,6 +48,7 @@ def test_check_after_trace_too_long_is_not_allowed(client, server):
         result = t.check("delete_account")
     assert t._dead  # control
     assert not result.allowed
+    assert [e["name"] for e in server.bodies("check")[0]["prefix"]] == ["step"]
 
 
 # A6-4: 401, 404 and 422 from /check are configuration errors, not outages, but failed open like a timeout

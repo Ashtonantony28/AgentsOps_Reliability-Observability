@@ -115,7 +115,7 @@ class Trace:
 
     def _undelivered(self) -> Optional[CheckResult]:
         """A failed check when the server lacks some of this streamed trace's events. Once it rejected some, a
-        fail-open client checks against the events the server holds instead."""
+        fail-open client checks against the events it holds, followed by the undelivered ones."""
         if self._streaming() and self._sent < len(self.events) and (not self._dead or self._client.fail_closed):
             return failed_result("trace events not delivered", self._client.fail_closed)
         return None
@@ -126,15 +126,16 @@ class Trace:
         return self._client
 
     def _check_body(self, name: str, kind: str, input: Optional[dict], attrs: dict) -> dict:
+        candidate = event_dict(len(self.events), kind, name, input=input, attrs=attrs)
         if self._streaming():
-            return check_request(self.agent_id, self.trace_id,
-                                 event_dict(len(self.events), kind, name, input=input, attrs=attrs),
-                                 environment=self.environment)
+            # a stopped stream's undelivered events go along as the prefix, after the ones the server holds
+            prefix = _bare(self.events[self._sent:]) if self._dead else []
+            return check_request(self.agent_id, self.trace_id, candidate, prefix, self.environment)
         # the server holds none of a non-streamed trace's events: they go along as the prefix, without payloads
-        prefix = ([event_dict(e["seq"], e["kind"], e["name"], e["status"], attrs=e["attrs"]) for e in self.events]
-                  or [event_dict(i, "tool", tc.name, tc.status) for i, tc in enumerate(self.tool_calls)])
-        return check_request(self.agent_id, None, event_dict(len(prefix), kind, name, input=input, attrs=attrs),
-                             prefix, self.environment)
+        prefix = _bare(self.events) or [event_dict(i, "tool", tc.name, tc.status)
+                                        for i, tc in enumerate(self.tool_calls)]
+        candidate["seq"] = len(prefix)
+        return check_request(self.agent_id, None, candidate, prefix, self.environment)
 
     def _streaming(self) -> bool:
         return self.stream and self._client is not None
@@ -280,3 +281,7 @@ class Trace:
         elif self._client is not None:
             await self._client.aenqueue(self.to_payload())
         return False
+
+
+def _bare(events: List[dict]) -> List[dict]:
+    return [event_dict(e["seq"], e["kind"], e["name"], e["status"], attrs=e["attrs"]) for e in events]
