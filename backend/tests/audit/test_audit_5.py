@@ -1,0 +1,144 @@
+"""AUDIT-5.md (round 2: correctness and performance) findings as failing tests; each is xfail(strict=True) until its
+sub-goal fixes it."""
+import logging
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+from sqlalchemy import func, select
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "sdk"))
+
+from agentops_sdk.async_client import AsyncAgentOpsClient  # noqa: E402
+from agentops_sdk.guard import guard  # noqa: E402
+from agentops_sdk.precheck import PolicyBlocked  # noqa: E402
+from app.models import Trace, TracePolicy, TracePolicyViolation  # noqa: E402
+from app.policy import reference  # noqa: E402
+from app.policy.checker import compile_policy  # noqa: E402
+from app.policy.counterexample import minimal_counterexample  # noqa: E402
+from app.policy.dsl import parse  # noqa: E402
+from app.policy.events import Event  # noqa: E402
+
+BACKEND = Path(__file__).resolve().parents[2]
+
+
+def _doubling_tags(levels: int) -> str:
+    """About 25 bytes per level; the inlined formula has 2^levels leaves but only levels + 2 distinct nodes."""
+    return ('tag t0 = tool("a")\n' + "".join(f"tag t{i} = @t{i - 1} and @t{i - 1}\n" for i in range(1, levels + 1))
+            + f"policy p severity high:\n  always not @t{levels}\n")
+
+
+# A5-1: tags are inlined as shared nodes, but every checker walks the formula as a tree
+@pytest.mark.xfail(strict=True, reason="A5-1: a 750-byte policy takes exponential time in the monitor and encoder")
+def test_policy_cost_is_linear_in_source_size():
+    script = f"""
+import sys
+sys.path.insert(0, {str(BACKEND)!r})
+from app.policy.checker import Monitor, check_trace, compile_policy
+from app.policy.dsl import PolicyParseError, parse
+from app.policy.events import Event
+try:
+    (p,) = parse({_doubling_tags(30)!r})
+except PolicyParseError:
+    sys.exit(0)  # rejecting the policy is a fix too
+c = compile_policy("p", p)
+events = [Event(i, "tool", "a", "success", {{}}) for i in range(3)]
+m = Monitor([c])
+for e in events:
+    m.step(e)
+check_trace([c], events)
+"""
+    try:
+        r = subprocess.run([sys.executable, "-c", script], timeout=10, capture_output=True, text=True)
+    except subprocess.TimeoutExpired:
+        pytest.fail("checking a 750-byte policy took over 10 s")
+    assert r.returncode == 0, r.stderr
+
+
+# A5-2: counts with a bound of 16 or more are bit-vector sums, which the deletion pass cannot shrink in budget
+@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits")
+def test_large_bound_count_counterexample_is_minimal():
+    (p,) = parse('policy cap severity high:\n  always count(tool("fetch_url")) <= 40')
+    hits = set(range(3, 200, 5)) | {199}  # 41 hits; the other events are never counted
+    events = [Event(i, "tool", "fetch_url" if i in hits else "search", "success", {}) for i in range(200)]
+    assert reference.evaluate(p, events) == [199]
+    t = time.monotonic()
+    cx = minimal_counterexample(compile_policy("cap", p), events, 199)
+    assert (cx, time.monotonic() - t < 0.5) == (tuple(sorted(hits)), True)
+
+
+# A5-3: the per-counterexample budget is checked between steps that are themselves unbounded
+@pytest.mark.xfail(strict=True, reason="A5-3: the 2 s counterexample budget overruns to about 6 s at 350 events")
+def test_counterexample_budget_is_enforced(caplog):
+    from app.policy import counterexample
+    (p,) = parse('policy p severity high:\n  always not once (count(tool(*) and status("error")) by name > 3)')
+    bad = {40, 120, 260, 349}
+    events = [Event(i, "tool", "fetch_url" if i in bad else ("search", "plan", "http_get")[i % 3],
+                    "error" if i in bad else "success", {}) for i in range(350)]
+    t = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        minimal_counterexample(compile_policy("p", p), events, 349)
+    assert time.monotonic() - t < 1.5 * counterexample.BUDGET_S
+
+
+# A5-5: one block on an append ends the stream; the SDK then skips the server for every later check
+NO_DROP = 'policy no_drop severity critical:\n  always not tool("drop_db")'
+RETRY_CAP = 'policy retry_cap severity medium:\n  always count(tool(*) and status("error")) by name <= 1'
+
+
+async def _policy(db, org, source, action="block"):
+    (p,) = parse(source)
+    db.add(TracePolicy(org_id=org.id, name=p.name, source=source, severity=p.severity, action=action))
+    await db.commit()
+
+
+@pytest.fixture
+def sdk_client(app_, api_key, agent, monkeypatch):
+    real, transport = httpx.AsyncClient, httpx.ASGITransport(app=app_)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
+    return AsyncAgentOpsClient(api_key=api_key, agent_id=agent.id, base_url="http://test")
+
+
+@pytest.mark.xfail(strict=True, reason="A5-5: after a blocked append every later guard check fails open unchecked")
+async def test_guard_still_enforced_after_a_blocked_append(db, org, sdk_client):
+    await _policy(db, org, NO_DROP)
+    await _policy(db, org, RETRY_CAP)
+
+    @guard
+    async def flaky_fetch():
+        raise TimeoutError("upstream")
+
+    @guard
+    async def drop_db():
+        return "dropped"
+
+    async with sdk_client.trace(stream=True) as t:
+        for _ in range(2):  # the check sees status "success"; the recorded event is an error
+            with pytest.raises(TimeoutError):
+                await flaky_fetch()
+        with pytest.raises(PolicyBlocked):
+            await drop_db()
+        t.add_event("llm", "answer")
+
+
+@pytest.mark.xfail(strict=True, reason="A5-5: a blocked append stores no violation, and the trace never closes")
+async def test_blocked_append_is_surfaced(db, org, sdk_client):
+    await _policy(db, org, RETRY_CAP)
+    async with sdk_client.trace(stream=True) as t:
+        t.add_event("tool", "fetch", status="error")
+        t.add_event("tool", "fetch", status="error")
+        t.add_event("llm", "answer")
+    traces = (await db.execute(select(Trace).execution_options(populate_existing=True))).scalars().all()
+    stored = (await db.execute(select(func.count()).select_from(TracePolicyViolation))).scalar_one()
+    assert (stored, [t.meta.get("stream") for t in traces]) == (1, ["final"])
+
+
+# A5-7: a deeply nested policy raises RecursionError in the parser, which the routes do not catch
+@pytest.mark.xfail(strict=True, reason="A5-7: 1000 nested 'not' is a 500, not a validation error")
+async def test_deeply_nested_policy_is_a_validation_error(client, auth_headers):
+    source = "policy deep:\n  always " + "not " * 1000 + 'tool("a")'
+    r = await client.post("/api/trace-policies/validate", headers=auth_headers, json={"source": source})
+    assert r.status_code == 200 and r.json()["ok"] is False
