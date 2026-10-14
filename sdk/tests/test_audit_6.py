@@ -17,7 +17,6 @@ def _payload(events: int) -> dict:
 
 
 # A6-1: close() and the atexit hook send at most batch_size traces; the rest are dropped
-@pytest.mark.xfail(strict=True, reason="A6-1: close() flushes one batch and drops the rest of the queue")
 def test_close_delivers_every_queued_trace(server):
     c = AgentOpsClient(api_key=f"t{uuid.uuid4().hex}", agent_id="a1", base_url="http://test",
                        flush_interval_s=3600, batch_size=2)
@@ -31,7 +30,6 @@ def test_close_delivers_every_queued_trace(server):
 
 
 # A6-2: a batch whose traces hold more than 10 000 events in total is a 422 for the whole batch, every retry
-@pytest.mark.xfail(strict=True, reason="A6-2: the SDK batches by trace count only; the server caps events per request")
 def test_bulk_requests_stay_under_the_server_event_cap(client, server):
     for _ in range(3):
         client.enqueue(_payload(4_000))

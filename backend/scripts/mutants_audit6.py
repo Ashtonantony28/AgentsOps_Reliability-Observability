@@ -4,8 +4,8 @@ import sys
 import mutants_audit4 as m
 
 m.MUTANTS = [
-    ("A6-16", "sdk/agentops_sdk/async_client.py", "                await self._post(items)\n\n    async def flush",
-     "                pass\n\n    async def flush", "sdk", m.SDK_TESTS),
+    ("A6-16", "sdk/agentops_sdk/async_client.py", "                pass\n            await self.flush()\n",
+     "                pass\n", "sdk", m.SDK_TESTS),
     ("A6-16", "sdk/agentops_sdk/precheck.py", "/api/traces/{quote(trace_uid, safe='')}/events",
      "/api/traces/{trace_uid}/events", "sdk", m.SDK_TESTS),
     ("A6-16", "sdk/agentops_sdk/trace.py", "self._sent = max(self._sent, start + n)", "self._sent = start + n",

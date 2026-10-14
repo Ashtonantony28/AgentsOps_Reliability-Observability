@@ -4,7 +4,6 @@ import asyncio
 import atexit
 import logging
 import threading
-import time
 from queue import Empty, Queue
 from typing import Any, Optional
 
@@ -12,7 +11,7 @@ import httpx
 
 from agentops_sdk.precheck import CheckResult, PrecheckMixin
 from agentops_sdk.trace import Trace
-from agentops_sdk.utils import append_to_disk, buffer_rejected, disk_buffer_path, drain_disk
+from agentops_sdk.utils import append_to_disk, batches, buffer_rejected, disk_buffer_path, drain_disk
 
 log = logging.getLogger("agentops_sdk")
 
@@ -74,9 +73,8 @@ class AgentOpsClient(PrecheckMixin):
         self._queue.put(payload)
 
     def flush(self) -> None:
-        items = self._drain()
-        if items:
-            self._post(items)
+        for batch in batches(self._drain(), self.batch_size):
+            self._post(batch)
 
     def close(self) -> None:
         if self._stop.is_set():
@@ -92,17 +90,11 @@ class AgentOpsClient(PrecheckMixin):
             try:
                 out.append(self._queue.get_nowait())
             except Empty:
-                break
-            if len(out) >= self.batch_size:
-                break
-        return out
+                return out
 
     def _loop(self) -> None:
-        while not self._stop.is_set():
-            time.sleep(self.flush_interval_s)
-            items = self._drain()
-            if items:
-                self._post(items)
+        while not self._stop.wait(self.flush_interval_s):
+            self.flush()
 
     def _post(self, items: list[dict]) -> None:
         headers = {"X-API-Key": self.api_key}
