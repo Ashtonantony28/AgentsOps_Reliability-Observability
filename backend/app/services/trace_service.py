@@ -21,10 +21,11 @@ from app.tasks.policy_tasks import enqueue_trace_check
 
 
 class PolicyViolation(Exception):
-    def __init__(self, message: str, rule_name: str):
+    def __init__(self, message: str, rule_name: str, rule_id: Optional[str] = None):
         super().__init__(message)
         self.message = message
         self.rule_name = rule_name
+        self.rule_id = rule_id
 
 
 class TraceConflict(Exception):
@@ -52,6 +53,7 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
     events = event_inputs(trace) if events is None else events
     rules = (await db.execute(
         select(PolicyRule).where(PolicyRule.org_id == org_id, PolicyRule.enabled == True)  # noqa
+        .order_by(PolicyRule.created_at, PolicyRule.id)
     )).scalars().all()
     note = None
     for r in rules:
@@ -70,10 +72,16 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
                 >= rule.get("injection_threshold", 0.34):
             hits.append(("prompt injection detected", "warn: injection detected"))
         if hits and r.action == "block":
-            raise PolicyViolation(hits[0][0], r.name)
+            raise PolicyViolation(hits[0][0], r.name, r.id)
         if hits and note is None:
             note = hits[0][1]
     return note
+
+
+def _event_trace(agent: Agent, environment: str, events: list[EventIn]) -> TraceIn:
+    """The legacy-rule view of events checked on their own (event append and precheck): no trace text."""
+    return TraceIn.model_construct(agent_id=agent.id, environment=environment, input="", output="",
+                                   events=events, tool_calls=[])
 
 
 def _strings(v: Any):
@@ -231,8 +239,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             await db.flush()
 
         try:
-            legacy = TraceIn.model_construct(agent_id=agent.id, environment=trace.environment, input="",
-                                             output="", events=req.events, tool_calls=[])
+            legacy = _event_trace(agent, trace.environment, req.events)
             policy_note = await evaluate_policies(db, org_id, agent, legacy, req.events)
             policies = await tps.active_policies(db, org_id, agent.id, trace.environment)
             monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)
@@ -293,9 +300,17 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     found = monitor.check(Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
     rows = {row.id: row for row, _ in policies}
     now = datetime.utcnow()
+    legacy = []
+    try:
+        await evaluate_policies(db, org_id, agent, _event_trace(agent, environment, [c]), [c])
+    except PolicyViolation as pv:  # a legacy block rule: the append would be a 403 too
+        legacy = [ViolationOut(
+            agent_id=agent.id, policy_id=pv.rule_id, policy_name=pv.rule_name, policy_version=1, severity="high",
+            at_seq=monitor.next_seq, counterexample=[], message=pv.message, mode="precheck", detected_at=now,
+        )]
     return PolicyCheckOut(
-        allowed=not any(rows[v.policy_id].action == "block" for v in found),
-        violations=[ViolationOut(
+        allowed=not legacy and not any(rows[v.policy_id].action == "block" for v in found),
+        violations=legacy + [ViolationOut(
             agent_id=agent.id, policy_id=v.policy_id, policy_name=v.policy_name,
             policy_version=rows[v.policy_id].version, severity=v.severity, at_seq=v.at_seq, counterexample=[],
             message=v.message, mode="precheck", detected_at=now,

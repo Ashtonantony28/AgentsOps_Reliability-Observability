@@ -47,7 +47,8 @@ if not r.allowed:
 ```
 
 `violations` lists every enabled policy the action would violate; `allowed` is `False` only when one of them
-has action `block`, i.e. exactly when the server would reject the event with a 403.
+has action `block`, i.e. exactly when the server would reject the event with a 403. A legacy block rule
+(`forbid_tool`, PII, injection) the action breaks is listed too, with the rule's id and name and severity `high`.
 
 Or guard a function (sync or async). The check runs first and raises `agentops.PolicyBlocked` (with
 `.result`) instead of calling the function; inside an active trace the call is then recorded with
