@@ -1,13 +1,13 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import AuthContext, get_current_user
-from app.models import Trace
-from app.services.report_service import org_summary, summary_to_pdf, traces_to_csv
+from app.models import Agent, Trace, TracePolicyViolation
+from app.services.report_service import org_summary, summary_to_pdf, traces_to_csv, violations_to_csv
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -42,4 +42,12 @@ async def traces_csv(ctx: AuthContext = Depends(get_current_user), db: AsyncSess
 @router.get("/violations.csv")
 async def violations_csv(ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db),
                          days: int = Query(7, ge=1, le=90)):
-    raise HTTPException(501, "not_implemented")
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    rows = (await db.execute(
+        select(TracePolicyViolation).where(TracePolicyViolation.org_id == ctx.org_id,
+                                           TracePolicyViolation.detected_at >= cutoff)
+        .order_by(TracePolicyViolation.detected_at.desc()).limit(20000)
+    )).scalars().all()
+    names = dict((await db.execute(select(Agent.id, Agent.name).where(Agent.org_id == ctx.org_id))).all())
+    return Response(violations_to_csv(rows, names), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=violations.csv"})

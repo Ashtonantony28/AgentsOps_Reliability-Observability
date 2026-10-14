@@ -15,6 +15,7 @@ from app.schemas.policy import EventsAppendIn
 from app.schemas.trace import EventIn, TraceIn
 from app.services import trace_policy_service as tps
 from app.services.security_service import detect_pii, injection_score, mask_pii
+from app.services.violation_service import publish_violations
 from app.tasks.policy_tasks import enqueue_trace_check
 
 
@@ -250,6 +251,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
     finally:
         with suppress(LockError):
             await lock.release()
+    await publish_violations(db, rows)
     if req.final:
         await enqueue_trace_check(trace.id)
     return trace, rows

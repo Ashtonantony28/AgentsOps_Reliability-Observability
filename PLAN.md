@@ -143,13 +143,20 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Result:** all pass locally (Postgres 16, migration test not skipped); 708 backend tests. Open: span payloads are stored unmasked on both paths (only trace text is masked); bulk ingest has no batch-size cap (unchanged); `spans` columns from `0001` keep their nullability drift (fixing it means a NOT NULL change on a large table).
 
 ### SG5a Integration: pipeline, alerts, reports
-- **Owner:** unassigned · **Status:** proposed · **Depends:** SG3, SG4
+- **Owner:** SG5a thread · **Status:** done · **Depends:** SG3, SG4
 - **Scope:** publish on `violations:{org_id}`, forward on `/ws/traces`, `AlertRule.metric = "policy_violations"`, incident on `critical`, `GET /api/traces/{id}/violations`, report summary section, PDF section, `GET /api/reports/violations.csv`, seed data with demo policies.
 - **Acceptance:**
   - Ingesting a violating fixture produces: a DB row, a Redis message received by a WS test client, and (if a matching rule exists) an `AlertEvent`.
   - PDF contains a "Policy violations" section; CSV columns match the contract.
   - Seeded demo org shows violations on first boot.
 - **Verify:** `cd backend && pytest tests/api/test_violation_pipeline.py tests/api/test_reports_violations.py -q`
+- **Result:** verify passes (45 tests); full backend suite 832 passed, migration round-trip on Postgres 16 included; frontend tsc, build and tests pass. Also checked by hand on Postgres + Redis: `python -m app.seed` on an empty DB, then a streamed violating trace gave the row, the Redis message, an `AlertEvent` and an incident.
+  - `violation_service.publish_violations` runs after the rows are committed, on the live path (`append_events`, REST and `/ws/ingest`) and after the Celery batch check (`check_and_publish`). It sends each new row as `ViolationOut` JSON on `violations:{org_id}`, then evaluates the org's enabled `policy_violations` alert rules. It never raises, so a Redis or alert failure cannot fail ingestion. `/ws/traces` subscribes to both channels before accepting the socket and wraps messages as `trace`/`violation`.
+  - Live vs batch: one row per `(trace, policy, version)`. The batch check fills the counterexample into the live row (mode stays `live`) and publishes only rows it inserted, so a violation reaches the feed and the alert rules once. Reports, CSV and `GET /api/traces/{id}/violations` read the stored rows, so they carry the batch counterexample once it has run.
+  - Alerts: `policy_violations` counts the org's violations with `detected_at` in the rule's window, filtered by the rule's agent and by `context.severity_at_least`. That needed a new `alert_rules.context` JSON column (migration `0004_alert_rule_context`, NOT NULL, default `{}`), exposed on the alert rule API and TS type and validated against the policy severities. These rules are evaluated only when new violations are stored, in a session separate from the ingest one (same dedup as other metrics). The periodic Celery evaluator skips them, so that its incident-less firing cannot dedup away the one that opens an incident. An incident (severity `critical`) opens when the rule is `critical` or when any violation that fired the alert is `critical`. Channel notifications go out in the background on the ingest path; the Celery task waits for them.
+  - `GET /api/traces/{id}/violations` is org-scoped (404 otherwise), ordered by `at_seq`. `GET /api/reports/violations.csv?days=7` (1 to 90) has the contract columns; `agent` is the agent name and `counterexample` is space-separated seqs. The summary JSON gains `policy_violations: {total, by_severity, by_policy}` and a per-agent `policy_violations` count; the PDF gains a "Policy violations" section.
+  - Seed: three demo trace policies (`confirm_before_refund` high, `no_email_after_secret` critical, `retry_cap` medium) and 24 multi-event traces over the last 6 days for Refund Bot, Sales Outreach and Support Triage. Half of them violate a policy, and their rows come from `check_trace` with counterexamples. A `Critical policy violation` alert rule is added too.
+  - Open: alert rules count violations whatever the policy's `action` (`log` and `alert` currently behave the same). Two concurrent ingests can both fire the same rule, which was already true for the existing alert path.
 
 ### SG5b Integration: UI
 - **Owner:** SG5b thread · **Status:** done · **Depends:** SG4 (API), SG5a for live events
@@ -313,3 +320,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG0b done.
 - 2026-10-14: SG3 done.
 - 2026-10-14: SG5b done.
+- 2026-10-14: SG5a done.

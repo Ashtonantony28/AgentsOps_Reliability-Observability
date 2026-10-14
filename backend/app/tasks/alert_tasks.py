@@ -47,7 +47,10 @@ def _compare(value: float, op: str, threshold: float) -> bool:
 def evaluate_alert_rules() -> dict:
     summary = {"checked": 0, "fired": 0}
     with SyncSession() as db:
-        rules = db.execute(select(AlertRule).where(AlertRule.enabled == True)).scalars().all()  # noqa
+        rules = db.execute(select(AlertRule).where(
+            AlertRule.enabled == True,  # noqa: E712
+            AlertRule.metric != "policy_violations",  # fired when violations are stored (violation_service)
+        )).scalars().all()
         for rule in rules:
             summary["checked"] += 1
             value = _compute(db, rule)

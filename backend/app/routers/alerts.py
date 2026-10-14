@@ -45,6 +45,7 @@ async def create_rule(
         runbook_url=req.runbook_url,
         dedup_minutes=req.dedup_minutes,
         enabled=req.enabled,
+        context=req.context.model_dump(exclude_none=True),
     )
     db.add(r)
     await db.commit()

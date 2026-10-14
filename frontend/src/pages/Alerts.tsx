@@ -92,6 +92,7 @@ export default function Alerts() {
             <option value="latency_avg">latency_avg</option>
             <option value="cost_per_day">cost_per_day</option>
             <option value="token_usage">token_usage</option>
+            <option value="policy_violations">policy_violations</option>
           </select>
           <select className="bg-ink-950 border border-ink-700 rounded px-2 py-1"
                   value={form.operator} onChange={(e) => setForm({ ...form, operator: e.target.value })}>

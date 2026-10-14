@@ -125,8 +125,10 @@ async def test_seeded_spans_have_seq(session_maker, db, monkeypatch):
     monkeypatch.setattr(seed, "create_async_engine", lambda *a, **k: SimpleNamespace(dispose=_noop))
     monkeypatch.setattr(seed, "async_sessionmaker", lambda *a, **k: session_maker)
     await seed.seed()
-    spans = (await db.execute(select(Span))).scalars().all()
-    assert spans and all(s.seq == 0 for s in spans)
+    seqs: dict[str, list[int]] = {}
+    for s in (await db.execute(select(Span).order_by(Span.seq))).scalars().all():
+        seqs.setdefault(s.trace_id, []).append(s.seq)
+    assert seqs and all(v == list(range(len(v))) for v in seqs.values())
 
 
 async def test_bulk_rejects_only_the_bad_trace(client, db, agent, api_key_headers):

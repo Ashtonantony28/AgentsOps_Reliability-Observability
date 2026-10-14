@@ -17,7 +17,7 @@ class AlertRule(Base):
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
     agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
-    metric: Mapped[str] = mapped_column(String(64))  # error_rate|latency_p95|cost_per_day|eval_score
+    metric: Mapped[str] = mapped_column(String(64))  # error_rate|latency_p95|cost_per_day|eval_score|policy_violations
     operator: Mapped[str] = mapped_column(String(8))  # >|>=|<|<=|==
     threshold: Mapped[float] = mapped_column(Float)
     window_minutes: Mapped[int] = mapped_column(Integer, default=15)
@@ -26,6 +26,7 @@ class AlertRule(Base):
     runbook_url: Mapped[str] = mapped_column(String, default="")
     dedup_minutes: Mapped[int] = mapped_column(Integer, default=30)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    context: Mapped[dict] = mapped_column(JSON, default=dict)  # policy_violations: {"severity_at_least": ...}
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     events = relationship("AlertEvent", back_populates="rule", cascade="all, delete-orphan")

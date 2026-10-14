@@ -43,17 +43,16 @@ async def ws_traces_feed(
     websocket: WebSocket,
     token: str | None = Query(default=None),
 ):
-    """Live trace feed (JWT-authed). Streams pubsub events for the org."""
+    """Live trace feed (JWT-authed). Streams the org's trace and policy-violation pubsub messages."""
     org_id, _mode = await _authenticate_ws(token, None)
     if not org_id:
         await websocket.close(code=4401)
         return
-    await websocket.accept()
-    r = get_redis()
-    pubsub = r.pubsub()
-    channel = f"traces:{org_id}"
-    await pubsub.subscribe(channel)
+    pubsub = get_redis().pubsub()
+    channels = {f"traces:{org_id}": "trace", f"violations:{org_id}": "violation"}
     try:
+        await pubsub.subscribe(*channels)  # before accept, so nothing published after the handshake is missed
+        await websocket.accept()
         # heartbeat task
         async def heartbeat():
             while True:
@@ -68,17 +67,19 @@ async def ws_traces_feed(
             async for msg in pubsub.listen():
                 if msg.get("type") != "message":
                     continue
-                data = msg.get("data")
+                channel, data = msg.get("channel"), msg.get("data")
+                if isinstance(channel, bytes):
+                    channel = channel.decode()
                 if isinstance(data, bytes):
                     data = data.decode()
-                await websocket.send_text(json.dumps({"type": "trace", "data": json.loads(data)}))
+                await websocket.send_text(json.dumps({"type": channels[channel], "data": json.loads(data)}))
         finally:
             hb.cancel()
     except WebSocketDisconnect:
         pass
     finally:
         try:
-            await pubsub.unsubscribe(channel)
+            await pubsub.unsubscribe(*channels)
             await pubsub.close()
         except Exception:
             pass
