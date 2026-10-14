@@ -224,16 +224,18 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - Policy checks are routed to a `policy` queue. `docker-compose*.yml` run the existing worker with `-Q celery --beat` and a new `policy-worker` with `-Q policy`; a deployment with one worker must add `-Q celery,policy` or batch checks are never consumed.
 
 ### SG-A2.3 Precheck and append after monitor-state loss (AUDIT-2 A2-3 high, A2-5)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Owner:** SG-A2.3/A2.4 thread · **Status:** done · **Depends:** none
 - **Scope:** after the Redis monitor state is gone, a trace is replayed from spans at most once (precheck writes the rebuilt state back, or an equivalent), the replay loads only the columns the checker needs, and rebuilds are bounded so a Redis restart can't stampede.
 - **Acceptance:** `test_precheck_after_state_loss_replays_spans_once` passes; after `FLUSHDB`, the second and later prechecks on a 5 000-event trace are within the precheck row over HTTP (`load_e2e.py flush`); SG6 precheck semantics (stores nothing user-visible, `allowed` rule) unchanged.
 - **Verify:** `cd backend && pytest tests/test_audit2.py -k precheck tests/api/test_precheck.py -q` · `python backend/scripts/load_e2e.py setup && python backend/scripts/load_e2e.py flush --traces 10 --prefix 5000`
+- **Result:** verify passes (1 + 68 tests). A precheck that finds the Redis state missing or stale rebuilds it once per trace (Redis lock, re-read after waiting) and caches it under its own key, `policy:precheck:{trace_id}`; prechecks read the append path's key first, then that one. The cache never stands in for the append path's state, whose rebuild records the violations it finds (tested: a policy added while the state was gone still gets its live row). `final` deletes both keys. Rebuilds select only the span columns the checker reads and at most `MAX_CONCURRENT_REBUILDS = 4` run at once per process, on the append and precheck paths. Measured on Postgres + Redis, `uvicorn --workers 2`, after `FLUSHDB` on 5 000-event traces: the first precheck per trace 160–180 ms sequential (was 274–316 ms on every check); later checks p50 13.8 / p95 16.3 ms sequential, the same as with the state never lost (13.2 / 17.0 ms on this shared box; the in-process row is 3.7 ms p95); `load_e2e.py flush` now reports first and later checks separately (later: p95 66 ms at 10 concurrent traces, vs 1 785 ms). SG6 semantics unchanged. Open: Redis in `docker-compose*.yml` still has no `maxmemory`/persistence policy (A2-5), and the first append to each open trace after a restart still replays it once.
 
 ### SG-A2.4 AUDIT-2 mediums (A2-4, A2-6)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Owner:** SG-A2.3/A2.4 thread · **Status:** done · **Depends:** none
 - **Scope:** serialise `policy_violations` alert firing per rule (one `AlertEvent` and incident per rule per dedup window under concurrent ingests); bound `count … by name` monitor state per trace (documented behaviour past the bound).
 - **Acceptance:** `test_concurrent_violations_fire_a_rule_once` and `test_ingest_step_with_many_distinct_names_meets_budget` pass; the race repro in AUDIT-2.md A2-4 gives exactly one alert on Postgres.
 - **Verify:** `cd backend && pytest tests/test_audit2.py tests/api/test_violation_pipeline.py tests/policy/test_monitor.py -q`
+- **Result:** verify passes (both audit tests unmarked; A2-1/A2-7 still xfail for SG-A2.1). A2-4: after the unlocked dedup check passes, firing a `policy_violations` rule takes an in-process lock per rule and `SELECT … FOR UPDATE` on the rule's row (held until `fire_alert` commits), then re-checks `already_firing`. AUDIT-2's race (20 concurrent `drop_db` appends, one critical rule) gave 2, 2, 1 alerts on Postgres before and 1 alert and 1 incident in each of 6 runs after, with 4 workers. A2-6: a `count … by` node keeps exact counts for its first `MAX_GROUPS = 1000` values with a hit (zero counts are no longer stored); later values share one overflow counter, giving bounds on their count. When the bounds don't settle the comparison, the policy is false at that event and every later one, so nothing is missed (Hypothesis-checked against `reference.evaluate` with the bound at 0–3, across restores) at the cost of extra violations, and blocks under a `block` policy, on traces past 1 000 distinct counted names. Snapshot at 50 000 distinct names: 13 KB, restore+step+snapshot p95 0.4 ms (was 722 KB, 72 ms). The batch check stays exact.
 
 ## Audits (after SG5b; SG6 included if built)
 
@@ -381,4 +383,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG6 done.
 - 2026-10-14: A1 done (`AUDIT-1.md`): no critical, 2 high (SG-A1.1, SG-A1.2), 1 medium, 2 low.
 - 2026-10-14: Audit A2 (performance) done: 1 critical, 2 high, 4 medium, 3 low in AUDIT-2.md; SG-A2.1 to SG-A2.4 proposed.
+- 2026-10-14: SG-A2.3 and SG-A2.4 done (A2-3, A2-4, A2-6 fixed; A2-5 partly).
 - 2026-10-14: SG-A1.2, SG-A2.1 and SG-A2.2 done.

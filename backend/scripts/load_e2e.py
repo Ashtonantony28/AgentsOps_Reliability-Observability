@@ -179,11 +179,13 @@ async def run_flush(a) -> None:
     r.samples, r.errors = [], {}
     await aioredis.from_url(settings.REDIS_URL).flushdb()
     cand = {"seq": 0, "kind": "tool", "name": "delete_user", "status": "success", "attrs": {}}
-    t0 = time.perf_counter()
-    for _ in range(a.checks):
-        await asyncio.gather(*(r.call("/api/trace-policies/check", {"agent_id": r.agent_id, "trace_uid": u,
-                                                                    "candidate": cand}) for u in uids))
-    report(f"precheck x{a.checks}, after FLUSHDB", r.samples, r.errors, time.perf_counter() - t0)
+    for n, label in ((1, "precheck, first after FLUSHDB"), (a.checks - 1, f"precheck x{a.checks - 1}, later")):
+        r.samples, r.errors = [], {}
+        t0 = time.perf_counter()
+        for _ in range(n):
+            await asyncio.gather(*(r.call("/api/trace-policies/check", {"agent_id": r.agent_id, "trace_uid": u,
+                                                                        "candidate": cand}) for u in uids))
+        report(label, r.samples, r.errors, time.perf_counter() - t0)
 
 
 async def run_poison(a) -> None:

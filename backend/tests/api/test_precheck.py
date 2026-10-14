@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import uuid
 
@@ -225,3 +226,52 @@ async def test_block_after_a_logged_violation_blocks_every_later_one(client, db,
     names = {row.id: row.name for row in rows}
     assert sorted((names[v.policy_id], v.at_seq) for v in live) == \
         sorted((p.name, seqs[0]) for p in policies if (seqs := reference.evaluate(p, stored)))
+
+
+async def _replays(monkeypatch):
+    import app.services.trace_policy_service as tps
+    replayed, real = [], tps.events_from_spans
+    monkeypatch.setattr(tps, "events_from_spans", lambda spans: replayed.append(len(spans)) or real(spans))
+    return replayed
+
+
+async def test_rebuild_after_state_loss_is_cached_until_the_next_append(client, db, org, agent, api_key_headers,
+                                                                         redis, monkeypatch):
+    await _policy(db, org, CONFIRM)
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "search"), ev(1, "fetch")])
+    await redis.flushdb()
+    replayed = await _replays(monkeypatch)
+    for _ in range(3):
+        assert (await _check(client, api_key_headers, agent, ev(2, "delete_user"), "u1")).json()["allowed"] is False
+    assert replayed == [2]
+    await _append(client, api_key_headers, agent, "u1", [ev(2, "user_confirmed", kind="confirmation")])
+    assert replayed == [2, 2]  # the append path rebuilds its own state once
+    assert await redis.keys("policy:precheck:*") == []
+    for _ in range(2):
+        assert (await _check(client, api_key_headers, agent, ev(3, "delete_user"), "u1")).json()["allowed"] is True
+    assert replayed == [2, 2]
+    await _append(client, api_key_headers, agent, "u1", [], final=True)
+    assert await redis.keys("policy:*") == []
+
+
+async def test_concurrent_prechecks_after_state_loss_rebuild_once(client, db, org, agent, api_key_headers, redis,
+                                                                  monkeypatch):
+    await _policy(db, org, NO_DROP)
+    await _append(client, api_key_headers, agent, "u1", [ev(i, "search") for i in range(50)])
+    await redis.flushdb()
+    replayed = await _replays(monkeypatch)
+    rs = await asyncio.gather(*(_check(client, api_key_headers, agent, ev(50, "drop_db"), "u1") for _ in range(5)))
+    assert [r.json()["allowed"] for r in rs] == [False] * 5
+    assert replayed == [50]
+
+
+async def test_precheck_rebuild_does_not_hide_violations_from_the_append_path(client, db, org, agent,
+                                                                              api_key_headers, redis):
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "delete_user")])
+    await redis.flushdb()
+    p = await _policy(db, org, CONFIRM, action="log")  # added while the state was gone
+    assert (await _check(client, api_key_headers, agent, ev(1, "search"), "u1")).json()["violations"] == []
+    r = await _append(client, api_key_headers, agent, "u1", [ev(1, "search")])
+    assert r.status_code == 202, r.text
+    rows = (await db.execute(select(TracePolicyViolation))).scalars().all()
+    assert [(v.policy_id, v.at_seq, v.mode) for v in rows] == [(p.id, 0, "live")]

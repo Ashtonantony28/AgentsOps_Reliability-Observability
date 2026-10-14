@@ -54,7 +54,6 @@ def test_overlapping_globs_counterexample_meets_budget():
     assert ms <= 500, f"{ms:.0f} ms for a 1-event trace and 13 globs"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2 A2-6: count-by-name state grows with distinct names (SG-A2.4)")
 def test_ingest_step_with_many_distinct_names_meets_budget():
     compiled = [compile_policy(p.name, p) for p in synthetic_policies()]
     m = Monitor(compiled)
@@ -76,8 +75,6 @@ async def _stream(client, headers, agent, uid, n):
         assert r.status_code == 202, r.text
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2 A2-3: precheck replays every span on each call after state loss "
-                                       "(SG-A2.3)")
 async def test_precheck_after_state_loss_replays_spans_once(client, db, org, agent, api_key_headers, redis,
                                                              monkeypatch):
     (p,) = parse(NO_DROP)
@@ -95,7 +92,6 @@ async def test_precheck_after_state_loss_replays_spans_once(client, db, org, age
     assert replayed == [1000], f"spans replayed per check: {replayed}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2 A2-4: concurrent ingests both pass the alert dedup check (SG-A2.4)")
 async def test_concurrent_violations_fire_a_rule_once(db, session_maker, org, agent, monkeypatch):
     db.add(AlertRule(org_id=org.id, name="any violation", metric="policy_violations", operator=">=", threshold=1,
                      window_minutes=15, dedup_minutes=30, severity="critical", context={}))

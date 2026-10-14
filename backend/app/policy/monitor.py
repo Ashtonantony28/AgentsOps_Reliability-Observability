@@ -14,6 +14,26 @@ from app.policy.events import Event
 _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">=": operator.ge,
         ">": operator.gt}
 _INIT = {"Previously": False, "Once": False, "Historically": True, "Since": False}
+MAX_GROUPS = 1000
+_OVERFLOW, _UNSURE = "\0", "\0?"
+
+
+def _count_group(groups: dict, g: str, hit: bool) -> tuple[int, int]:
+    """Bounds on the count of `g` after this event: exact for the first MAX_GROUPS values seen with a hit (event
+    names are client-chosen); later values share one overflow counter, so at least this event, at most every
+    overflow hit."""
+    if g.startswith("\0"):  # keeps client values clear of the markers
+        g = "\0" + g
+    if g in groups:
+        c = groups[g] = groups[g] + hit
+        return c, c
+    if hit and len(groups) < MAX_GROUPS:
+        groups[g] = 1
+        return 1, 1
+    hi = groups.get(_OVERFLOW, 0) + hit
+    if hit:
+        groups[_OVERFLOW] = hi
+    return int(hit), hi
 
 
 @lru_cache(maxsize=4096)
@@ -33,6 +53,7 @@ class Plan:
         self.nodes: list[tuple[str, Any, tuple[int, ...]]] = []
         self._index: dict[Any, int] = {}
         self.root = self._add(formula)[1]
+        self.count_by = [k for k, (op, f, _) in enumerate(self.nodes) if op == "Count" and f.by]
         self.digest = digest
 
     def _add(self, f: ast.Formula) -> tuple[Any, int]:
@@ -76,10 +97,14 @@ class Plan:
             elif op == "Since":
                 v[k] = state[k] = v[kids[1]] or (v[kids[0]] and state[k])
             elif op == "Count":
+                cmp = _CMP[f.op]
                 if f.by is None:
-                    c = state[k] = state[k] + v[kids[0]]
+                    state[k] += v[kids[0]]
+                    v[k] = cmp(state[k], f.bound)
                 else:
-                    g = getattr(e, f.by)
-                    c = state[k][g] = state[k].get(g, 0) + v[kids[0]]
-                v[k] = _CMP[f.op](c, f.bound)
-        return v[self.root]
+                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]])
+                    v[k] = cmp(hi, f.bound)
+                    if lo != hi and len({v[k], cmp(lo, f.bound), cmp(min(max(f.bound, lo), hi), f.bound)}) > 1:
+                        state[k][_UNSURE] = 1
+        # once a count is uncertain the policy is false at every later event: never a missed violation
+        return v[self.root] and not any(_UNSURE in state[k] for k in self.count_by)

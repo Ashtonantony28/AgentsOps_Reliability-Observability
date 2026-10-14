@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import weakref
 from typing import Sequence
 
 from sqlalchemy import or_, select
@@ -14,6 +15,7 @@ from app.services.notification_service import dispatch_alert
 
 log = logging.getLogger(__name__)
 _notifications: set[asyncio.Task] = set()
+_rule_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 async def publish_violations(db: AsyncSession, rows: Sequence[TracePolicyViolation]) -> None:
@@ -49,8 +51,15 @@ async def evaluate_violation_alerts(db: AsyncSession, rows: Sequence[TracePolicy
         value = await compute_metric_value(db, rule)
         if not compare(value, rule.operator, rule.threshold) or await already_firing(db, rule):
             continue
-        event = await fire_alert(db, rule, value, context={"violation_ids": [h.id for h in hits]},
-                                 incident=any(h.severity == "critical" for h in hits))
+        # concurrent ingests serialise here, in process and on the rule's row, then re-check; fire_alert commits
+        lock = _rule_locks.setdefault(rule.id, asyncio.Lock())
+        async with lock:
+            await db.execute(select(AlertRule.id).where(AlertRule.id == rule.id).with_for_update())
+            if await already_firing(db, rule):
+                await db.commit()  # releases the row lock before the next rule's
+                continue
+            event = await fire_alert(db, rule, value, context={"violation_ids": [h.id for h in hits]},
+                                     incident=any(h.severity == "critical" for h in hits))
         if rule.channels:
             task = asyncio.create_task(dispatch_alert(rule.channels, f"{rule.name}: {event.message}", rule.severity))
             _notifications.add(task)

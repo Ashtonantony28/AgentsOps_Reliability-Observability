@@ -288,7 +288,7 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
         monitor = Monitor(compiled)
     else:
         last = (await db.execute(select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
-        monitor, _ = await tps.load_monitor(db, trace.id, compiled, 0 if last is None else last + 1)
+        monitor = await tps.precheck_monitor(db, trace.id, compiled, 0 if last is None else last + 1)
     c = req.candidate
     found = monitor.check(Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
     rows = {row.id: row for row, _ in policies}
