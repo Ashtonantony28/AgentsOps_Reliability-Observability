@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agentops_sdk.precheck import CheckResult, check_request, event_dict, events_request
+from agentops_sdk.precheck import CheckResult, check_request, event_dict, events_request, failed_result
 from agentops_sdk.utils import gen_uid, now_ms
 
 log = logging.getLogger("agentops_sdk")
@@ -100,12 +100,19 @@ class Trace:
     def check(self, name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
         if self._streaming() and not self._client.is_async:
             self._push()
-        return self._require_client()._post_check(self._check_body(name, kind, input, attrs))
+        return self._undelivered() or self._require_client()._post_check(self._check_body(name, kind, input, attrs))
 
     async def acheck(self, name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
         if self._streaming():
             await (self._apush() if self._client.is_async else asyncio.to_thread(self._push))
-        return await self._require_client()._apost_check(self._check_body(name, kind, input, attrs))
+        return self._undelivered() or await self._require_client()._apost_check(
+            self._check_body(name, kind, input, attrs))
+
+    def _undelivered(self) -> Optional[CheckResult]:
+        """A failed check when the server is missing some of this streamed trace's events."""
+        if self._streaming() and (self._dead or self._sent < len(self.events)):
+            return failed_result("trace events not delivered", self._client.fail_closed)
+        return None
 
     def _require_client(self):
         if self._client is None:
@@ -130,29 +137,39 @@ class Trace:
             return None
         return pending, events_request(self.agent_id, pending, final)
 
-    def _settle(self, outcome: str, n: int, final: bool) -> None:
+    def _settle(self, outcome, n: int, final: bool) -> bool:
+        """Applies a push outcome; True when the server already held part of the batch and the rest should go now."""
         if outcome == "ok":
             self._sent += n
-            return
-        if outcome == "fatal":
-            self._dead = True
-            log.warning("agentops stopped streaming trace %s; dropped %d events", self.trace_id, n)
-        elif final:
-            log.warning("agentops final push failed for trace %s; %d events not delivered", self.trace_id, n)
+            return False
+        if isinstance(outcome, int) and self._sent < outcome <= self._sent + n:
+            self._sent = outcome
+            return True
+        if outcome == "retry":
+            if final:
+                log.warning("agentops final push failed for trace %s; %d events not delivered", self.trace_id, n)
+            return False
+        self._dead = True
+        log.warning("agentops stopped streaming trace %s; dropped %d events", self.trace_id, n)
+        return False
 
     def _push(self, final: bool = False) -> None:
         with self._lock:
-            batch = self._batch(final)
-            if batch is not None:
-                self._settle(self._client._send_events(self.trace_id, batch[1]), len(batch[0]), final)
+            for _ in range(2):
+                batch = self._batch(final)
+                if batch is None or not self._settle(self._client._send_events(self.trace_id, batch[1]),
+                                                     len(batch[0]), final):
+                    return
 
     async def _apush(self, final: bool = False) -> None:
         if self._alock is None:
             self._alock = asyncio.Lock()
         async with self._alock:
-            batch = self._batch(final)
-            if batch is not None:
-                self._settle(await self._client._asend_events(self.trace_id, batch[1]), len(batch[0]), final)
+            for _ in range(2):
+                batch = self._batch(final)
+                if batch is None or not self._settle(await self._client._asend_events(self.trace_id, batch[1]),
+                                                     len(batch[0]), final):
+                    return
 
     def mark_error(self, message: str):
         self.status = "error"

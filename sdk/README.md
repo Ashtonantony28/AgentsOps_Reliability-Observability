@@ -65,7 +65,9 @@ whole prefix. Without `stream=True` the server has none of the trace yet, and ch
 With `AsyncAgentOpsClient`, use `await t.acheck(...)` so pending events are pushed before the check.
 
 Streaming retries on network errors, 5xx, 429 and `409 trace_busy` (the batch stays pending and goes with the
-next push). Any other rejection (`403 policy_block`, `409 seq_conflict`, `422`, ...) drops that batch, logs a
+next push). A `409 seq_conflict` whose `expected_seq` shows the server already stored part of the batch (a reply
+lost after commit) resyncs and sends the rest. While any added event is not on the server, a check does not
+call the server and follows the failure policy below (`error="trace events not delivered"`). Any other rejection (`403 policy_block`, `409 seq_conflict`, `422`, ...) drops that batch, logs a
 warning and stops streaming that trace. Only events are streamed: trace-level fields (`output`, tokens, cost,
 `status`) are not sent for a streamed trace. A streamed trace that never adds an event is sent the normal way.
 

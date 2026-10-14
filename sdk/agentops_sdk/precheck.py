@@ -45,7 +45,7 @@ def events_request(agent_id: str, events: List[dict], final: bool) -> dict:
     return {"agent_id": agent_id, "events": events, "final": final}
 
 
-def _failed(reason: str, fail_closed: bool) -> CheckResult:
+def failed_result(reason: str, fail_closed: bool) -> CheckResult:
     log.warning("agentops policy check failed (%s); %s", reason, "blocking" if fail_closed else "allowing")
     return CheckResult(allowed=not fail_closed, error=reason)
 
@@ -53,39 +53,44 @@ def _failed(reason: str, fail_closed: bool) -> CheckResult:
 def check_result(outcome: Union[httpx.Response, BaseException], fail_closed: bool) -> CheckResult:
     """Turns a /trace-policies/check response, or the exception raised sending it, into a CheckResult."""
     if isinstance(outcome, httpx.TimeoutException):
-        return _failed("timeout", fail_closed)
+        return failed_result("timeout", fail_closed)
     if isinstance(outcome, BaseException):
-        return _failed(f"{type(outcome).__name__}: {outcome}"[:200], fail_closed)
+        return failed_result(f"{type(outcome).__name__}: {outcome}"[:200], fail_closed)
     if not outcome.is_success:
-        return _failed(f"http {outcome.status_code}", fail_closed)
+        return failed_result(f"http {outcome.status_code}", fail_closed)
     try:
         body = outcome.json()
         allowed, violations = body["allowed"], body.get("violations") or []
         if not isinstance(allowed, bool) or not isinstance(violations, list):
             raise TypeError
     except Exception:
-        return _failed("malformed response", fail_closed)
+        return failed_result("malformed response", fail_closed)
     return CheckResult(allowed=allowed, violations=violations)
 
 
-def _error_code(r: httpx.Response) -> Optional[str]:
+def _error(r: httpx.Response) -> dict:
     try:
         err = r.json().get("error")
     except Exception:
-        return None
-    return err.get("code") if isinstance(err, dict) else err
+        return {}
+    return err if isinstance(err, dict) else {"code": err}
 
 
-def push_outcome(outcome: Union[httpx.Response, BaseException]) -> str:
-    """'ok', 'retry' (keep pending events) or 'fatal' (drop the batch and stop streaming the trace)."""
+def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, int]:
+    """'ok', 'retry' (keep pending events), 'fatal' (drop the batch and stop streaming the trace), or the
+    server's expected seq on a seq conflict, so a batch stored before a lost reply can be resynced."""
     if isinstance(outcome, BaseException):
         return "retry"
     if outcome.is_success:
         return "ok"
     if outcome.status_code >= 500 or outcome.status_code == 429:
         return "retry"
-    if outcome.status_code == 409 and _error_code(outcome) == "trace_busy":
+    err = _error(outcome) if outcome.status_code == 409 else {}
+    if err.get("code") == "trace_busy":
         return "retry"
+    expected = (err.get("details") or {}).get("expected_seq") if err.get("code") == "seq_conflict" else None
+    if isinstance(expected, int) and not isinstance(expected, bool):
+        return expected
     log.warning("agentops event stream rejected: %s %s", outcome.status_code, outcome.text[:200])
     return "fatal"
 
@@ -127,7 +132,7 @@ class PrecheckMixin:
     def _events_url(self, trace_uid: str) -> str:
         return f"{self.base_url}/api/traces/{quote(trace_uid, safe='')}/events"
 
-    def _send_events(self, trace_uid: str, body: dict) -> str:
+    def _send_events(self, trace_uid: str, body: dict) -> Union[str, int]:
         try:
             with httpx.Client(timeout=10.0) as c:
                 r = c.post(self._events_url(trace_uid), json=body, headers=self._headers())
@@ -136,7 +141,7 @@ class PrecheckMixin:
             return push_outcome(e)
         return push_outcome(r)
 
-    async def _asend_events(self, trace_uid: str, body: dict) -> str:
+    async def _asend_events(self, trace_uid: str, body: dict) -> Union[str, int]:
         try:
             async with httpx.AsyncClient(timeout=10.0) as c:
                 r = await c.post(self._events_url(trace_uid), json=body, headers=self._headers())

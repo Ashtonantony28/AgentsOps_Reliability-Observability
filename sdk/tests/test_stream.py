@@ -65,9 +65,10 @@ def test_stops_streaming_on_rejection(client, server, caplog, failure):
         with client.trace(stream=True) as t:
             t.add_event("tool", "a")
             t.add_event("tool", "b")
-            t.check("c")
+            result = t.check("c")
     assert seqs(server) == [[0]]
-    assert server.routes() == ["events", "check"]
+    assert server.routes() == ["events"]  # the server lacks the trace's events, so the check fails open
+    assert result.allowed and result.error == "trace events not delivered"
     assert client._queue.empty()
     assert "stopped streaming" in caplog.text and caplog.text.count("stopped streaming") == 1
 
@@ -201,3 +202,32 @@ def test_module_trace_stream_flag(singleton, server):
     assert t.stream and seqs(server) == [[0], []]
     assert agentops_sdk.atrace(stream=True).stream
     assert c._queue.empty()
+
+
+def test_resyncs_when_the_server_already_stored_a_batch(client, server):
+    server.queue("events", (409, {"error": {"code": "seq_conflict", "message": "x", "details": {"expected_seq": 1}}}))
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert seqs(server) == [[0], [1], []]
+    assert finals(server) == [False, False, True]
+
+
+def test_resync_resends_the_rest_of_the_batch(client, server):
+    conflict = (409, {"error": {"code": "seq_conflict", "message": "x", "details": {"expected_seq": 1}}})
+    server.queue("events", (500, {}), conflict)
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert seqs(server) == [[0], [0, 1], [1], []]
+
+
+@pytest.mark.parametrize("fail_closed", [False, True])
+def test_check_with_undelivered_events_follows_failure_policy(client, server, fail_closed):
+    client.fail_closed = fail_closed
+    server.queue("events", (503, {}), (503, {}))
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        result = t.check("b")
+    assert (result.allowed, result.error) == (not fail_closed, "trace events not delivered")
+    assert "check" not in server.routes()
