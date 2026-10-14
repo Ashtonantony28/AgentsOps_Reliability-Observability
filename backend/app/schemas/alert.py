@@ -2,11 +2,17 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
+from app.schemas.policy import PolicySeverity
+
 
 class AlertChannel(BaseModel):
     type: str  # email|slack|pagerduty|webhook
     target: str  # email address or url
     name: str = ""
+
+
+class AlertRuleContext(BaseModel):
+    severity_at_least: Optional[PolicySeverity] = None  # policy_violations: count only this severity and above
 
 
 class AlertRuleCreate(BaseModel):
@@ -21,6 +27,7 @@ class AlertRuleCreate(BaseModel):
     runbook_url: str = ""
     dedup_minutes: int = 30
     enabled: bool = True
+    context: AlertRuleContext = AlertRuleContext()
 
 
 class AlertRuleUpdate(BaseModel):
@@ -33,6 +40,7 @@ class AlertRuleUpdate(BaseModel):
     runbook_url: Optional[str] = None
     dedup_minutes: Optional[int] = None
     enabled: Optional[bool] = None
+    context: Optional[AlertRuleContext] = None
 
 
 class AlertRuleOut(BaseModel):
@@ -49,6 +57,7 @@ class AlertRuleOut(BaseModel):
     runbook_url: str
     dedup_minutes: int
     enabled: bool
+    context: Dict[str, Any] = {}
     created_at: datetime
 
     class Config:

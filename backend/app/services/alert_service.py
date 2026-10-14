@@ -1,15 +1,32 @@
 from datetime import datetime, timedelta
-from typing import Tuple
+from typing import Optional, get_args
 
 import numpy as np
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AlertEvent, AlertRule, Incident, Trace
+from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicyViolation
+from app.schemas.policy import PolicySeverity
+
+SEVERITIES = get_args(PolicySeverity)  # ascending
+
+
+def severities_at_least(rule: AlertRule) -> tuple[str, ...]:
+    floor = (rule.context or {}).get("severity_at_least")
+    return SEVERITIES[SEVERITIES.index(floor):] if floor in SEVERITIES else SEVERITIES
+
+
+def policy_violations_query(rule: AlertRule, since: datetime):
+    q = select(func.count()).select_from(TracePolicyViolation).where(
+        TracePolicyViolation.org_id == rule.org_id, TracePolicyViolation.detected_at >= since,
+        TracePolicyViolation.severity.in_(severities_at_least(rule)))
+    return q.where(TracePolicyViolation.agent_id == rule.agent_id) if rule.agent_id else q
 
 
 async def compute_metric_value(db: AsyncSession, rule: AlertRule) -> float:
     window = datetime.utcnow() - timedelta(minutes=rule.window_minutes or 15)
+    if rule.metric == "policy_violations":
+        return float((await db.execute(policy_violations_query(rule, window))).scalar_one())
     q = select(Trace).where(Trace.created_at >= window, Trace.org_id == rule.org_id)
     if rule.agent_id:
         q = q.where(Trace.agent_id == rule.agent_id)
@@ -54,19 +71,20 @@ async def already_firing(db: AsyncSession, rule: AlertRule) -> bool:
     return existing is not None
 
 
-async def fire_alert(db: AsyncSession, rule: AlertRule, value: float) -> AlertEvent:
+async def fire_alert(db: AsyncSession, rule: AlertRule, value: float, context: Optional[dict] = None,
+                     incident: bool = False) -> AlertEvent:
     event = AlertEvent(
         rule_id=rule.id,
         org_id=rule.org_id,
         agent_id=rule.agent_id,
         value=value,
         message=f"{rule.metric} {rule.operator} {rule.threshold} (observed {value})",
-        context={"window_minutes": rule.window_minutes, "metric": rule.metric},
+        context={"window_minutes": rule.window_minutes, "metric": rule.metric, **(context or {})},
     )
     db.add(event)
 
     # Auto-create incident for critical
-    if rule.severity == "critical":
+    if incident or rule.severity == "critical":
         inc = Incident(
             org_id=rule.org_id,
             agent_id=rule.agent_id,

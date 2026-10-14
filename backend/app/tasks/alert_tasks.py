@@ -6,12 +6,15 @@ from sqlalchemy import select
 
 from app.celery_app import celery
 from app.models import AlertEvent, AlertRule, Trace
+from app.services.alert_service import policy_violations_query
 from app.services.notification_service import dispatch_alert
 from app.tasks._sync_db import SyncSession
 
 
 def _compute(db, rule: AlertRule) -> float:
     window = datetime.utcnow() - timedelta(minutes=rule.window_minutes or 15)
+    if rule.metric == "policy_violations":
+        return float(db.execute(policy_violations_query(rule, window)).scalar_one())
     q = select(Trace).where(Trace.created_at >= window, Trace.org_id == rule.org_id)
     if rule.agent_id:
         q = q.where(Trace.agent_id == rule.agent_id)

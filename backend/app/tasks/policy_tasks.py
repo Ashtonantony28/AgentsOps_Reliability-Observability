@@ -5,7 +5,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.celery_app import celery
 from app.config import settings
-from app.services.trace_policy_service import check_completed_trace as check_trace_policies
+from app.redis import close_redis
+from app.services.violation_service import check_and_publish, drain_notifications
 
 log = logging.getLogger(__name__)
 
@@ -18,8 +19,11 @@ def check_completed_trace(trace_id: str) -> int:
     async def _work() -> int:
         try:
             async with Session() as db:
-                return len(await check_trace_policies(db, trace_id))
+                n = len(await check_and_publish(db, trace_id))
+            await drain_notifications()
+            return n
         finally:
+            await close_redis()  # the client is bound to this event loop
             await engine.dispose()
 
     return asyncio.run(_work())

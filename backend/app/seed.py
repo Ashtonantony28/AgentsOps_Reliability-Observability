@@ -11,9 +11,78 @@ from app.config import settings
 from app.models import (
     Agent, AgentVersion, AlertEvent, AlertRule, ApiKey, AuditLog,
     EvaluationCase, EvaluationResult, EvaluationRun, EvaluationSet,
-    Incident, Organization, OrgMembership, PolicyRule, Span, Trace, User,
+    Incident, Organization, OrgMembership, PolicyRule, Span, Trace, TracePolicy, TracePolicyViolation, User,
 )
+from app.policy.checker import check_trace, compile_policy
+from app.policy.dsl import parse
+from app.policy.events import Event
 from app.services.auth_service import generate_api_key, hash_password
+
+DEMO_POLICIES = [  # (source, action)
+    ('policy confirm_before_refund severity high:\n  always tool("stripe_refund") -> once event("confirmation")',
+     "alert"),
+    ('policy no_email_after_secret severity critical:\n  always tool("send_email") -> not once tool("vault.read")',
+     "alert"),
+    ('policy retry_cap severity medium:\n  always count(tool(*) and status("error")) by name <= 3', "log"),
+]
+# agent -> event sequences (kind, name, status); the second of each pair violates a demo policy
+DEMO_SCENARIOS = {
+    "Refund Bot": [
+        [("tool", "order_lookup", "success"), ("confirmation", "user_confirmed", "success"),
+         ("tool", "stripe_refund", "success")],
+        [("tool", "order_lookup", "success"), ("tool", "stripe_refund", "success")],
+    ],
+    "Sales Outreach": [
+        [("tool", "crm_lookup", "success"), ("tool", "send_email", "success")],
+        [("tool", "vault.read", "success"), ("tool", "crm_lookup", "success"), ("tool", "send_email", "success")],
+    ],
+    "Support Triage": [
+        [("tool", "kb_lookup", "error"), ("tool", "kb_lookup", "success")],
+        [("tool", "kb_lookup", "error")] * 4 + [("tool", "web_search", "success")],
+    ],
+}
+
+
+async def seed_trace_policies(db, org: Organization, agents: list[Agent], now: datetime, repeat: int = 4) -> None:
+    """Demo trace policies plus streamed-style traces, with their violations checked as the batch check would."""
+    policies = []
+    for source, action in DEMO_POLICIES:
+        (p,) = parse(source)
+        row = TracePolicy(id=str(uuid.uuid4()), org_id=org.id, name=p.name, source=source, severity=p.severity,
+                          action=action)
+        db.add(row)
+        policies.append(compile_policy(row.id, p))
+    by_name = {a.name: a for a in agents}
+    violations = []
+    for agent_name, scenarios in DEMO_SCENARIOS.items():
+        a = by_name[agent_name]
+        for i in range(repeat):
+            for steps in scenarios:
+                ts = now - timedelta(hours=random.randint(1, 6 * 24), minutes=random.randint(0, 59))
+                tr = Trace(id=str(uuid.uuid4()), org_id=org.id, agent_id=a.id, trace_uid=str(uuid.uuid4()),
+                           status="success", input=f"{agent_name} demo task #{i}", output="done",
+                           latency_ms=200 * len(steps), environment=a.environment, agent_version="1.0.0",
+                           meta={"stream": "final"}, created_at=ts)
+                db.add(tr)
+                events = [Event(seq, kind, name, status, {}) for seq, (kind, name, status) in enumerate(steps)]
+                for e in events:
+                    at = ts + timedelta(milliseconds=200 * e.seq)
+                    db.add(Span(trace_id=tr.id, seq=e.seq, kind=e.kind, name=e.name, status=e.status,
+                                input={}, output={}, latency_ms=200, started_at=at, ended_at=at))
+                for v in check_trace(policies, events):
+                    violations.append(TracePolicyViolation(
+                        org_id=org.id, trace_id=tr.id, agent_id=a.id, policy_id=v.policy_id,
+                        policy_name=v.policy_name, policy_version=1, severity=v.severity, at_seq=v.at_seq,
+                        counterexample=list(v.counterexample), message=v.message, mode="batch",
+                        detected_at=ts + timedelta(seconds=1)))
+    await db.flush()  # no ORM relationships, so traces must be inserted before their violations
+    db.add_all(violations)
+    db.add(AlertRule(
+        org_id=org.id, agent_id=None, name="Critical policy violation", metric="policy_violations",
+        operator=">=", threshold=1, window_minutes=60, severity="critical",
+        context={"severity_at_least": "critical"}, channels=[],
+    ))
+    await db.flush()
 
 
 async def seed():
@@ -196,6 +265,8 @@ async def seed():
             timeline=[{"ts": datetime.utcnow().isoformat(), "event": "alert_fired", "detail": "error_rate=18%"}],
             narrative="Refund Bot showed elevated error rate over the last 15 minutes due to upstream timeouts.",
         ))
+
+        await seed_trace_policies(db, org, agents, now)
 
         # Policy: prod can't use stripe_refund without approval
         db.add(PolicyRule(

@@ -11,7 +11,7 @@ import numpy as np
 from app.database import get_db
 from app.middleware.auth import AuthContext, authenticate_api_key, get_current_user
 from app.middleware.rate_limit import enforce_rate_limit
-from app.models import Organization, Trace, Span, Agent
+from app.models import Organization, Trace, Span, Agent, TracePolicyViolation
 from app.schemas.policy import EventsAppendIn, EventsAppendOut, ViolationOut
 from app.schemas.trace import (
     CostBurn,
@@ -223,7 +223,16 @@ async def export_csv(
 @router.get("/{trace_id}/violations", response_model=List[ViolationOut])
 async def list_trace_violations(trace_id: str, ctx: AuthContext = Depends(get_current_user),
                                 db: AsyncSession = Depends(get_db)):
-    raise HTTPException(501, "not_implemented")
+    t = (await db.execute(
+        select(Trace.id).where(Trace.id == trace_id, Trace.org_id == ctx.org_id)
+    )).scalar_one_or_none()
+    if not t:
+        raise HTTPException(404, "trace_not_found")
+    rows = (await db.execute(
+        select(TracePolicyViolation).where(TracePolicyViolation.trace_id == trace_id)
+        .order_by(TracePolicyViolation.at_seq, TracePolicyViolation.policy_name, TracePolicyViolation.policy_version)
+    )).scalars().all()
+    return [ViolationOut.model_validate(r) for r in rows]
 
 
 @router.get("/{trace_id}", response_model=TraceDetailOut)

@@ -90,7 +90,7 @@ def test_migration_0002_roundtrip(pg):
         assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2]
         assert _seqs(c, "t1") == [("first", 0), ("second", 1), ("third", 2)]
         assert _seqs(c, "t2") == [("tie_a", 0), ("tie_b", 1)]
-        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0003_policy_not_null"
+        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0004_alert_rule_context"
     insp = sa.inspect(pg)
     assert NEW_TABLES <= set(insp.get_table_names())
     span_cols = {col["name"]: col for col in insp.get_columns("spans")}
@@ -107,10 +107,11 @@ def test_migration_0002_roundtrip(pg):
 
     with pg.connect() as c:
         diff = compare_metadata(MigrationContext.configure(c), Base.metadata)
-    touched = NEW_TABLES | {"spans"}
+    touched = NEW_TABLES | {"spans", "alert_rules"}
     structural = [d for d in diff if not isinstance(d, list) and _diff_table(d) in touched]
     assert structural == [], structural
-    ours = lambda t, col: t in NEW_TABLES or (t == "spans" and col in ("seq", "attrs"))
+    ours = lambda t, col: (t in NEW_TABLES or (t == "spans" and col in ("seq", "attrs"))
+                           or (t, col) == ("alert_rules", "context"))
     nullable = [m[2:4] for d in diff if isinstance(d, list) for m in d if m[0] == "modify_nullable" and ours(*m[2:4])]
     assert nullable == [], nullable
 
@@ -128,6 +129,13 @@ def test_migration_0002_roundtrip(pg):
             "SELECT counterexample, message, detected_at FROM policy_violations WHERE id = 'v1'")).one()
         assert (ce, msg) == ([], "") and det is not None
 
+    with pg.begin() as c:
+        c.execute(sa.text("INSERT INTO alert_rules (id, org_id, name, metric, operator, threshold)"
+                          " VALUES ('r1', 'o1', 'R', 'policy_violations', '>=', 1)"))
+        assert c.execute(sa.text("SELECT context FROM alert_rules WHERE id = 'r1'")).scalar() == {}
+
+    command.downgrade(cfg, "0003_policy_not_null")
+    assert "context" not in {col["name"] for col in sa.inspect(pg).get_columns("alert_rules")}
     command.downgrade(cfg, "0001_init")
     insp = sa.inspect(pg)
     assert not NEW_TABLES & set(insp.get_table_names())

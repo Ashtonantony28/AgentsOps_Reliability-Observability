@@ -12,6 +12,7 @@ export type AlertRule = {
   runbook_url: string;
   dedup_minutes: number;
   enabled: boolean;
+  context: { severity_at_least?: "info" | "low" | "medium" | "high" | "critical" };
   created_at: string;
 };
 
