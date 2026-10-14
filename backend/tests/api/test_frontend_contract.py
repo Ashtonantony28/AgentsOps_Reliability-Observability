@@ -18,7 +18,10 @@ MIRRORS = {"EventIn": "EventIn", "TracePolicyCreate": "TracePolicyCreate", "Trac
 
 def _calls():
     for f in sorted((FRONTEND / "api").glob("*.ts")):
-        for method, path in CALL.findall(f.read_text()):
+        text = f.read_text()
+        assert len(CALL.findall(text)) == len(re.findall(r"\bapi\.(get|post|put|patch|delete)\b", text)), \
+            f"{f.name}: a call this test cannot parse"
+        for method, path in CALL.findall(text):
             yield f.name, method, re.sub(r"\$\{[^}]+\}", "{}", path)
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import time
 import uuid
 
 import pytest
@@ -322,7 +323,8 @@ async def test_legacy_block_out_of_scope_is_allowed(client, db, org, agent, api_
 
 
 @pytest.mark.parametrize("route", ["check", "events"])
-async def test_api_key_routes_are_rate_limited(client, db, org, agent, api_key_headers, route):
+async def test_api_key_routes_are_rate_limited(client, db, org, agent, api_key_headers, route, monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 6_000_000.0)  # one rate-limit window for all three calls
     org.rate_limit_per_min = 2
     await db.commit()
 

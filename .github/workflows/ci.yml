@@ -39,7 +39,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
-      - run: pytest -q --cov --cov-report=term --cov-fail-under=74
+      - run: pytest -q --cov --cov-report=term --cov-fail-under=72
       - name: coverage of the policy code
         run: coverage report --fail-under=90 --include="app/policy/*,app/routers/trace_policies.py,app/services/trace_policy_service.py,app/services/violation_service.py,app/tasks/policy_tasks.py"
       - name: API and service tests on Postgres

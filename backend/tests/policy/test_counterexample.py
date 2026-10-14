@@ -292,7 +292,8 @@ def test_each_solver_call_is_bounded_by_the_remaining_budget(monkeypatch):
 
     monkeypatch.setattr(z3.Solver, "set", spy)
     assert cx(Implies(tool("x"), Once(event("confirmation"))), [ev(0, "y"), ev(1, "x")]) == (0, 1)
-    assert timeouts and all(0 < t <= counterexample.BUDGET_S * 1000 for t in timeouts), timeouts
+    assert timeouts and 0 < timeouts[0] <= counterexample.BUDGET_S * 1000, timeouts
+    assert timeouts == sorted(timeouts, reverse=True)  # what is left of one budget, not a fresh one per call
 
 
 def test_saturated_counts_match_large_bounds():
