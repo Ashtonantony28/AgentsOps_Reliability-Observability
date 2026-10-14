@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Agent, Trace, Span, PolicyRule, AuditLog
 from app.policy.events import event_inputs
 from app.redis import get_redis
-from app.schemas.trace import TraceIn
+from app.schemas.trace import EventIn, TraceIn
 from app.services.security_service import detect_pii, injection_score, mask_pii
 
 
@@ -20,7 +20,15 @@ class PolicyViolation(Exception):
         self.rule_name = rule_name
 
 
-async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: TraceIn) -> Optional[str]:
+def _naive_utc(ts: Optional[datetime]) -> Optional[datetime]:
+    if ts is None or ts.tzinfo is None:
+        return ts
+    return ts.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: TraceIn,
+                            events: Optional[list[EventIn]] = None) -> Optional[str]:
+    events = event_inputs(trace) if events is None else events
     rules = (await db.execute(
         select(PolicyRule).where(PolicyRule.org_id == org_id, PolicyRule.enabled == True)  # noqa
     )).scalars().all()
@@ -32,7 +40,7 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
             continue
         if rule.get("forbid_tool"):
             tool = rule["forbid_tool"]
-            for ev in event_inputs(trace):
+            for ev in events:
                 if ev.kind == "tool" and ev.name == tool:
                     if r.action == "block":
                         raise PolicyViolation(f"tool '{tool}' forbidden by policy", r.name)
@@ -57,10 +65,11 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
     )).scalar_one_or_none()
     if not agent:
         raise ValueError("agent_not_found")
+    events = event_inputs(payload)
 
     # policy enforcement
     try:
-        policy_note = await evaluate_policies(db, org_id, agent, payload)
+        policy_note = await evaluate_policies(db, org_id, agent, payload, events)
     except PolicyViolation as pv:
         db.add(AuditLog(
             org_id=org_id, actor_type="agent", actor_id=agent.id,
@@ -99,7 +108,7 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
     db.add(trace)
     await db.flush()
 
-    for ev in event_inputs(payload):
+    for ev in events:
         db.add(Span(
             trace_id=trace.id,
             seq=ev.seq,
@@ -110,7 +119,7 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
             attrs=ev.attrs or None,
             latency_ms=ev.latency_ms,
             status=ev.status,
-            started_at=ev.timestamp or datetime.utcnow(),
+            started_at=_naive_utc(ev.timestamp) or datetime.utcnow(),
             ended_at=datetime.utcnow(),
         ))
 

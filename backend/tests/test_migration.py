@@ -83,6 +83,8 @@ def test_migration_0002_roundtrip(pg):
     assert NEW_TABLES <= set(insp.get_table_names())
     span_cols = {col["name"]: col for col in insp.get_columns("spans")}
     assert span_cols["seq"]["nullable"] and span_cols["attrs"]["nullable"]
+    vcols = {col["name"]: col for col in insp.get_columns("policy_violations")}
+    assert not any(vcols[c]["nullable"] for c in ("org_id", "trace_id", "agent_id", "policy_id", "policy_name"))
     idx = {i["name"]: i for t in ("spans", "trace_policies", "policy_violations") for i in insp.get_indexes(t)}
     assert idx["ix_span_trace_seq"]["column_names"] == ["trace_id", "seq"] and idx["ix_span_trace_seq"]["unique"]
     assert idx["ix_trace_policy_org_name"]["column_names"] == ["org_id", "name"]

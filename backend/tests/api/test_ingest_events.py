@@ -177,3 +177,17 @@ def test_ws_ingest_rejects_bad_key(app_):
             with tc.websocket_connect("/ws/ingest?api_key=nope") as ws:
                 ws.receive_json()
         assert exc.value.code == 4401
+
+
+async def test_legacy_empty_tool_name_still_ingests(client, db, api_key_headers, agent):
+    r = await _ingest(client, api_key_headers, agent, tool_calls=[{"name": ""}])
+    assert r.status_code == 202, r.text
+    assert [(s.seq, s.name) for s in await _spans(db, r.json()["id"])] == [(0, "")]
+
+
+async def test_aware_event_timestamp_stored_as_naive_utc(client, db, api_key_headers, agent):
+    ev = {"seq": 0, "name": "search", "timestamp": "2026-10-14T10:00:00+02:00"}
+    r = await _ingest(client, api_key_headers, agent, events=[ev])
+    assert r.status_code == 202, r.text
+    (span,) = await _spans(db, r.json()["id"])
+    assert span.started_at.isoformat() == "2026-10-14T08:00:00"

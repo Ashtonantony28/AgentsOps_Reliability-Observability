@@ -18,8 +18,8 @@ def event_inputs(trace: TraceIn) -> list[EventIn]:
     if trace.events:
         return list(trace.events)
     return [
-        EventIn(seq=i, kind="tool", name=tc.name, status=tc.status,
-                input=tc.input, output=tc.output, latency_ms=tc.latency_ms)
+        EventIn.model_construct(seq=i, kind="tool", name=tc.name, status=tc.status, input=tc.input,
+                                output=tc.output, attrs={}, latency_ms=tc.latency_ms, timestamp=None)
         for i, tc in enumerate(trace.tool_calls)
     ]
 

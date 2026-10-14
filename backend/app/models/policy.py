@@ -39,6 +39,7 @@ class TracePolicyViolation(Base):
     trace_id: Mapped[str] = mapped_column(ForeignKey("traces.id", ondelete="CASCADE"), index=True)
     agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"))
     policy_id: Mapped[str] = mapped_column(ForeignKey("trace_policies.id", ondelete="CASCADE"), index=True)
+    policy_name: Mapped[str] = mapped_column(String(255))
     policy_version: Mapped[int] = mapped_column(Integer)
     severity: Mapped[str] = mapped_column(String(16))
     at_seq: Mapped[int] = mapped_column(Integer)

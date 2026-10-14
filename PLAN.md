@@ -267,7 +267,7 @@ Decided while turning the contract into code; frozen with the rest.
 - `CompiledPolicy(policy_id, policy, artifact)`: `artifact` is the encoder's opaque slot.
 - Counterexample "unconstrained facts": kind ranges over the 5 `EventIn` kinds; name, status and attr values (including a missing key) range over any value. Attr equality is type-strict. A counterexample need not contain `at_seq` (e.g. `not previously tool("a")`).
 - `EventIn.kind` is a literal of the 5 kinds; `status` stays free text so legacy `tool_calls` still map. `TraceIn.events` seqs must be exactly `0..n-1` (422 otherwise).
-- Storage: `spans.attrs JSON NULL` added (events need their attrs back), unique index `(trace_id, seq)`. The ORM class for `policy_violations` is `TracePolicyViolation`, to avoid clashing with the existing `trace_service.PolicyViolation` exception.
+- Storage: `spans.attrs JSON NULL` added (events need their attrs back), unique index `(trace_id, seq)`. `policy_violations.policy_name` stores the name at detection time so rows map straight to `ViolationOut`. Event timestamps are stored as naive UTC. The ORM class for `policy_violations` is `TracePolicyViolation`, to avoid clashing with the existing `trace_service.PolicyViolation` exception.
 - `TracePolicyCreate` is `{source, action, agent_id?, environment?, enabled}`: `source` holds exactly one `policy` block, and `name`/`severity` come from it. `ViolationOut.id`/`trace_id` are null for precheck results.
 - Existing `forbid_tool` rules also apply to `tool`-kind events, so an `events` payload cannot bypass them.
 
