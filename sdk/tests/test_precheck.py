@@ -30,7 +30,7 @@ def test_check_allowed_request_shape(client, server):
     (path, body, headers), = server.requests
     assert path == "/api/trace-policies/check"
     assert headers["x-api-key"] == client.api_key
-    assert body == {"agent_id": "a1", "trace_uid": None, "candidate": {
+    assert body == {"agent_id": "a1", "trace_uid": None, "environment": "dev", "candidate": {
         "seq": 0, "kind": "tool", "name": "send_email", "status": "success", "input": {"to": "x"},
         "output": {}, "attrs": {"recipients": 3}, "latency_ms": 0, "timestamp": None}}
     assert server.timeouts == [2.0]

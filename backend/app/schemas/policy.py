@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
-from app.schemas.trace import MAX_TRACE_EVENTS, EventIn
+from app.schemas.trace import INT32_MAX, MAX_TRACE_EVENTS, EventIn
 
 PolicySeverity = Literal["info", "low", "medium", "high", "critical"]
 PolicyAction = Literal["log", "alert", "block"]
@@ -79,6 +79,7 @@ class ViolationOut(BaseModel):
 class PolicyCheckIn(BaseModel):
     agent_id: str
     trace_uid: Optional[str] = None
+    environment: Optional[str] = Field(None, max_length=32)  # used when the trace is not stored yet
     candidate: EventIn
 
 
@@ -88,9 +89,22 @@ class PolicyCheckOut(BaseModel):
 
 
 class EventsAppendIn(BaseModel):
+    """Trace-level fields mean "unchanged" when null; `environment` is fixed by the append that creates the trace."""
     agent_id: str
     events: List[EventIn] = Field(max_length=MAX_TRACE_EVENTS)
     final: bool = False
+    environment: Optional[str] = Field(None, max_length=32)
+    agent_version: Optional[str] = Field(None, max_length=64)
+    session_id: Optional[str] = Field(None, max_length=128)
+    input: Optional[str] = None
+    output: Optional[str] = None
+    status: Optional[str] = Field(None, max_length=32)
+    error_message: Optional[str] = None
+    latency_ms: Optional[int] = Field(None, le=INT32_MAX)
+    tokens_input: Optional[int] = Field(None, le=INT32_MAX)
+    tokens_output: Optional[int] = Field(None, le=INT32_MAX)
+    cost_usd: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class EventsAppendOut(BaseModel):

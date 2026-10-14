@@ -73,8 +73,11 @@ refuses the event a `block` policy forbids: it is dropped from `t.events`, later
 streaming goes on (a refused batch of several events is resent one event at a time to find it). Any other
 rejection (`409 seq_conflict`, `413 trace_too_long`, `422`, ...) drops that batch, logs a warning and stops
 streaming that trace; later checks still go to the server and are judged on the events it holds
-(with `fail_closed=True` they fail instead). Only events are streamed: trace-level fields (`output`, tokens, cost,
-`status`) are not sent for a streamed trace. A streamed trace that never adds an event is sent the normal way.
+(with `fail_closed=True` they fail instead). The first push carries the trace's `environment`, `input`,
+`session_id`, `agent_version` and metadata, and the final one its `output`, `status`, error, latency, tokens, cost
+and metadata, so a streamed trace is stored, scoped and scanned like a whole one; the environment is fixed by the
+first push (a different one later is `409 environment_mismatch`). Checks send the trace's environment too.
+A streamed trace that never adds an event is sent the normal way.
 
 **Failure policy.** A check that cannot complete (network error, timeout, non-2xx, malformed reply) logs a
 warning and returns `CheckResult(allowed=not fail_closed, violations=[], error="<reason>")`. The default is

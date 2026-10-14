@@ -45,7 +45,6 @@ def sdk_client(app_, api_key, agent, monkeypatch):
 
 
 # A3-1: policy scope uses the SDK's environment for whole traces, the agent row's for streams and checks
-@pytest.mark.xfail(strict=True, reason="A3-1: streamed traces take agent.environment, not the SDK's environment")
 async def test_environment_scoped_block_policy_applies_to_streamed_trace(db, org, sdk_client):
     sdk_client.environment = "prod"
     await _policy(db, org, NO_DROP, environment="prod")
@@ -59,7 +58,6 @@ async def test_environment_scoped_block_policy_applies_to_streamed_trace(db, org
     assert await _count(db, Span) == 0  # streamed: should be blocked too
 
 
-@pytest.mark.xfail(strict=True, reason="A3-1: precheck takes agent.environment, not the SDK's environment")
 async def test_environment_scoped_block_policy_applies_to_check(db, org, sdk_client):
     sdk_client.environment = "prod"
     await _policy(db, org, NO_DROP, environment="prod")
@@ -67,7 +65,6 @@ async def test_environment_scoped_block_policy_applies_to_check(db, org, sdk_cli
 
 
 # A3-2: a streamed trace never sends its trace-level fields
-@pytest.mark.xfail(strict=True, reason="A3-2: streamed traces drop status, input, output, tokens and cost")
 async def test_streamed_trace_keeps_trace_fields(db, sdk_client):
     with pytest.raises(RuntimeError):
         async with sdk_client.trace(stream=True, input="refund order 7") as t:
@@ -79,7 +76,6 @@ async def test_streamed_trace_keeps_trace_fields(db, sdk_client):
         "error", "refund order 7", "partial", 10, 0.25)
 
 
-@pytest.mark.xfail(strict=True, reason="A3-2: legacy forbid_pii never sees a streamed trace's input text")
 async def test_streamed_trace_input_is_scanned_by_legacy_pii_rule(db, org, sdk_client):
     db.add(PolicyRule(org_id=org.id, name="no-pii", rule={"forbid_pii": True}, action="block"))
     await db.commit()

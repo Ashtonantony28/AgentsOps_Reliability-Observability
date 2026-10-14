@@ -70,6 +70,7 @@ export type Violation = {
 export type PolicyCheckIn = {
   agent_id: string;
   trace_uid?: string | null;
+  environment?: string | null;
   candidate: EventIn;
 };
 
@@ -79,6 +80,18 @@ export type EventsAppendIn = {
   agent_id: string;
   events: EventIn[];
   final?: boolean;
+  environment?: string | null;
+  agent_version?: string | null;
+  session_id?: string | null;
+  input?: string | null;
+  output?: string | null;
+  status?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  tokens_input?: number | null;
+  tokens_output?: number | null;
+  cost_usd?: number | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type EventsAppendOut = { accepted: number; violations: Violation[] };

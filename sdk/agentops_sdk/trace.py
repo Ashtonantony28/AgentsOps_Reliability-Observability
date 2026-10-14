@@ -126,8 +126,9 @@ class Trace:
         # Without streaming the server has none of this trace's events, so the check has no history.
         if self._streaming():
             return check_request(self.agent_id, self.trace_id,
-                                 event_dict(len(self.events), kind, name, input=input, attrs=attrs))
-        return check_request(self.agent_id, None, event_dict(0, kind, name, input=input, attrs=attrs))
+                                 event_dict(len(self.events), kind, name, input=input, attrs=attrs), self.environment)
+        return check_request(self.agent_id, None, event_dict(0, kind, name, input=input, attrs=attrs),
+                             self.environment)
 
     def _streaming(self) -> bool:
         return self.stream and self._client is not None
@@ -139,8 +140,20 @@ class Trace:
         pending = self.events[start:start + 1] if start < self._split else self.events[start:]
         if not pending and not final:
             return None
-        last = start + len(pending) == len(self.events)
-        return start, pending, events_request(self.agent_id, pending, final and last)
+        final = final and start + len(pending) == len(self.events)
+        return start, pending, events_request(self.agent_id, pending, final, **self._stream_fields(start, final))
+
+    def _stream_fields(self, start: int, final: bool) -> dict:
+        """The trace fields an append carries: the starting ones on the first, the outcome ones on the final."""
+        fields = {"environment": self.environment}
+        if start == 0:
+            fields.update(agent_version=self.agent_version, session_id=self.session_id, input=self.input,
+                          metadata=self.metadata)
+        if final:
+            fields.update(output=self.output, status=self.status, error_message=self.error_message,
+                          latency_ms=self.latency_ms, tokens_input=self.tokens_input,
+                          tokens_output=self.tokens_output, cost_usd=self.cost_usd, metadata=self.metadata)
+        return fields
 
     def _settle(self, outcome, start: int, sent: list, final: bool) -> bool:
         """Applies the outcome of pushing `sent`, which was events[start:start + len(sent)]; True when another

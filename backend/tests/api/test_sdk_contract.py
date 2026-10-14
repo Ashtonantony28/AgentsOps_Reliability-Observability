@@ -49,9 +49,16 @@ def test_check_request_matches_policy_check_in():
 
 
 def test_events_request_matches_events_append_in():
-    body = sdk.events_request("a1", [_event()], True)
-    assert set(body) == _props("EventsAppendIn")
-    EventsAppendIn.model_validate(body)
+    t = SdkTrace(agent_id="a1", environment="prod", input="hi", session_id="s1", metadata={"k": 1})
+    t.add_event("tool", "search")
+    t.mark_error("boom")
+    first, last = t._batch(final=False)[2], t._batch(final=True)[2]
+    assert set(last) | set(first) == _props("EventsAppendIn")
+    assert EventsAppendIn.model_validate(first).input == "hi" and "output" not in first
+    assert EventsAppendIn.model_validate(last).status == "error"
+    t._sent = 1  # a later final push carries the outcome fields, not the starting ones
+    assert t._batch(final=False) is None
+    assert "input" not in t._batch(final=True)[2] and t._batch(final=True)[2]["environment"] == "prod"
 
 
 def test_check_result_matches_policy_check_out():
