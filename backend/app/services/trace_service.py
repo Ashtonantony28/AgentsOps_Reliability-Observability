@@ -57,10 +57,10 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
         tool = rule.get("forbid_tool")
         if tool and any(ev.name == tool for ev in events):  # every kind: `kind` is client-chosen
             hits.append((f"tool '{tool}' forbidden by policy", f"warn: tool {tool} flagged"))
-        if rule.get("forbid_pii") and (detect_pii(trace.input) or detect_pii(trace.output)):
+        if rule.get("forbid_pii") and any(detect_pii(t) for t in _texts(trace, events, "input", "output")):
             hits.append(("PII detected (blocked by policy)", "warn: pii detected"))
-        if rule.get("block_on_injection") and \
-                injection_score(trace.input)[0] >= rule.get("injection_threshold", 0.34):
+        if rule.get("block_on_injection") and max(injection_score(t)[0] for t in _texts(trace, events, "input")) \
+                >= rule.get("injection_threshold", 0.34):
             hits.append(("prompt injection detected", "warn: injection detected"))
         if hits and r.action == "block":
             raise PolicyViolation(hits[0][0], r.name)
@@ -69,18 +69,18 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
     return note
 
 
-def _text(payloads: list[Any]) -> str:
-    """String leaves of event payloads, so text rules can scan streamed traces."""
-    out, stack = [], list(payloads)
-    while stack:
-        v = stack.pop()
-        if isinstance(v, str):
-            out.append(v)
-        elif isinstance(v, dict):
-            stack.extend(v.values())
-        elif isinstance(v, list):
-            stack.extend(v)
-    return "\n".join(out)
+def _strings(v: Any):
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, (dict, list)):
+        for x in v.values() if isinstance(v, dict) else v:
+            yield from _strings(x)
+
+
+def _texts(trace: TraceIn, events: list[EventIn], *sides: str) -> list[str]:
+    """Trace text plus each string in the event payloads, scanned separately so matches never span fields."""
+    return [t for side in sides
+            for t in [getattr(trace, side), *(s for e in events for s in _strings(getattr(e, side)))]]
 
 
 def _events(events: list[EventIn]) -> list[Event]:
@@ -150,7 +150,7 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
         pii_flags=list(set(pii)),
         injection_score=score,
         meta=payload.metadata or {},
-        created_at=payload.timestamp or datetime.utcnow(),
+        created_at=_naive_utc(payload.timestamp) or datetime.utcnow(),
     )
     db.add(trace)
     await db.flush()
@@ -221,10 +221,8 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             await db.flush()
 
         try:
-            legacy = TraceIn.model_construct(agent_id=agent.id, environment=trace.environment,
-                                             input=_text([e.input for e in req.events]),
-                                             output=_text([e.output for e in req.events]),
-                                             events=req.events, tool_calls=[])
+            legacy = TraceIn.model_construct(agent_id=agent.id, environment=trace.environment, input="",
+                                             output="", events=req.events, tool_calls=[])
             policy_note = await evaluate_policies(db, org_id, agent, legacy, req.events)
             policies = await tps.active_policies(db, org_id, agent.id, trace.environment)
             monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)

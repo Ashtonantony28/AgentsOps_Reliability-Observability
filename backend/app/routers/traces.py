@@ -4,6 +4,7 @@ from typing import Annotated, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import ValidationError
 from sqlalchemy import select, func
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 import numpy as np
 
@@ -59,6 +60,9 @@ async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Dep
             rejected.append({"index": i, "reason": "policy_block", "rule": e.rule_name})
         except ValueError as e:
             rejected.append({"index": i, "reason": str(e)})
+        except DBAPIError:
+            await db.rollback()
+            rejected.append({"index": i, "reason": "storage_error"})
     return {"accepted": accepted, "rejected": rejected}
 
 

@@ -2,12 +2,14 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
+INT32_MAX = 2**31 - 1  # Postgres INTEGER
+
 
 class ToolCallIn(BaseModel):
     name: str = Field(max_length=255)
     input: Dict[str, Any] = {}
     output: Dict[str, Any] = {}
-    latency_ms: int = 0
+    latency_ms: int = Field(0, le=INT32_MAX)
     status: str = Field("success", max_length=32)
 
 
@@ -19,7 +21,7 @@ class EventIn(BaseModel):
     input: Dict[str, Any] = {}
     output: Dict[str, Any] = {}
     attrs: Dict[str, Any] = {}
-    latency_ms: int = 0
+    latency_ms: int = Field(0, le=INT32_MAX)
     timestamp: Optional[datetime] = None
 
 
@@ -30,9 +32,9 @@ class TraceIn(BaseModel):
     input: str = ""
     output: str = ""
     status: str = Field("success", max_length=32)
-    latency_ms: int = 0
-    tokens_input: int = 0
-    tokens_output: int = 0
+    latency_ms: int = Field(0, le=INT32_MAX)
+    tokens_input: int = Field(0, le=INT32_MAX)
+    tokens_output: int = Field(0, le=INT32_MAX)
     cost_usd: float = 0.0
     environment: str = Field("dev", max_length=32)
     agent_version: str = Field("1.0.0", max_length=64)
