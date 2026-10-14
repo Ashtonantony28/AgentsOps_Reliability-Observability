@@ -44,7 +44,8 @@ BUDGET_S = 2.0
 # beyond this many glob automaton states (overlapping globs can reach 2^k) names are strings instead
 _MAX_NAME_STATES = 512
 _SYMBOL = re.compile(r"[a-z_]+\d+")
-_UNARY_MAX = 16
+# counts of window x (bound + 1) up to this are unary; bit-vector adders above, whose unsat cores are near the window
+_UNARY_CELLS = 50_000
 _BV_CMP = {"<": "bvult", "<=": "bvule", "==": "=", "!=": "=", ">=": "bvuge", ">": "bvugt"}
 
 
@@ -235,8 +236,8 @@ class FactEncoding(TraceEncoding):
     def _count(self, f: ast.Count, xs: list[str]) -> list[str]:
         if f.bound < 0:  # only ASTs built in code; the DSL has no negative bounds
             return ["true" if f.op in (">", ">=", "!=") else "false"] * len(xs)
-        # a count is only compared with its bound, so it may saturate one past it; small ones are kept in unary,
-        # as "at least k" literals, which unit propagation decides without bit-blasted adders
+        # a count is only compared with its bound, so it may saturate one past it; it is kept in unary, as
+        # "at least k" literals, which unit propagation decides without bit-blasted adders (see `_UNARY_CELLS`)
         bound = min(f.bound, len(xs) + 1)
         if f.by is not None:
             # quadratic in the window, so a position's term is only built if the goal depends on it (see `cone`)
@@ -262,7 +263,7 @@ class FactEncoding(TraceEncoding):
 
     def _add(self, c: list[str] | str | None, t: str, bound: int, n: int) -> list[str] | str:
         """The count `c` (None for zero) after one more event, counted when `t` holds."""
-        if bound + 1 > _UNARY_MAX:
+        if (bound + 1) * n > _UNARY_CELLS:
             w = _width(max(n, bound))
             return self.define("c", f"(bvadd {c or _bv(0, w)} (ite {t} {_bv(1, w)} {_bv(0, w)}))", f"(_ BitVec {w})")
         ge = c or ["false"] * (bound + 1)  # ge[k]: the count is at least k + 1

@@ -56,7 +56,6 @@ check_trace([c], events)
 
 
 # A5-2: counts with a bound of 16 or more are bit-vector sums, which the deletion pass cannot shrink in budget
-@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits")
 def test_large_bound_count_counterexample_is_minimal():
     (p,) = parse('policy cap severity high:\n  always count(tool("fetch_url")) <= 40')
     hits = set(range(3, 200, 5)) | {199}  # 41 hits; the other events are never counted

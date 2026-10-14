@@ -33,7 +33,7 @@ BUDGETS = [
     Budget("ingest", "ingest overhead per event", "restore + step + snapshot, 10 policies", 8, 25),
     Budget("batch", "check_trace", "200 events x 10 policies", 250, 600),
     Budget("precheck", "would_violate", "200-event prefix, 10 policies", 10, 30),
-    Budget("counterexample", "minimal_counterexample", "200 events, p0 or p2 (count by)", 500, 1000),
+    Budget("counterexample", "minimal_counterexample", "200 events, p0, p2 or p9 (count by)", 500, 1000),
 ]
 PATHS = [b.path for b in BUDGETS]
 
@@ -95,6 +95,13 @@ def count_by_trace(n: int = TRACE_LEN) -> list[Event]:
     """The 4th error of one tool, spread over the trace, is the last event: violates p2 (`count ... by name`)."""
     bad = {n - 1 - j * (n // 4) for j in range(4)}
     return [Event(i, "tool", "fetch_url" if i in bad else NAMES["tool"][i % 3], "error" if i in bad else "success", {})
+            for i in range(n)]
+
+
+def count_cap_trace(n: int = TRACE_LEN) -> list[Event]:
+    """The 41st `fetch_url`, spread over the trace, is the last event: violates p9 (bound 40)."""
+    hits = {n - 1 - j * ((n - 1) // 40) for j in range(41)}
+    return [Event(i, "tool", "fetch_url" if i in hits else ("search", "http_get")[i % 2], "success", {})
             for i in range(n)]
 
 
@@ -173,10 +180,11 @@ def workload(path: str, impl, compiled, events) -> Callable[[int], float]:
             impl.would_violate(compiled, prefix, candidate)
             return (clock() - t) * 1000
     elif path == "counterexample":
-        cases = [(compiled[0], counterexample_trace(len(events))), (compiled[2], count_by_trace(len(events)))]
+        cases = [(compiled[0], counterexample_trace(len(events))), (compiled[2], count_by_trace(len(events))),
+                 (compiled[9], count_cap_trace(len(events)))]
 
         def run(i):
-            policy, cx_events = cases[i % 2]
+            policy, cx_events = cases[i % len(cases)]
             t = clock()
             impl.minimal_counterexample(policy, cx_events, len(cx_events) - 1)
             return (clock() - t) * 1000
