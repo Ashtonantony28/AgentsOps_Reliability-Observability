@@ -8,6 +8,7 @@ Statuses: `proposed` → `ready` → `in progress` → `in review` → `done` (o
 ## Rules
 
 - SG0 merges before any parallel work. Changing anything under **Interface contracts** is a stop-and-report, not a local fix.
+- Since 2026-10-14 (Ashton): a contract change that the reviewing thread judges sound is approved by that thread and recorded in its sub-goal entry, not escalated.
 - SG1–SG3 run on fixture traces only. Nothing touches live ingestion until the **fixture gate** passes.
 - Threads delegate bounded, test-driven tasks to subagents, at most 2 at a time.
 - Subagents return only: files changed, tests added, verification command + result, open issues.
