@@ -12,8 +12,7 @@ import Loading from "@/components/common/Loading";
 
 const POLL_FOR_MS = 10 * 60 * 1000;
 
-// a live row stays pending until the batch check fills in its counterexample; stop polling eventually
-// since a computed counterexample can also be empty
+// a live row stays pending until the batch check of its finished trace; a trace may never finish
 export const recentlyPending = (v: Violation) =>
   counterexamplePending(v) && Date.now() - new Date(v.detected_at).getTime() < POLL_FOR_MS;
 

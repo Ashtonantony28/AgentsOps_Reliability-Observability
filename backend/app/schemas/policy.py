@@ -7,6 +7,9 @@ from app.schemas.trace import MAX_TRACE_EVENTS, EventIn
 PolicySeverity = Literal["info", "low", "medium", "high", "critical"]
 PolicyAction = Literal["log", "alert", "block"]
 ViolationMode = Literal["batch", "live", "precheck"]
+# pending: a live row the batch check has not reached; fallback: sufficient but maybe not minimal (the solver ran
+# out of budget or failed); none: never computed (a precheck, or a live row the batch check did not find)
+CounterexampleStatus = Literal["pending", "minimal", "fallback", "none"]
 
 
 class TracePolicyCreate(BaseModel):
@@ -69,6 +72,7 @@ class ViolationOut(BaseModel):
     severity: PolicySeverity
     at_seq: int
     counterexample: List[int]
+    counterexample_status: CounterexampleStatus
     message: str
     mode: ViolationMode
     detected_at: datetime
@@ -80,6 +84,8 @@ class ViolationOut(BaseModel):
 class PolicyCheckIn(BaseModel):
     agent_id: str
     trace_uid: Optional[str] = None
+    # events the server does not hold, after any it holds for trace_uid; seqs ignored, like the candidate's
+    prefix: List[EventIn] = Field(default_factory=list, max_length=MAX_TRACE_EVENTS)
     candidate: EventIn
 
 

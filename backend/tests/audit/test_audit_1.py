@@ -6,7 +6,7 @@ import app.policy.checker as checker
 from app.models import TracePolicy, TracePolicyViolation
 from app.policy import reference
 from app.policy.checker import check_trace, compile_policy
-from app.policy.counterexample import minimal_counterexample
+from app.policy.counterexample import bounded_counterexample, minimal_counterexample
 from app.policy.dsl import parse
 from app.policy.events import Event
 from tests.api.test_event_ingest import NO_DROP, _append, _policy, _rows, ev
@@ -54,11 +54,11 @@ def test_counterexample_failure_keeps_verdicts(monkeypatch):
     def boom(policy, events, at_seq):
         if policy.policy_id == "b":
             raise TimeoutError("counterexample budget exceeded")
-        return minimal_counterexample(policy, events, at_seq)
+        return bounded_counterexample(policy, events, at_seq)
 
-    monkeypatch.setattr(checker, "minimal_counterexample", boom)
+    monkeypatch.setattr(checker, "bounded_counterexample", boom)
     got = check_trace([compile_policy("a", a), compile_policy("b", b)], events)
-    assert [(v.policy_id, v.at_seq) for v in got] == [("a", 0), ("b", 4)]
+    assert [(v.policy_id, v.at_seq, v.minimal) for v in got] == [("a", 0, True), ("b", 4, False)]
 
 
 def test_nested_count_by_counterexample_is_bounded():

@@ -92,7 +92,7 @@ A trace is events `e0 … e(n-1)`, `seq = i`. Each formula is true or false at e
 
 ## Counterexamples
 
-The counterexample of a violation at `at_seq` is the minimal set `S` of seqs such that the observed facts (`kind`, `name`, `status`, `attrs`) of the events in `S` alone entail that `φ` is false at `at_seq`, where events outside `S` keep their positions but have unconstrained facts. Removing any one seq from `S` breaks the entailment. Seqs after `at_seq` never appear.
+The counterexample of a violation at `at_seq` is the minimal set `S` of seqs such that the observed facts (`kind`, `name`, `status`, `attrs`) of the events in `S` alone entail that `φ` is false at `at_seq`, where events outside `S` keep their positions but have unconstrained facts. Removing any one seq from `S` breaks the entailment. Seqs after `at_seq` never appear. A stored violation's `counterexample_status` says which it holds: `minimal` (this set), `fallback` (a sufficient superset, when the solver ran out of budget or failed), `pending` (a live row the batch check has not reached yet) or `none` (never computed: a pre-check, or a live row the batch check did not find).
 
 - `confirm_before_delete` violated at a delete at seq 3 with no earlier confirmation: `{0, 1, 2, 3}`; every earlier event must be known not to be a confirmation.
 - `no_exfil_after_secret` with one secret read at seq 1 and a network call at seq 4: `{1, 4}`.

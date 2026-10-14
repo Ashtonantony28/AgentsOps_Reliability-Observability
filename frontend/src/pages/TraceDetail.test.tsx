@@ -58,7 +58,7 @@ describe("TraceDetail violations", () => {
   });
 
   it("marks only the violating event while the counterexample is pending", async () => {
-    violations.mockResolvedValue([violation({ mode: "live", counterexample: [], at_seq: 3 })]);
+    violations.mockResolvedValue([violation({ mode: "live", counterexample: [], counterexample_status: "pending", at_seq: 3 })]);
     show();
     expect(await screen.findByText(/Counterexample pending/)).toBeInTheDocument();
     expect(highlighted()).toEqual([]);
@@ -99,10 +99,11 @@ describe("TraceDetail violations", () => {
 
 describe("recentlyPending", () => {
   const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
-  it("polls only for recent live rows without a counterexample", () => {
-    expect(recentlyPending(violation({ mode: "live", counterexample: [], detected_at: ago(1) }))).toBe(true);
-    expect(recentlyPending(violation({ mode: "live", counterexample: [], detected_at: ago(11) }))).toBe(false);
-    expect(recentlyPending(violation({ mode: "live", counterexample: [1], detected_at: ago(1) }))).toBe(false);
-    expect(recentlyPending(violation({ mode: "batch", counterexample: [], detected_at: ago(1) }))).toBe(false);
+  it("polls only for recent pending rows", () => {
+    const pending = { mode: "live" as const, counterexample: [], counterexample_status: "pending" as const };
+    expect(recentlyPending(violation({ ...pending, detected_at: ago(1) }))).toBe(true);
+    expect(recentlyPending(violation({ ...pending, detected_at: ago(11) }))).toBe(false);
+    expect(recentlyPending(violation({ ...pending, counterexample_status: "minimal", detected_at: ago(1) }))).toBe(false);
+    expect(recentlyPending(violation({ ...pending, counterexample_status: "none", detected_at: ago(1) }))).toBe(false);
   });
 });

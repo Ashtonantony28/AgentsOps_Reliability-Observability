@@ -123,11 +123,14 @@ class Trace:
         return self._client
 
     def _check_body(self, name: str, kind: str, input: Optional[dict], attrs: dict) -> dict:
-        # Without streaming the server has none of this trace's events, so the check has no history.
         if self._streaming():
             return check_request(self.agent_id, self.trace_id,
                                  event_dict(len(self.events), kind, name, input=input, attrs=attrs))
-        return check_request(self.agent_id, None, event_dict(0, kind, name, input=input, attrs=attrs))
+        # the server holds none of a non-streamed trace's events: they go along as the prefix, without payloads
+        prefix = ([event_dict(e["seq"], e["kind"], e["name"], e["status"], attrs=e["attrs"]) for e in self.events]
+                  or [event_dict(i, "tool", tc.name, tc.status) for i, tc in enumerate(self.tool_calls)])
+        return check_request(self.agent_id, None, event_dict(len(prefix), kind, name, input=input, attrs=attrs),
+                             prefix)
 
     def _streaming(self) -> bool:
         return self.stream and self._client is not None

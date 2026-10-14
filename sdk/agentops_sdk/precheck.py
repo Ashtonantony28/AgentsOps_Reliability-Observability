@@ -37,8 +37,9 @@ def event_dict(seq: int, kind: str, name: str, status: str = "success", input: O
             "output": output or {}, "attrs": attrs or {}, "latency_ms": int(latency_ms), "timestamp": timestamp}
 
 
-def check_request(agent_id: str, trace_uid: Optional[str], candidate: dict) -> dict:
-    return {"agent_id": agent_id, "trace_uid": trace_uid, "candidate": candidate}
+def check_request(agent_id: str, trace_uid: Optional[str], candidate: dict,
+                  prefix: Optional[List[dict]] = None) -> dict:
+    return {"agent_id": agent_id, "trace_uid": trace_uid, "prefix": prefix or [], "candidate": candidate}
 
 
 def events_request(agent_id: str, events: List[dict], final: bool) -> dict:

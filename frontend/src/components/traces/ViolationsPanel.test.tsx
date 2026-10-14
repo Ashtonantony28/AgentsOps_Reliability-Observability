@@ -21,10 +21,27 @@ describe("ViolationsPanel", () => {
 
   it("marks a live violation without a counterexample as pending", () => {
     render(
-      <ViolationsPanel violations={[violation({ mode: "live", counterexample: [] })]} selected={null} onSelect={() => {}} />
+      <ViolationsPanel violations={[violation({ mode: "live", counterexample: [], counterexample_status: "pending" })]} selected={null} onSelect={() => {}} />
     );
     expect(screen.getByText(/Counterexample pending/)).toBeInTheDocument();
     expect(screen.queryByText(/^Counterexample:/)).not.toBeInTheDocument();
+  });
+
+  it("flags a fallback counterexample as maybe not minimal", () => {
+    render(<ViolationsPanel violations={[violation({ counterexample: [0, 1, 2], counterexample_status: "fallback" })]} selected={null} onSelect={() => {}} />);
+    expect(screen.getByText(/Counterexample: #0, #1, #2/)).toHaveTextContent("may not be minimal");
+  });
+
+  it("says when a violation has no counterexample", () => {
+    render(<ViolationsPanel violations={[violation({ mode: "live", counterexample: [], counterexample_status: "none" })]} selected={null} onSelect={() => {}} />);
+    expect(screen.getByText("No counterexample for this violation.")).toBeInTheDocument();
+    expect(screen.queryByText(/pending|regardless/)).not.toBeInTheDocument();
+  });
+
+  it("explains an empty minimal counterexample, live or batch", () => {
+    render(<ViolationsPanel violations={[violation({ mode: "live", counterexample: [] })]} selected={null} onSelect={() => {}} />);
+    expect(screen.getByText(/regardless of any event/)).toBeInTheDocument();
+    expect(screen.queryByText(/pending/)).not.toBeInTheDocument();
   });
 
   it("explains an empty counterexample from the batch check", () => {

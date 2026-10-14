@@ -51,9 +51,10 @@ async def test_would_violate_block_policy_is_not_allowed(client, db, org, agent,
     assert body["allowed"] is False
     (v,) = body["violations"]
     assert {k: v[k] for k in ("id", "trace_id", "agent_id", "policy_id", "policy_name", "policy_version",
-                              "severity", "at_seq", "counterexample", "mode")} == {
+                              "severity", "at_seq", "counterexample", "counterexample_status", "mode")} == {
         "id": None, "trace_id": None, "agent_id": agent.id, "policy_id": p.id, "policy_name": "confirm_before_delete",
-        "policy_version": 1, "severity": "high", "at_seq": 0, "counterexample": [], "mode": "precheck"}
+        "policy_version": 1, "severity": "high", "at_seq": 0, "counterexample": [], "counterexample_status": "none",
+        "mode": "precheck"}
     assert "confirm_before_delete" in v["message"] and v["detected_at"]
 
 
@@ -338,3 +339,37 @@ async def test_api_key_routes_are_rate_limited(client, db, org, agent, api_key_h
         return await _append(client, api_key_headers, agent, "t1", [ev(i, "search")])
 
     assert [(await call(i)).status_code for i in range(3)] == [200 if route == "check" else 202] * 2 + [429]
+
+
+async def _check_prefix(client, headers, agent, prefix, candidate, trace_uid=None):
+    return await client.post("/api/trace-policies/check", headers=headers, json={
+        "agent_id": agent.id, "trace_uid": trace_uid, "prefix": prefix, "candidate": candidate})
+
+
+async def test_prefix_is_the_history_of_an_unstored_trace(client, db, org, agent, api_key_headers):
+    await _policy(db, org, CONFIRM)
+    confirmed = [ev(0, "ask", kind="confirmation")]
+    r = await _check_prefix(client, api_key_headers, agent, confirmed, ev(0, "delete_user"))
+    assert r.status_code == 200 and r.json() == {"allowed": True, "violations": []}
+    r = await _check_prefix(client, api_key_headers, agent, [ev(0, "search")], ev(0, "delete_user"))
+    assert r.json()["allowed"] is False and r.json()["violations"][0]["at_seq"] == 1
+
+
+async def test_prefix_follows_the_stored_events_and_its_seqs_are_ignored(client, db, org, agent, api_key_headers):
+    await _policy(db, org, CAP)
+    assert (await _append(client, api_key_headers, agent, "u1", [ev(0, "fetch", status="error")])).status_code == 202
+    r = await _check_prefix(client, api_key_headers, agent, [ev(7, "search")], ev(9, "fetch", status="error"), "u1")
+    (v,) = r.json()["violations"]
+    assert r.json()["allowed"] is False and v["at_seq"] == 2
+    assert await _count(db, Span) == 1
+
+
+async def test_prefix_past_the_trace_cap_is_409(client, db, org, agent, api_key_headers, monkeypatch):
+    from app.services import trace_service
+    monkeypatch.setattr(trace_service, "MAX_TRACE_EVENTS", 3)
+    await _policy(db, org, NO_DROP)
+    assert (await _append(client, api_key_headers, agent, "u1", [ev(0, "a")])).status_code == 202
+    r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b")], ev(2, "c"), "u1")
+    assert r.status_code == 200
+    r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b"), ev(2, "c")], ev(3, "d"), "u1")
+    assert r.status_code == 409 and r.json()["error"]["details"]["max_events"] == 3
