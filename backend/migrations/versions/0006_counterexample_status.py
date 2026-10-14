@@ -17,8 +17,11 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("policy_violations", sa.Column("counterexample_status", sa.String(16), nullable=False,
                                                  server_default="minimal"))
-    # an empty live counterexample is usually not computed yet (rarely computed empty; that case reads pending)
-    op.execute("UPDATE policy_violations SET counterexample_status = 'pending' "
+    # an empty live counterexample is pending while its stream is open; on a closed one the batch check left it
+    # empty, so none (rarely a computed empty one)
+    open_ = "REPLACE(COALESCE(CAST(meta AS TEXT), ''), ' ', '') LIKE '%\"stream\":\"open\"%'"
+    op.execute("UPDATE policy_violations SET counterexample_status = CASE WHEN trace_id IN "
+               f"(SELECT id FROM traces WHERE {open_}) THEN 'pending' ELSE 'none' END "
                "WHERE mode = 'live' AND CAST(counterexample AS TEXT) = '[]'")
 
 

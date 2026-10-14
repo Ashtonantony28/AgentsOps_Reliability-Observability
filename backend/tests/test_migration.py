@@ -88,7 +88,7 @@ def test_migration_0002_roundtrip(pg):
         p0 = c.execute(sa.text("SELECT severity, action, created_at FROM trace_policies WHERE id = 'p0'")).one()
         v0 = c.execute(sa.text(
             "SELECT counterexample, message, detected_at, counterexample_status FROM policy_violations")).one()
-        assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2] and v0[3] == "pending"
+        assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2] and v0[3] == "none"
         assert _seqs(c, "t1") == [("first", 0), ("second", 1), ("third", 2)]
         assert _seqs(c, "t2") == [("tie_a", 0), ("tie_b", 1)]
         assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0006_counterexample_status"
@@ -213,7 +213,7 @@ def test_migration_0005_on_sqlite(tmp_path, monkeypatch):
 
 
 def test_migration_0006_on_sqlite(tmp_path, monkeypatch):
-    """Only empty live counterexamples become pending; the rest keep the default, minimal."""
+    """Empty live counterexamples are pending on open streams and none on closed ones; the rest stay minimal."""
     url = f"sqlite:///{tmp_path}/m.db"
     monkeypatch.setattr(type(settings), "db_url_sync", property(lambda _: url))
     eng = sa.create_engine(url)
@@ -226,18 +226,22 @@ def test_migration_0006_on_sqlite(tmp_path, monkeypatch):
     with eng.begin() as c:
         c.execute(Organization.__table__.insert().values(id="o1", name="O", slug="o"))
         c.execute(Agent.__table__.insert().values(id="a1", org_id="o1", name="A"))
-        c.execute(Trace.__table__.insert().values(id="t1", org_id="o1", agent_id="a1", trace_uid="t1"))
-        for vid, pid, cx, mode in (("v1", "p1", "[]", "live"), ("v2", "p2", "[0]", "live"), ("v3", "p3", "[]", "batch")):
+        for tid, meta in (("t1", {"stream": "open"}), ("t2", {"stream": "final"}), ("t3", None)):
+            c.execute(Trace.__table__.insert().values(id=tid, org_id="o1", agent_id="a1", trace_uid=tid, meta=meta))
+        for vid, tid, cx, mode in (("v1", "t1", "[]", "live"), ("v2", "t1", "[0]", "live"), ("v3", "t1", "[]", "batch"),
+                                   ("v4", "t2", "[]", "live"), ("v5", "t3", "[]", "live")):
+            pid = "p" + vid
             c.execute(TracePolicy.__table__.insert().values(id=pid, org_id="o1", name=pid, source="x"))
             c.execute(sa.text(
                 "INSERT INTO policy_violations (id, org_id, trace_id, agent_id, policy_id, policy_name, policy_version,"
                 " severity, at_seq, counterexample, message, mode, detected_at)"
-                " VALUES (:v, 'o1', 't1', 'a1', :p, 'P', 1, 'low', 0, :cx, '', :m, :t)"),
-                {"v": vid, "p": pid, "cx": cx, "m": mode, "t": datetime(2026, 1, 1)})
+                " VALUES (:v, 'o1', :tr, 'a1', :p, 'P', 1, 'low', 0, :cx, '', :m, :t)"),
+                {"v": vid, "tr": tid, "p": pid, "cx": cx, "m": mode, "t": datetime(2026, 1, 1)})
     command.upgrade(cfg, "head")
     with eng.connect() as c:
         rows = c.execute(sa.text("SELECT id, counterexample_status FROM policy_violations ORDER BY id")).all()
-    assert [tuple(r) for r in rows] == [("v1", "pending"), ("v2", "minimal"), ("v3", "minimal")]
+    assert [tuple(r) for r in rows] == [
+        ("v1", "pending"), ("v2", "minimal"), ("v3", "minimal"), ("v4", "none"), ("v5", "none")]
     command.downgrade(cfg, "0005_policy_archive")
     assert "counterexample_status" not in {col["name"] for col in sa.inspect(eng).get_columns("policy_violations")}
     eng.dispose()

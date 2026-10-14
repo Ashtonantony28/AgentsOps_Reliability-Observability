@@ -46,7 +46,7 @@ export default function ViolationsPanel({ violations, selected, onSelect }: Prop
                   <span className="text-amber-300">
                     Counterexample: {v.counterexample.map((s) => `#${s}`).join(", ")}
                     {v.counterexample_status === "fallback" && (
-                      <span className="text-ink-400"> (may not be minimal: the solver ran out of time)</span>
+                      <span className="text-ink-400"> (may not be minimal: the solver did not finish)</span>
                     )}
                   </span>
                 ) : (
