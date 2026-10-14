@@ -9,7 +9,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 
-from app.models import Organization, TracePolicy
+from app.models import Agent, Organization, Trace, TracePolicy
 from app.config import settings
 from app.database import Base
 
@@ -86,11 +86,12 @@ def test_migration_0002_roundtrip(pg):
     command.upgrade(cfg, "head")
     with pg.connect() as c:
         p0 = c.execute(sa.text("SELECT severity, action, created_at FROM trace_policies WHERE id = 'p0'")).one()
-        v0 = c.execute(sa.text("SELECT counterexample, message, detected_at FROM policy_violations")).one()
-        assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2]
+        v0 = c.execute(sa.text(
+            "SELECT counterexample, message, detected_at, counterexample_status FROM policy_violations")).one()
+        assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2] and v0[3] == "pending"
         assert _seqs(c, "t1") == [("first", 0), ("second", 1), ("third", 2)]
         assert _seqs(c, "t2") == [("tie_a", 0), ("tie_b", 1)]
-        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0005_policy_archive"
+        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0006_counterexample_status"
     insp = sa.inspect(pg)
     assert NEW_TABLES <= set(insp.get_table_names())
     span_cols = {col["name"]: col for col in insp.get_columns("spans")}
@@ -125,9 +126,9 @@ def test_migration_0002_roundtrip(pg):
             " severity, at_seq, mode) VALUES ('v1', 'o1', 't1', 'a1', 'p1', 'P', 1, 'high', 0, 'batch')"))
         p1 = c.execute(sa.text("SELECT severity, action FROM trace_policies WHERE id = 'p1'")).one()
         assert p1 == ("medium", "log")
-        ce, msg, det = c.execute(sa.text(
-            "SELECT counterexample, message, detected_at FROM policy_violations WHERE id = 'v1'")).one()
-        assert (ce, msg) == ([], "") and det is not None
+        ce, msg, det, st = c.execute(sa.text("SELECT counterexample, message, detected_at, counterexample_status"
+                                             " FROM policy_violations WHERE id = 'v1'")).one()
+        assert (ce, msg, st) == ([], "", "minimal") and det is not None
 
     with pg.begin() as c:
         c.execute(sa.text("INSERT INTO alert_rules (id, org_id, name, metric, operator, threshold)"
@@ -208,4 +209,35 @@ def test_migration_0005_on_sqlite(tmp_path, monkeypatch):
     _check_archive(eng)
     command.downgrade(cfg, "0004_alert_rule_context")
     _check_unarchived(eng)
+    eng.dispose()
+
+
+def test_migration_0006_on_sqlite(tmp_path, monkeypatch):
+    """Only empty live counterexamples become pending; the rest keep the default, minimal."""
+    url = f"sqlite:///{tmp_path}/m.db"
+    monkeypatch.setattr(type(settings), "db_url_sync", property(lambda _: url))
+    eng = sa.create_engine(url)
+    Base.metadata.create_all(eng)
+    cfg = Config()
+    cfg.set_main_option("script_location", str(BACKEND / "migrations"))
+    command.stamp(cfg, "head")
+    command.downgrade(cfg, "0005_policy_archive")
+    assert "counterexample_status" not in {col["name"] for col in sa.inspect(eng).get_columns("policy_violations")}
+    with eng.begin() as c:
+        c.execute(Organization.__table__.insert().values(id="o1", name="O", slug="o"))
+        c.execute(Agent.__table__.insert().values(id="a1", org_id="o1", name="A"))
+        c.execute(Trace.__table__.insert().values(id="t1", org_id="o1", agent_id="a1", trace_uid="t1"))
+        for vid, pid, cx, mode in (("v1", "p1", "[]", "live"), ("v2", "p2", "[0]", "live"), ("v3", "p3", "[]", "batch")):
+            c.execute(TracePolicy.__table__.insert().values(id=pid, org_id="o1", name=pid, source="x"))
+            c.execute(sa.text(
+                "INSERT INTO policy_violations (id, org_id, trace_id, agent_id, policy_id, policy_name, policy_version,"
+                " severity, at_seq, counterexample, message, mode, detected_at)"
+                " VALUES (:v, 'o1', 't1', 'a1', :p, 'P', 1, 'low', 0, :cx, '', :m, :t)"),
+                {"v": vid, "p": pid, "cx": cx, "m": mode, "t": datetime(2026, 1, 1)})
+    command.upgrade(cfg, "head")
+    with eng.connect() as c:
+        rows = c.execute(sa.text("SELECT id, counterexample_status FROM policy_violations ORDER BY id")).all()
+    assert [tuple(r) for r in rows] == [("v1", "pending"), ("v2", "minimal"), ("v3", "minimal")]
+    command.downgrade(cfg, "0005_policy_archive")
+    assert "counterexample_status" not in {col["name"] for col in sa.inspect(eng).get_columns("policy_violations")}
     eng.dispose()

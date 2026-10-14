@@ -16,7 +16,7 @@ from app.policy.ast import And, Count, Implies, Match, Not, Once, Policy, Previo
 import app.policy.checker as checker
 from app.policy import counterexample
 from app.policy.checker import check_trace, check_verdicts, compile_policy
-from app.policy.counterexample import _Entailment, _nodes, minimal_counterexample, name_patterns
+from app.policy.counterexample import _Entailment, _nodes, bounded_counterexample, minimal_counterexample, name_patterns
 from app.policy.dsl import CMPS, KINDS, parse
 from app.policy.encode import glob_regex
 from app.policy.events import Event
@@ -277,9 +277,10 @@ def test_overlapping_globs_use_strings():
 def test_encoding_over_budget_keeps_every_event(monkeypatch, caplog):
     f = Count(Match(kind="tool"), "<=", 1, by="name")
     events = [ev(0, "ab"), ev(1, "b"), ev(2, "ab")]
-    assert cx(f, events) == (0, 2)
+    p = compile_policy("p", Policy("p", "high", f))
+    assert bounded_counterexample(p, events, 2) == ((0, 2), True)
     monkeypatch.setattr(counterexample, "BUDGET_S", -1)
-    assert cx(f, events) == (0, 1, 2)
+    assert bounded_counterexample(p, events, 2) == ((0, 1, 2), False)
     assert "over budget: keeping all 3 events" in caplog.text
 
 
@@ -291,8 +292,9 @@ def test_deletion_pass_over_budget_keeps_core_so_far(monkeypatch, caplog):
         return real(*a) if len(calls) == 1 else z3.Z3_L_UNDEF
 
     monkeypatch.setattr(z3, "Z3_solver_check_assumptions", first_only)
-    got = cx(Implies(tool("x"), Once(event("confirmation"))), [ev(0, "y"), ev(1, "x")])
-    assert set(got) >= {0, 1} and "may not be minimal" in caplog.text
+    p = compile_policy("p", Policy("p", "high", Implies(tool("x"), Once(event("confirmation")))))
+    got, minimal = bounded_counterexample(p, [ev(0, "y"), ev(1, "x")], 1)
+    assert set(got) >= {0, 1} and not minimal and "may not be minimal" in caplog.text
 
 
 def test_each_solver_call_is_bounded_by_the_remaining_budget(monkeypatch):
@@ -324,13 +326,13 @@ def test_check_trace_keeps_verdicts_without_counterexamples(monkeypatch, caplog)
     a, b = compile_policy("a", parse('policy a: always not tool("drop_db")')[0]), \
         compile_policy("b", Policy("b", "high", Count(Match(kind="tool"), "<=", 1, by="name")))
     events = [ev(0, "drop_db"), ev(1, "x"), ev(2, "x")]
-    assert [(v.policy_id, v.at_seq, v.counterexample) for v in check_trace([a, b], events)] == [
-        ("a", 0, (0,)), ("b", 2, (1, 2))]
-    assert [(v.policy_id, v.at_seq, v.counterexample) for v in check_verdicts([a, b], events)] == [
-        ("a", 0, (0,)), ("b", 2, (0, 1, 2))]
+    assert [(v.policy_id, v.at_seq, v.counterexample, v.minimal) for v in check_trace([a, b], events)] == [
+        ("a", 0, (0,), True), ("b", 2, (1, 2), True)]
+    assert [(v.policy_id, v.at_seq, v.counterexample, v.minimal) for v in check_verdicts([a, b], events)] == [
+        ("a", 0, (0,), False), ("b", 2, (0, 1, 2), False)]
     assert "check budget spent" not in caplog.text  # verdicts alone search nothing, so spend no budget
     monkeypatch.setattr(checker, "CHECK_BUDGET_S", -1)
-    assert [v.counterexample for v in check_trace([a, b], events)] == [(0,), (0, 1, 2)]
+    assert [(v.counterexample, v.minimal) for v in check_trace([a, b], events)] == [((0,), False), ((0, 1, 2), False)]
     assert "check budget spent" in caplog.text
 
 

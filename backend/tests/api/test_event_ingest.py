@@ -6,6 +6,7 @@ from sqlalchemy import select
 from starlette.testclient import TestClient
 
 import app.services.trace_policy_service as tps
+from app.policy import checker
 from app.models import AlertRule, AuditLog, PolicyRule, Span, Trace, TracePolicy, TracePolicyViolation
 from app.policy.checker import Violation, check_trace, compile_policy
 from app.policy.dsl import parse, pretty
@@ -286,7 +287,24 @@ async def test_batch_check_after_stream_adds_counterexamples(client, db, org, ag
     monkeypatch.setattr(tps, "check_trace", lambda ps, es: [Violation(p.id, p.name, "high", 1, (1,), "m")])
     assert await tps.check_completed_trace(db, trace.id) == []
     (row,) = await _rows(db, TracePolicyViolation)
-    assert (row.mode, row.counterexample) == ("live", [1])
+    assert (row.mode, row.counterexample, row.counterexample_status) == ("live", [1], "minimal")
+
+
+@pytest.mark.parametrize("counterexamples", [True, False])
+async def test_counterexample_status_says_pending_minimal_or_fallback(client, db, org, agent, api_key_headers,
+                                                                      enqueued, monkeypatch, counterexamples):
+    await _policy(db, org, CONFIRM)
+    r = await _append(client, api_key_headers, agent, "u1", [ev(0, "search"), ev(1, "delete_user")], final=True)
+    assert r.json()["violations"][0]["counterexample_status"] == "pending"
+    await client.post("/api/traces/ingest", headers=api_key_headers, json={
+        "agent_id": agent.id, "tool_calls": [{"name": "search"}, {"name": "delete_user"}]})
+    if counterexamples:
+        monkeypatch.setattr(checker, "bounded_counterexample", lambda *a: (_ for _ in ()).throw(TimeoutError()))
+    for tid in enqueued:
+        await tps.check_completed_trace(db, tid, counterexamples=counterexamples)
+    rows = await _rows(db, TracePolicyViolation)
+    assert sorted((r.mode, r.counterexample, r.counterexample_status) for r in rows) == [
+        ("batch", [0, 1], "fallback"), ("live", [0, 1], "fallback")]
 
 
 async def test_batch_check_commits_rows_and_counterexamples(client, db, session_maker, org, agent, api_key_headers,
@@ -302,8 +320,8 @@ async def test_batch_check_commits_rows_and_counterexamples(client, db, session_
     await tps.check_completed_trace(db, streamed.id)
     async with session_maker() as fresh:
         rows = await _rows(fresh, TracePolicyViolation)
-    assert sorted((r.trace_id == tid, r.mode, r.counterexample) for r in rows) == [
-        (False, "live", [1]), (True, "batch", [0, 1])]
+    assert sorted((r.trace_id == tid, r.mode, r.counterexample, r.counterexample_status) for r in rows) == [
+        (False, "live", [1], "minimal"), (True, "batch", [0, 1], "minimal")]
 
 
 async def test_enqueue_failure_does_not_raise(monkeypatch, caplog):
@@ -370,7 +388,7 @@ async def test_batch_does_not_fill_a_live_row_from_a_later_violation(client, db,
     (trace,) = await _rows(db, Trace)
     await tps.check_completed_trace(db, trace.id)
     (row,) = await _rows(db, TracePolicyViolation)
-    assert (row.at_seq, row.counterexample) == (0, [])
+    assert (row.at_seq, row.counterexample, row.counterexample_status) == (0, [], "none")
 
 
 async def test_archived_policy_keeps_history_and_is_not_enforced(client, db, org, agent, api_key_headers,

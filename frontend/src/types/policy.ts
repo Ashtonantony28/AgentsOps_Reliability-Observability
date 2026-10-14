@@ -2,6 +2,7 @@ export type EventKind = "tool" | "llm" | "retrieval" | "confirmation" | "custom"
 export type PolicySeverity = "info" | "low" | "medium" | "high" | "critical";
 export type PolicyAction = "log" | "alert" | "block";
 export type ViolationMode = "batch" | "live" | "precheck";
+export type CounterexampleStatus = "pending" | "minimal" | "fallback" | "none";
 
 export type EventIn = {
   seq: number;
@@ -63,6 +64,7 @@ export type Violation = {
   severity: PolicySeverity;
   at_seq: number;
   counterexample: number[];
+  counterexample_status: CounterexampleStatus;
   message: string;
   mode: ViolationMode;
   detected_at: string;
@@ -71,6 +73,7 @@ export type Violation = {
 export type PolicyCheckIn = {
   agent_id: string;
   trace_uid?: string | null;
+  prefix?: EventIn[];
   candidate: EventIn;
 };
 
