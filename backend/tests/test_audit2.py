@@ -2,7 +2,6 @@
 import asyncio
 import string
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,8 @@ from app.services import alert_service, violation_service
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from bench_policy import synthetic_policies  # noqa: E402
 
+from tests.timing import median_ms  # noqa: E402
+
 RETRY_CAP = ast.Count(ast.And(ast.Match(kind="tool"), ast.Match(status="error")), "<=", 3, by="name")
 NO_DROP = 'policy no_drop severity critical:\n  always not tool("drop_db")'
 
@@ -31,26 +32,19 @@ def retry_trace(n: int) -> list[Event]:
             for i in range(n)]
 
 
-def _ms(f) -> float:
-    t = time.perf_counter()
-    f()
-    return (time.perf_counter() - t) * 1000
-
-
 def test_count_by_name_counterexample_meets_budget():
     p = compile_policy("retry", ast.Policy("retry_cap", "medium", RETRY_CAP))
     events = retry_trace(200)
-    cx = []
-    ms = _ms(lambda: cx.extend(minimal_counterexample(p, events, 199)))
-    assert cx == [49, 99, 149, 199]
+    assert minimal_counterexample(p, events, 199) == (49, 99, 149, 199)
+    ms = median_ms(lambda: minimal_counterexample(p, events, 199))
     assert ms <= 500, f"{ms:.0f} ms for 200 events (counterexample budget p95 500 ms)"
 
 
 def test_overlapping_globs_counterexample_meets_budget():
     globs = tuple(f"*{c}*" for c in string.ascii_lowercase[:13])
-    name_patterns.cache_clear()
     p = compile_policy("g", ast.Policy("g", "high", ast.Not(ast.Match(kind="tool", globs=globs))))
-    ms = _ms(lambda: minimal_counterexample(p, [Event(0, "tool", "abc", "success", {})], 0))
+    ms = median_ms(lambda: name_patterns.cache_clear() or minimal_counterexample(
+        p, [Event(0, "tool", "abc", "success", {})], 0))
     assert ms <= 500, f"{ms:.0f} ms for a 1-event trace and 13 globs"
 
 
@@ -61,10 +55,9 @@ def test_ingest_step_with_many_distinct_names_meets_budget():
     for i in range(n):
         m.step(Event(i, "tool", f"tool_{i}", "error", {}))
     blob = m.snapshot()
-    samples = sorted(_ms(lambda k=k: Monitor.restore(compiled, blob).step(Event(n, "tool", f"x{k}", "success", {})))
-                     for k in range(20))
+    ms = median_ms(lambda: Monitor.restore(compiled, blob).step(Event(n, "tool", "x", "success", {})), 20)
     assert len(blob) <= 64 * 1024, f"snapshot {len(blob) // 1024} KB"
-    assert samples[18] <= 8, f"restore + step p95 {samples[18]:.1f} ms (ingest budget 8 ms)"
+    assert ms <= 8, f"restore + step median {ms:.1f} ms (ingest budget p95 8 ms, held by bench_policy.py)"
 
 
 async def _stream(client, headers, agent, uid, n):

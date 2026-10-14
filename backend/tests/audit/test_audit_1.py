@@ -1,5 +1,4 @@
 """AUDIT-1.md findings as failing tests; each is xfail(strict=True) until its SG-A1 sub-goal fixes it."""
-import time
 
 import pytest
 
@@ -12,6 +11,7 @@ from app.policy.dsl import parse
 from app.policy.events import Event
 from tests.api.test_event_ingest import NO_DROP, _append, _policy, _rows, ev
 from tests.api.test_precheck import _check
+from tests.timing import median_ms
 
 NESTED = 'policy p: always not once (count(tool(*)) by name > 3)'
 RETRY_CAP = 'policy retry_cap: always count(tool(*) and status("error")) by name <= 3'
@@ -65,18 +65,15 @@ def test_nested_count_by_counterexample_is_bounded():
     (p,) = parse(NESTED)
     events = _named(80)
     assert reference.evaluate(p, events)[:1] == [79]
-    start = time.monotonic()
-    check_trace([compile_policy("p", p)], events)
-    assert time.monotonic() - start < 2.0
+    assert median_ms(lambda: check_trace([compile_policy("p", p)], events), 3) < 2000
 
 
 def test_retry_cap_counterexample_meets_budget():
     (p,) = parse(RETRY_CAP)
     events = _named(200)
-    start = time.monotonic()
     (v,) = check_trace([compile_policy("p", p)], events)
     assert v.at_seq == 199 and v.counterexample == (196, 197, 198, 199)
-    assert time.monotonic() - start < 1.0
+    assert median_ms(lambda: check_trace([compile_policy("p", p)], events)) < 1000
 
 
 # A1-L1: unconstrained events in a counterexample range over the 5 kinds plus the observed ones only

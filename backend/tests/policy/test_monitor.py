@@ -192,6 +192,17 @@ def test_past_the_group_bound_no_violation_is_missed(ps, events, max_groups):
             m = Monitor.restore(compiled, m.snapshot())
 
 
+def test_past_the_group_bound_an_undecided_count_fails_the_policy():
+    """A4-9: the upper bound alone says `count >= 2` holds, but the true count is 1; the policy must fail."""
+    p = ast.Policy("p", "high", ast.Implies(ast.Match(kind="tool", globs=("b",)),
+                                            ast.Count(ast.Match(), ">=", 2, by="name")))
+    events = [Event(0, "tool", "a", "success", {}), Event(1, "tool", "b", "success", {})]
+    assert evaluate(p, events) == [1]
+    with patch.object(monitor, "MAX_GROUPS", 0):
+        m = Monitor(_compiled([p]))
+        assert [(m.step(e), list(m.failing))[1] for e in events] == [[], ["0"]]
+
+
 def test_count_by_state_is_bounded_and_exact_below_the_bound():
     p = ast.Policy("p", "low", ast.Count(ast.Match(status="error"), "<=", 2, by="name"))
     n = monitor.MAX_GROUPS

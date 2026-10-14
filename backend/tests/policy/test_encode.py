@@ -39,10 +39,7 @@ def test_fixture_verdicts(fx):
 
 @pytest.mark.parametrize("fx", FIXTURES, ids=lambda f: f.name)
 def test_fixture_asts_match_parser(fx):
-    try:
-        parsed = parse(fx.source)
-    except NotImplementedError:
-        pytest.skip("parser lands in SG1")
+    parsed = parse(fx.source)
     assert parsed == fixture_policies(fx)
     assert [repr(p.formula) for p in parsed] == [repr(p.formula) for p in fixture_policies(fx)]
 

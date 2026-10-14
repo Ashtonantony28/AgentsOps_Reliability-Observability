@@ -39,7 +39,11 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
-      - run: pytest -q
+      - run: pytest -q --cov --cov-report=term --cov-fail-under=72
+      - name: coverage of the policy code
+        run: coverage report --fail-under=90 --include="app/policy/*,app/routers/trace_policies.py,app/services/trace_policy_service.py,app/services/violation_service.py,app/tasks/policy_tasks.py"
+      - name: API and service tests on Postgres
+        run: TEST_DB=postgres pytest -q tests/api tests/audit tests/test_audit2.py
       - run: pytest tests/policy/test_differential.py -q --hypothesis-profile=ci
       - run: alembic upgrade head && alembic downgrade -1 && alembic upgrade head
       - name: bench (dry run)
@@ -68,8 +72,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e sdk pytest
-      - run: cd sdk && pytest -q
+      - run: pip install -e sdk pytest pytest-cov
+      - run: cd sdk && pytest -q --cov=agentops_sdk --cov-branch --cov-fail-under=80
 
   frontend:
     runs-on: ubuntu-latest

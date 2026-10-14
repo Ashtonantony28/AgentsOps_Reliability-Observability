@@ -1,0 +1,8 @@
+[run]
+source = app
+branch = True
+# async SQLAlchemy runs the code after each `await db...` in a greenlet; without this it reads as missed
+concurrency = greenlet,thread
+
+[report]
+skip_covered = True

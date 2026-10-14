@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import time
 import uuid
 
 import pytest
@@ -319,3 +320,17 @@ async def test_legacy_block_out_of_scope_is_allowed(client, db, org, agent, api_
     body = (await _check(client, api_key_headers, agent, ev(0, "drop_db"))).json()
     assert body == {"allowed": True, "violations": []}
     assert (await _append(client, api_key_headers, agent, "u1", [ev(0, "drop_db")])).status_code == 202
+
+
+@pytest.mark.parametrize("route", ["check", "events"])
+async def test_api_key_routes_are_rate_limited(client, db, org, agent, api_key_headers, route, monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 6_000_000.0)  # one rate-limit window for all three calls
+    org.rate_limit_per_min = 2
+    await db.commit()
+
+    async def call(i):
+        if route == "check":
+            return await _check(client, api_key_headers, agent, ev(0, "search"))
+        return await _append(client, api_key_headers, agent, "t1", [ev(i, "search")])
+
+    assert [(await call(i)).status_code for i in range(3)] == [200 if route == "check" else 202] * 2 + [429]

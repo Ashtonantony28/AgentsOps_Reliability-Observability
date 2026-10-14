@@ -151,7 +151,8 @@ async def test_seeded_demo_org_shows_violations(session_maker, db, client, monke
         pass
     monkeypatch.setattr(seed, "create_async_engine", lambda *a, **k: SimpleNamespace(dispose=_noop))
     monkeypatch.setattr(seed, "async_sessionmaker", lambda *a, **k: session_maker)
-    await db.execute(text("PRAGMA foreign_keys = ON"))  # insert order matters on Postgres
+    if db.bind.dialect.name == "sqlite":
+        await db.execute(text("PRAGMA foreign_keys = ON"))  # insert order matters on Postgres
     await seed.seed()
 
     org = (await db.execute(select(Organization).where(Organization.slug == "demo"))).scalar_one()
