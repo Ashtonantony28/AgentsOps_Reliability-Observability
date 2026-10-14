@@ -291,10 +291,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -k linear tests/policy -q` · `python backend/scripts/bench_policy.py --path live --assert-budget`
 
 ### SG-A5.2 Minimal counterexamples for large count bounds (AUDIT-5 A5-2 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-5
+- **Owner:** thread "Fix count counterexamples" · **Status:** done · **Depends:** AUDIT-5
 - **Scope:** counts with bounds of 16 and more (plain, `by name`, `by kind`) get minimal counterexamples within the 500 ms row at 200 events, e.g. an "at least k" counter linear in window × bound for any bound up to the window size, or a deletion pass seeded with the count's hits. `bench_policy.py --path counterexample` gains a bound-40 case.
 - **Acceptance:** `test_large_bound_count_counterexample_is_minimal` passes unmarked; the SG3 sufficiency and minimality property tests pass with bounds up to 64; counterexample bench row met with the new case.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -k large_bound tests/policy/test_counterexample.py -q` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
+- **Result:** counts are unary ("at least k") whenever window × (bound + 1) ≤ 50 000 (`_UNARY_CELLS`), bit-vector adders above. The bound-40 audit case keeps the 41 hits; bench counterexample p95 300 ms with a p9 (bound 40) case added; new property test with bounds up to 64 over 70-event traces. Open: `count … by name` over globs (string names) is slow at any bound, 3 included: its deletion calls hit the 2 s budget (bound-20 row now 21 events, minimal, still 2 s); 1 000 events × bound 100 also runs out of budget after finding the minimal 101.
 
 ### SG-A5.3 A blocked append does not end enforcement (AUDIT-5 A5-3 high)
 - **Owner:** unassigned · **Status:** proposed; default picked below reverses SG4's "nothing stored" on a 403, confirm before dispatch if that was deliberate · **Depends:** AUDIT-5
