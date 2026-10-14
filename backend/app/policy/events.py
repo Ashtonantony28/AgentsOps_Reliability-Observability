@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from app.models.trace import Span
@@ -29,5 +30,9 @@ def events_from_trace(trace: TraceIn) -> list[Event]:
 
 
 def events_from_spans(spans: Sequence[Span]) -> list[Event]:
+    """Spans stored without `seq` (pre-0002 or seeded) are ordered by start time and numbered by position."""
+    if any(s.seq is None for s in spans):
+        ordered = sorted(spans, key=lambda s: (s.started_at or datetime.min, s.id or ""))
+        return [Event(i, s.kind, s.name, s.status, dict(s.attrs or {})) for i, s in enumerate(ordered)]
     ordered = sorted(spans, key=lambda s: s.seq)
     return [Event(s.seq, s.kind, s.name, s.status, dict(s.attrs or {})) for s in ordered]

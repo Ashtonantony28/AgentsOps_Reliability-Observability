@@ -190,6 +190,42 @@ def bench(path: str, impl, iterations: int, events, policies) -> list[float]:
     return [run(i) for i in range(iterations)]
 
 
+def load_test(impl, rate: float, seconds: float, n_traces: int = 50) -> int:
+    """Live events at `rate`/s across `n_traces` interleaved traces; each event is restore + step + snapshot."""
+    compiled = [impl.compile_policy(p.name, p) for p in synthetic_policies()]
+    traces = [synthetic_trace(seed=t) for t in range(n_traces)]
+    blobs = [impl.Monitor(compiled).snapshot() for _ in traces]
+    steps, totals = [], []
+    clock, total = time.perf_counter, int(rate * seconds)
+    start = clock()
+    for i in range(total):
+        delay = start + i / rate - clock()
+        if delay > 0:
+            time.sleep(delay)
+        t, pos = i % n_traces, (i // n_traces) % TRACE_LEN
+        if pos == 0:
+            blobs[t] = impl.Monitor(compiled).snapshot()
+        t0 = clock()
+        m = impl.Monitor.restore(compiled, blobs[t])
+        t1 = clock()
+        m.step(traces[t][pos])
+        t2 = clock()
+        blobs[t] = m.snapshot()
+        steps.append((t2 - t1) * 1000)
+        totals.append((clock() - t0) * 1000)
+    achieved = total / (clock() - start)
+    failed = achieved < 0.95 * rate
+    print(f"load: {total} events over {n_traces} traces, target {rate:g}/s, achieved {achieved:.1f}/s"
+          f"{'  TOO SLOW' if failed else ''}")
+    for b, samples in [(BUDGETS[0], steps), (BUDGETS[1], totals)]:
+        p50, p95, p99 = (percentile(samples, q) for q in (50, 95, 99))
+        ok = p95 <= b.p95_ms and p99 <= b.p99_ms
+        failed |= not ok
+        print(f"{b.path:<15} {b.target:<26} {p50:>9.3f} {p95:>9.3f} {p99:>9.3f} "
+              f"{f'{b.p95_ms:g}/{b.p99_ms:g}':>15}  {'ok' if ok else 'OVER BUDGET'}")
+    return 1 if failed else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--path", choices=PATHS + ["all"], default="all")
@@ -200,11 +236,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seconds", type=float, default=60)
     args = ap.parse_args(argv)
 
-    if args.load is not None:
-        print("--load is not available until SG4 (needs the live ingest path)", file=sys.stderr)
-        return 2
-
     impl = stub_impl() if args.dry_run else real_impl()
+    if args.load is not None:
+        return load_test(impl, args.load, args.seconds)
     events, policies = synthetic_trace(), synthetic_policies()
     budgets = [b for b in BUDGETS if args.path in ("all", b.path)]
 

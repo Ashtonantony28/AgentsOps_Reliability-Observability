@@ -13,6 +13,7 @@ celery = Celery(
         "app.tasks.alert_tasks",
         "app.tasks.evaluation_tasks",
         "app.tasks.report_tasks",
+        "app.tasks.policy_tasks",
     ],
 )
 

@@ -51,6 +51,12 @@ jobs:
       - name: bench (counterexample budget)
         run: python backend/scripts/bench_policy.py --path counterexample --assert-budget
         working-directory: .
+      - name: bench (live and ingest budgets)
+        run: |
+          python backend/scripts/bench_policy.py --path live --assert-budget
+          python backend/scripts/bench_policy.py --path ingest --assert-budget
+          python backend/scripts/bench_policy.py --load 500 --seconds 60
+        working-directory: .
 
   sdk:
     runs-on: ubuntu-latest

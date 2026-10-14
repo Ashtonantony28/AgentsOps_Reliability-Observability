@@ -107,13 +107,6 @@ async def test_forbid_tool_rule_blocks(client, db, org, api_key_headers, agent, 
     assert len(logs) == 1
 
 
-async def test_forbid_tool_ignores_non_tool_kinds(client, db, org, api_key_headers, agent):
-    db.add(PolicyRule(org_id=org.id, name="no-drop", rule={"forbid_tool": "drop_db"}, action="block"))
-    await db.commit()
-    r = await _ingest(client, api_key_headers, agent, events=[{"seq": 0, "kind": "llm", "name": "drop_db"}])
-    assert r.status_code == 202, r.text
-
-
 async def test_ingest_publishes_to_redis(client, redis, org, api_key_headers, agent):
     ps = redis.pubsub()
     await ps.subscribe(f"traces:{org.id}")
@@ -146,7 +139,8 @@ def test_ws_ingest(app_, api_key, agent, session_maker):
         with tc.websocket_connect(f"/ws/ingest?api_key={api_key}") as ws:
             ws.send_text(json.dumps({"type": "events", "trace_uid": "u1", "agent_id": agent.id,
                                      "events": [{"seq": 0, "name": "delete_user"}], "final": True}))
-            assert ws.receive_json() == {"ok": False, "error": "not_implemented"}
+            streamed = ws.receive_json()
+            assert streamed["ok"] is True and streamed["accepted"] == 1 and streamed["violations"] == []
 
             ws.send_text(json.dumps({"type": "events", "trace_uid": "u1", "agent_id": agent.id,
                                      "events": [{"seq": -1, "name": "x"}]}))

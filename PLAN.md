@@ -58,7 +58,7 @@ SG0 reruns these numbers on the benchmark harness and may revise the budget once
 
 ## Sub-goals
 
-Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` ∥ `SG4`) → (`SG5a` ∥ `SG5b`) → `SG6` → audits.
+Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` ∥ `SG4`) → `SG0b` → (`SG5a` ∥ `SG5b`) → `SG6` → audits.
 
 ### SG0 Shared interfaces and harness
 - **Owner:** SG0 thread · **Status:** done (merged `aa2f27a`, PR #2) · **Blocks:** everything
@@ -98,7 +98,7 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
 
 ### Fixture gate
 SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch budget met. Recorded here with the commit hash before SG3/SG4 start.
-- **Met** at `10a4a3e` (SG2 merge, PR #4), on top of SG1 (`2595399`).
+- **Passed** at `10a4a3e` (SG2 merge, PR #4).
 
 ### SG3 Minimal counterexamples
 - **Owner:** SG3 thread · **Status:** done · **Depends:** fixture gate
@@ -113,7 +113,7 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - Limits: `count … by name` on a policy that also uses globs needs real strings (Z3 string theory, 1 s budget per counterexample); if Z3 gives up, the result keeps the events it could not rule out, so it stays sufficient but may not be minimal. Nested `count by` under `once`/`historically` is quadratic in trace length. Many overlapping `*` globs in one policy can make the glob-match set enumeration large. `check_trace` lets a counterexample error propagate rather than drop it silently; kinds outside the 5 (possible in stored spans) are handled.
 
 ### SG4 Checker service (batch + live)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** fixture gate
+- **Owner:** SG4 thread · **Status:** done · **Depends:** fixture gate
 - **Scope:** `Monitor` (incremental), Celery task `check_completed_trace`, event-append endpoint and `/ws/ingest` event messages, monitor state in Redis, `TracePolicy` CRUD router + `validate`, persistence of `PolicyViolation`, `action=block` returning 403 like existing `PolicyViolation`.
 - **Acceptance:**
   - For every fixture, streaming events one by one through `Monitor` yields the same violations as `check_trace` on the whole trace (same `at_seq`).
@@ -122,6 +122,25 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - Completed traces are checked exactly once (idempotent on re-delivery).
   - Live and ingest-overhead budget rows met; load test at 500 events/s for 60 s keeps p95 within budget.
 - **Verify:** `cd backend && pytest tests/policy/test_monitor.py tests/api/test_trace_policies.py tests/api/test_event_ingest.py -q` · `python scripts/bench_policy.py --path live --assert-budget` · `python scripts/bench_policy.py --load 500 --seconds 60`
+- **Result:** all three verify commands pass (149 tests across the three files; full backend suite green). Live `Monitor.step` p95 ≈ 0.02 ms, ingest restore+step+snapshot p95 ≈ 0.2 ms; load test 30 000 events at 500/s over 50 interleaved traces: step p95 ≈ 0.05 ms, ingest p95 ≈ 0.4 ms. CI now runs the live, ingest and load benches.
+  - `Monitor` (`checker.py`, plan in `monitor.py`) evaluates the same state-carrying recurrences as the Z3 encoding on concrete values, so a step needs no solver. It is checked against `check_trace` on every fixture and on Hypothesis traces, and against `reference.evaluate` on 3 000 cases; seeded mutants (since, previously, count by) are caught. `step` raises `ValueError` on any seq other than `next_seq`. Snapshots are JSON carrying each policy's id and formula digest; `restore` raises `ValueError` on any mismatch.
+  - Live path (`trace_service.append_events`, REST and `/ws/ingest`): per-trace Redis lock; spans in the DB are the source of truth, and the Redis monitor state (`policy:monitor:{trace_id}`, 24 h TTL) is a cache that is rebuilt from spans when missing, stale or for a changed policy set (violations found while rebuilding are recorded too). A streamed trace is marked `meta.stream = "open"` until `final`; appending to a final or whole-ingested trace is 409 `trace_closed`, seq gaps/dups 409 `seq_conflict` with `expected_seq`. A `block` violation rejects the whole request (403, nothing stored, `policy_block` audit row); legacy `forbid_tool` rules also apply to appended events.
+  - Whole-trace ingest runs only `block` policies inline (via `Monitor`, 403 as before) and queues `check_completed_trace` when any trace policy applies; `final` on the events path queues it too. The task is idempotent through `ON CONFLICT DO NOTHING` on `(trace_id, policy_id, policy_version)` and returns only new rows (for SG5a to publish). It also fills in counterexamples on live rows once SG3 wires them into `check_trace`.
+  - Test-only dependency: `fakeredis[lua]` + `lupa` (Redis lock scripts).
+
+### SG0b Ingest hardening
+- **Owner:** SG0b thread · **Status:** done · **Depends:** SG4
+- **Scope:** ingest gaps found in the SG2 and SG4 reviews. Each item first got a test that failed on `c9e144e`.
+  1. Legacy `forbid_tool` rules only matched `kind="tool"`, so the same name under another kind bypassed a `block` rule. Now every kind (`kind` is client-chosen).
+  2. Spans without `seq` (pre-0002 rows, seeded data) crashed `events_from_spans` and the batch check. They are now ordered by `started_at` and numbered by position; the seed sets `seq` (and no longer inserts spans with a null `trace_id`).
+  3. One invalid trace made `/api/traces/ingest/bulk` a 422 for the whole batch (and the SDK re-buffers the whole batch forever); a policy block or DB error mid-batch was a 500. Traces are now validated and stored one by one; rejected entries carry `index`, invalid ones `reason: "invalid_payload"` + `errors`, DB errors `reason: "storage_error"`.
+  4. Fields had no bounds, so out-of-range values reached Postgres. `EventIn`/`ToolCallIn` `name` ≤ 255 and `status` ≤ 32, `TraceIn` strings and the events `trace_uid` bounded by their columns, `latency_ms`/`tokens_*` ≤ int32 (422). Tz-aware trace timestamps are stored as naive UTC.
+  5. `0002` left columns nullable that the models require. Migration `0003_policy_not_null` backfills, adds server defaults and sets NOT NULL on `trace_policies` and `policy_violations`.
+  6. Legacy `forbid_pii` / `block_on_injection` rules read trace text, which streamed traces lack. On both paths they now also scan each string in event `input` (PII, injection) and `output` (PII), one string at a time. So a whole-trace `tool_calls` payload with PII in a tool's input is now caught by a `forbid_pii` rule too.
+  7. (found here) `evaluate_policies` returned on the first `warn` match, hiding a later `block` rule. It now raises on any matching block rule and keeps the first warning.
+- **Acceptance:** each item has a failing-then-passing test; full backend suite green; migration round-trip on Postgres shows no nullability drift on the new tables.
+- **Verify:** `cd backend && pytest tests/api/test_ingest_hardening.py tests/test_migration.py -q` · `cd backend && pytest -q` · `alembic upgrade head && alembic downgrade -1 && alembic upgrade head`
+- **Result:** all pass locally (Postgres 16, migration test not skipped); 708 backend tests. Open: span payloads are stored unmasked on both paths (only trace text is masked); bulk ingest has no batch-size cap (unchanged); `spans` columns from `0001` keep their nullability drift (fixing it means a NOT NULL change on a large table).
 
 ### SG5a Integration: pipeline, alerts, reports
 - **Owner:** unassigned · **Status:** proposed · **Depends:** SG3, SG4
@@ -277,7 +296,7 @@ Decided while turning the contract into code; frozen with the rest.
 - `EventIn.kind` is a literal of the 5 kinds; `status` stays free text so legacy `tool_calls` still map. `TraceIn.events` seqs must be exactly `0..n-1` (422 otherwise).
 - Storage: `spans.attrs JSON NULL` added (events need their attrs back), unique index `(trace_id, seq)`. `policy_violations.policy_name` stores the name at detection time so rows map straight to `ViolationOut`. Event timestamps are stored as naive UTC. The ORM class for `policy_violations` is `TracePolicyViolation`, to avoid clashing with the existing `trace_service.PolicyViolation` exception.
 - `TracePolicyCreate` is `{source, action, agent_id?, environment?, enabled}`: `source` holds exactly one `policy` block, and `name`/`severity` come from it. `ViolationOut.id`/`trace_id` are null for precheck results.
-- Existing `forbid_tool` rules also apply to `tool`-kind events, so an `events` payload cannot bypass them.
+- Existing `forbid_tool` rules also apply to events of every kind (SG0b; originally `tool`-kind only), so an `events` payload cannot bypass them.
 
 ## Log
 
@@ -286,4 +305,6 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG0 in review.
 - 2026-10-14: SG0 merged (`aa2f27a`). SG1 done.
 - 2026-10-14: SG2 done. With SG1 merged, its merge meets the fixture gate.
+- 2026-10-14: SG4 done.
+- 2026-10-14: SG0b done.
 - 2026-10-14: SG3 done.
