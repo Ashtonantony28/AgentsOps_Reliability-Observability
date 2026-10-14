@@ -231,3 +231,22 @@ def test_check_with_undelivered_events_follows_failure_policy(client, server, fa
         result = t.check("b")
     assert (result.allowed, result.error) == (not fail_closed, "trace events not delivered")
     assert "check" not in server.routes()
+
+
+def test_sync_check_overlapping_async_push_keeps_order(aclient, server):
+    server.delay = 0.05
+    server.queue("events", (202, {"accepted": 1}),
+                 (409, {"error": {"code": "seq_conflict", "details": {"expected_seq": 1}}}))
+
+    async def run():
+        async with aclient.trace(stream=True) as t:
+            t.add_event("tool", "a")
+            await asyncio.sleep(0)  # the async push of [0] is in flight
+            assert t.check("b").allowed  # pushes [0] synchronously, then checks
+            t.add_event("tool", "b")
+        return t
+
+    t = asyncio.run(run())
+    assert server.routes()[:2] == ["events", "check"]
+    assert seqs(server) == [[0], [0], [1], []] and finals(server)[-1] is True
+    assert not t._dead and t._sent == 2

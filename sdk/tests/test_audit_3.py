@@ -9,7 +9,6 @@ from agentops_sdk.utils import drain_disk
 BLOCK = (200, {"allowed": False, "violations": [{"policy_id": "p1", "policy_name": "no-refunds"}]})
 
 
-@pytest.mark.xfail(strict=True, reason="A3-4: a sync check in an async streamed trace skips the server and fails open")
 def test_sync_guard_in_async_streamed_trace_is_checked(aclient, server):
     server.queue("check", BLOCK)
     calls = []

@@ -98,8 +98,8 @@ class Trace:
         task.add_done_callback(self._tasks.discard)
 
     def check(self, name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
-        if self._streaming() and not self._client.is_async:
-            self._push()
+        if self._streaming():
+            self._push()  # sync even with an async client: a sync check can't await the scheduled push
         return self._undelivered() or self._require_client()._post_check(self._check_body(name, kind, input, attrs))
 
     async def acheck(self, name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
@@ -132,18 +132,20 @@ class Trace:
     def _batch(self, final: bool) -> Optional[tuple]:
         if self._dead:
             return None
-        pending = self.events[self._sent:]
+        start = self._sent
+        pending = self.events[start:]
         if not pending and not final:
             return None
-        return pending, events_request(self.agent_id, pending, final)
+        return start, len(pending), events_request(self.agent_id, pending, final)
 
-    def _settle(self, outcome, n: int, final: bool) -> bool:
-        """Applies a push outcome; True when the server already held part of the batch and the rest should go now."""
+    def _settle(self, outcome, start: int, n: int, final: bool) -> bool:
+        """Applies the outcome of pushing events[start:start + n]; True when the server already held part of
+        the batch and the rest should go now. A sync and an async push of the same trace may overlap."""
         if outcome == "ok":
-            self._sent += n
+            self._sent = max(self._sent, start + n)
             return False
-        if isinstance(outcome, int) and self._sent < outcome <= self._sent + n:
-            self._sent = outcome
+        if isinstance(outcome, int) and start < outcome <= len(self.events):
+            self._sent = max(self._sent, outcome)
             return True
         if outcome == "retry":
             if final:
@@ -157,8 +159,8 @@ class Trace:
         with self._lock:
             for _ in range(2):
                 batch = self._batch(final)
-                if batch is None or not self._settle(self._client._send_events(self.trace_id, batch[1]),
-                                                     len(batch[0]), final):
+                if batch is None or not self._settle(self._client._send_events(self.trace_id, batch[2]),
+                                                     *batch[:2], final):
                     return
 
     async def _apush(self, final: bool = False) -> None:
@@ -167,8 +169,8 @@ class Trace:
         async with self._alock:
             for _ in range(2):
                 batch = self._batch(final)
-                if batch is None or not self._settle(await self._client._asend_events(self.trace_id, batch[1]),
-                                                     len(batch[0]), final):
+                if batch is None or not self._settle(await self._client._asend_events(self.trace_id, batch[2]),
+                                                     *batch[:2], final):
                     return
 
     def mark_error(self, message: str):

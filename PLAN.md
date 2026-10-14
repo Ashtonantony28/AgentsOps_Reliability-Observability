@@ -244,16 +244,18 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k "environment or streamed" tests/api/test_event_ingest.py tests/api/test_sdk_contract.py -q` · `cd sdk && pytest -q` · `cd frontend && npx tsc --noEmit`
 
 ### SG-A3.2 `/check` applies legacy block rules (AUDIT-3 A3-3 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Owner:** thread SG-A3.2/A3.3 · **Status:** done · **Depends:** none
 - **Scope:** `precheck` runs the legacy `PolicyRule` checks the append path runs on the candidate (`forbid_tool`, `forbid_pii` on its `input`, `block_on_injection`), so `allowed` is false exactly when the append would be a 403. How a legacy hit appears in `violations` is the thread's call within `ViolationOut`; a shape change is stop-and-report.
 - **Acceptance:** the A3-3 test passes unmarked; for each legacy rule type, a candidate the append rejects is `allowed: false` and one it accepts is `allowed: true`; precheck budget row still met.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k legacy_block tests/api/test_precheck.py -q` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+- **Result:** `precheck` runs `evaluate_policies` on the candidate alone (no trace text, the trace's or agent's environment), as the append path does. A block-rule hit makes `allowed` false and is listed first in `violations` as a `ViolationOut` with the `PolicyRule` id and name, `policy_version: 1`, `severity: "high"`, `at_seq` = the candidate's position, `mode: "precheck"`; warn/log hits are not listed (the append only audits them). Tests: A3-3 unmarked; `test_check_agrees_with_append_on_legacy_rules` (3 rule types × block/warn, rejected and accepted candidate, against the real append), scope and ordering tests in `tests/api/test_precheck.py`. Full backend suite 981 passed; precheck bench p95 6.3 ms (budget 10).
 
 ### SG-A3.3 Sync checks in async streamed traces (AUDIT-3 A3-4 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none (SDK only)
+- **Owner:** thread SG-A3.2/A3.3 · **Status:** done · **Depends:** none (SDK only)
 - **Scope:** `Trace.check` on a streamed trace with an async client delivers pending events before checking (or waits for the in-flight push), so a sync `@guard` in an async agent is checked against the server.
 - **Acceptance:** `sdk/tests/test_audit_3.py::test_sync_guard_in_async_streamed_trace_is_checked` passes unmarked; event order and `seq` stay correct when a sync check and an `add_event` push race; existing SDK tests unchanged.
 - **Verify:** `cd sdk && pytest -q`
+- **Result:** `Trace.check` pushes pending events synchronously with an async client too (a sync check already blocks on its HTTP call). A push now settles by the batch's start offset (`_sent = max(_sent, start + n)`; a `seq_conflict` at or past the batch start resyncs), so a sync push overlapping an in-flight async push neither double-counts nor kills the stream. Tests: A3-4 unmarked; `test_sync_check_overlapping_async_push_keeps_order` (fails on the old `_settle`). SDK suite 76 passed.
 
 ### SG-A3.4 AUDIT-3 mediums without contract changes (A3-6, A3-8, A3-9, A3-10, A3-11)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** none

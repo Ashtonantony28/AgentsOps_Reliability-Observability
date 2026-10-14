@@ -94,7 +94,6 @@ async def test_streamed_trace_input_is_scanned_by_legacy_pii_rule(db, org, sdk_c
 
 
 # A3-3: precheck ignores legacy PolicyRule block rules that the append path enforces
-@pytest.mark.xfail(strict=True, reason="A3-3: /check says allowed for an event the append path rejects with 403")
 async def test_check_agrees_with_append_on_legacy_block_rule(client, db, org, agent, api_key_headers):
     db.add(PolicyRule(org_id=org.id, name="no-drop", rule={"forbid_tool": "drop_db"}, action="block"))
     await db.commit()
