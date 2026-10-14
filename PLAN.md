@@ -270,6 +270,18 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Acceptance:** the A3-5 and A3-7 tests pass unmarked; precheck budget row met with a 200-event prefix in the request.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_3.py -k "non_streamed or counterexample" -q` · `cd sdk && pytest -q` · `cd frontend && npx tsc --noEmit && npm test -- --run`
 
+### SG-A4.1 Test database that does not hide missing commits (AUDIT-4 A4-1 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none (tests only)
+- **Scope:** the `engine`/`session_maker` fixtures stop sharing one connection between sessions (a file-backed SQLite with a normal pool, or Postgres where CI has it), so a session sees only committed rows; tests that relied on the sharing are fixed, not the code under test. Add a test that a batch check's rows and filled-in counterexamples are visible from a fresh session.
+- **Acceptance:** `python backend/scripts/mutants_audit4.py A4-1` reports the mutant killed; full backend suite green with no code change outside `tests/`.
+- **Verify:** `cd backend && pytest -q` · `python backend/scripts/mutants_audit4.py A4-1`
+
+### SG-A4.2 AUDIT-4 mediums (A4-2 to A4-8)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** SG-A4.1 for A4-4 if Postgres becomes the test database
+- **Scope:** async SDK tests for `acheck` with undelivered events, default fail-open, `check_timeout_s`, transient stream errors and resync (A4-2); move single-sample wall-clock asserts out of `pytest -q` into the bench job or make them repeated-sample (A4-3); run the API and service tests on Postgres in CI, covering the `on_conflict` insert and the `FOR UPDATE` alert lock (A4-4); tests for the solver timeout and the budget-spent warning (A4-5); backend and SDK coverage in CI with `concurrency = greenlet` and a floor (A4-6); a check of `frontend/src/types/policy.ts` against `app.openapi()` and a test of the API client's paths (A4-7); a rate-limit test on `/check` and the events route (A4-8). A4-9 to A4-12 (low) ride along where cheap, starting with A4-9's `@example`.
+- **Acceptance:** `python backend/scripts/mutants_audit4.py A4-2 A4-4 A4-5 A4-8 A4-9` reports every mutant killed; `test_audit_4.py` passes with both markers removed; two consecutive full CI runs green.
+- **Verify:** `cd backend && pytest -q` · `cd sdk && pytest -q` · `python backend/scripts/mutants_audit4.py`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -279,7 +291,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A1 | Encoding soundness (no false negatives); done, see `AUDIT-1.md`: 2 high → SG-A1.1, SG-A1.2 | Differential fuzz at 100 k cases vs reference evaluator, mutation testing of `encode.py` (surviving mutants are findings), adversarial fixtures (empty trace, 1-event trace, glob edge cases, unicode names, counts at exact bounds). |
 | A2 | Performance under load | Load at 2× the SG4 rate, long traces (5 000 events), 50 policies, Redis restarts mid-trace; every budget row checked. |
 | A3 | API/SDK consistency; done, see `AUDIT-3.md`: 4 high → SG-A3.1 to SG-A3.3 | OpenAPI vs pydantic vs TS types vs SDK models; error codes; legacy payload compatibility. |
-| A4 | Test coverage and quality | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
+| A4 | Test coverage and quality; done, see `AUDIT-4.md`: 1 high → SG-A4.1 | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
 
 ## Interface contracts
 
@@ -419,3 +431,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG-A2.3 and SG-A2.4 done (A2-3, A2-4, A2-6 fixed; A2-5 partly).
 - 2026-10-14: SG-A1.2, SG-A2.1 and SG-A2.2 done.
 - 2026-10-14: Audit A3 (API/SDK consistency) done: 0 critical, 4 high, 7 medium, 4 low in AUDIT-3.md; SG-A3.1 to SG-A3.5 proposed (SG-A3.1 and SG-A3.5 change the interface contract).
+- 2026-10-14: Audit A4 (test coverage) done: 0 critical, 1 high, 7 medium, 4 low in AUDIT-4.md; SG-A4.1 and SG-A4.2 proposed (tests and CI only, no contract change).
