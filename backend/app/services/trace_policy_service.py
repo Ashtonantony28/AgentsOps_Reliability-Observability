@@ -1,9 +1,13 @@
+import asyncio
 import logging
 import uuid
+import weakref
+from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache
 from typing import Sequence
 
+from redis.exceptions import LockError
 from sqlalchemy import or_, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,26 +72,69 @@ def _state_key(trace_id: str) -> str:
     return f"policy:monitor:{trace_id}"
 
 
+def _precheck_key(trace_id: str) -> str:
+    return f"policy:precheck:{trace_id}"
+
+
+# the columns events_from_spans reads; full rows carry payloads the checker never needs
+_EVENT_COLUMNS = (Span.id, Span.seq, Span.kind, Span.name, Span.status, Span.attrs, Span.started_at)
+MAX_CONCURRENT_REBUILDS = 4
+_rebuild_slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # per event loop
+
+
+def _restore(blob: str | None, compiled: Sequence[CompiledPolicy], next_seq: int) -> Monitor | None:
+    if blob:
+        with suppress(ValueError):
+            m = Monitor.restore(compiled, blob.encode())
+            if m.next_seq == next_seq:
+                return m
+    return None
+
+
+async def _replay(db: AsyncSession, trace_id: str,
+                  compiled: Sequence[CompiledPolicy]) -> tuple[Monitor, list[Violation]]:
+    """Rebuilds from spans. After a Redis restart every open trace needs this, so few run at once per process."""
+    loop = asyncio.get_running_loop()
+    async with _rebuild_slots.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_REBUILDS)):
+        spans = (await db.execute(select(*_EVENT_COLUMNS).where(Span.trace_id == trace_id))).all()
+        m = Monitor(compiled)
+        return m, [v for e in events_from_spans(spans) for v in m.step(e)]
+
+
 async def load_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
                        next_seq: int) -> tuple[Monitor, list[Violation]]:
     """Monitor positioned after the stored events. Rebuilt from spans if the Redis state is missing, stale or
     for other policies; the violations found while rebuilding are returned so they can be recorded."""
-    blob = await get_redis().get(_state_key(trace_id))
-    if blob:
-        try:
-            m = Monitor.restore(compiled, blob.encode())
-            if m.next_seq == next_seq:
-                return m, []
-        except ValueError:
-            pass
-    m = Monitor(compiled)
-    spans = (await db.execute(select(Span).where(Span.trace_id == trace_id))).scalars().all()
-    return m, [v for e in events_from_spans(spans) for v in m.step(e)]
+    m = _restore(await get_redis().get(_state_key(trace_id)), compiled, next_seq)
+    return (m, []) if m else await _replay(db, trace_id, compiled)
+
+
+async def precheck_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
+                           next_seq: int) -> Monitor:
+    """As `load_monitor`, but a rebuild is cached under its own key, one rebuild per trace at a time: it must not
+    stand in for the append path's state, whose own rebuild records the violations it finds."""
+    r = get_redis()
+    keys = (_state_key(trace_id), _precheck_key(trace_id))
+    for blob in await r.mget(keys):
+        if m := _restore(blob, compiled, next_seq):
+            return m
+    lock = r.lock(f"lock:monitor-rebuild:{trace_id}", timeout=30, blocking_timeout=5)
+    locked = await lock.acquire()
+    try:
+        if locked and (m := _restore(await r.get(keys[1]), compiled, next_seq)):
+            return m
+        m, _ = await _replay(db, trace_id, compiled)
+        await r.set(keys[1], m.snapshot().decode(), ex=STATE_TTL_S)
+        return m
+    finally:
+        if locked:
+            with suppress(LockError):
+                await lock.release()
 
 
 async def save_monitor(trace_id: str, monitor: Monitor | None) -> None:
     if monitor is None:
-        await get_redis().delete(_state_key(trace_id))
+        await get_redis().delete(_state_key(trace_id), _precheck_key(trace_id))
     else:
         await get_redis().set(_state_key(trace_id), monitor.snapshot().decode(), ex=STATE_TTL_S)
 

@@ -1,12 +1,13 @@
 import json
 from dataclasses import replace
+from unittest.mock import patch
 
 import fakeredis.aioredis
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from app.policy import ast
+from app.policy import ast, monitor
 from app.policy.checker import Monitor, Violation, check_trace, compile_policy
 from app.policy.dsl import parse
 from app.policy.events import Event
@@ -175,3 +176,30 @@ def test_attr_values_stay_type_distinct():
     blob = Monitor(_compiled([p])).snapshot()
     with pytest.raises(ValueError):
         Monitor.restore(_compiled([q]), blob)
+
+
+
+@settings(deadline=None, max_examples=1000)
+@given(st.lists(vocab_policies, min_size=1, max_size=3), traces(), st.integers(0, 3))
+def test_past_the_group_bound_no_violation_is_missed(ps, events, max_groups):
+    compiled = _compiled(ps)
+    with patch.object(monitor, "MAX_GROUPS", max_groups):
+        m = Monitor(compiled)
+        for e in events:
+            m.step(e)
+            missed = [str(i) for i, p in enumerate(ps) if e.seq in evaluate(p, events) and str(i) not in m.failing]
+            assert not missed, (e, m.snapshot())
+            m = Monitor.restore(compiled, m.snapshot())
+
+
+def test_count_by_state_is_bounded_and_exact_below_the_bound():
+    p = ast.Policy("p", "low", ast.Count(ast.Match(status="error"), "<=", 2, by="name"))
+    n = monitor.MAX_GROUPS
+    m = Monitor(_compiled([p]))
+    got = [(m.step(e), m.failing)[1] for e in [Event(i, "tool", f"t{i // 2}", "error", {}) for i in range(2 * n)]]
+    assert got == [[]] * (2 * n)  # each of MAX_GROUPS names errs twice: exact, within the bound
+    for i in range(2 * n, 50_000):
+        m.step(Event(i, "tool", f"t{i}", "error" if i % 2 else "success", {}))
+    assert len(m.snapshot()) < 32 * 1024
+    # past it, new names share one counter; once a count is uncertain every later event fails the policy
+    assert m.failing == ["0"]
