@@ -356,16 +356,40 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api tests/audit`
 - **Result:** soft delete. `trace_policies.archived_at` (migration `0005_policy_archive`); `DELETE` sets it, and an archived policy is a 404 to `PUT`/`DELETE`, never enforced (`active_policies`, so live, batch, whole-trace ingest and `/check`), and left out of `GET /api/trace-policies` unless `?include_archived=true`. `TracePolicyOut` and the TS type gain `archived_at`. The unique `(org_id, name)` index is partial (`archived_at IS NULL`) so a deleted policy's name can be reused. Its violations stay in the trace view, `violations.csv`, the summary and the `policy_violations` alert count. The SQLite test engine turns on foreign keys (A6-9); nothing else depended on them being off. 0001-0004 are Postgres-only, so 0005 is tested both ways on Postgres (full chain) and on SQLite (from a `create_all` schema); downgrading keeps archived policies (and their violations), disabled and renamed to their ids.
 
+### SG-A7.1 Linear-time glob matching (AUDIT-7 A7-1 critical)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-7
+- **Scope:** `encode.glob_regex`/`matches` (and `reference.py`'s own matcher, and `counterexample._hits`) match `*` and `?` without regex backtracking, e.g. the two-pointer wildcard algorithm; semantics unchanged (whole name, case-sensitive, code points).
+- **Acceptance:** both A7-1 tests pass unmarked; `*a` x 10 + `b` against a 255-character name of `a`s matches (false) in under 1 ms; differential, fixture and counterexample tests unchanged; live and precheck bench rows met.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_7.py -k glob tests/policy -q` · `python backend/scripts/bench_policy.py --path live --assert-budget`
+
+### SG-A7.2 Batch check linear in atoms x events (AUDIT-7 A7-2 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-7
+- **Scope:** batch verdicts in time linear in distinct atoms x events (e.g. first violations from `Monitor`, already differential-tested equal to `check_trace`, or observed constants folded before solving), so the soft-limit retry is not the same work again; atom terms charged against the counterexample cell cap with the deadline checked while building, so `BUDGET_S` holds for every policy. No contract change.
+- **Acceptance:** both A7-2 tests pass unmarked; a 990-atom policy on a 10 000-event trace stores its verdict and a (fallback) counterexample within the Celery soft limit; batch and counterexample bench rows met; differential and SG3 property tests unchanged.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_7.py -k "batch or counterexample" tests/policy -q` · `python backend/scripts/bench_policy.py --path batch --assert-budget` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
+
+### SG-A7.3 Bounded policy work on the API path (AUDIT-7 A7-3, A7-4 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-7
+- **Scope:** monitor replay and stepping in `precheck`, `append_events` and `ingest_trace` run off the event loop, and a request whose policy work (policy nodes x events) is over a documented bound is refused with a clear 413/422 code (A7-3); the monitor snapshot is bounded in bytes per trace, e.g. `count ... by name` groups keyed by a fixed-size digest and `MAX_GROUPS` counted per monitor rather than per node, keeping SG-A2.4's overflow rule (A7-4). A new error code or limit is a contract change, approved under the standing rule if sound.
+- **Acceptance:** the A7-3 and A7-4 tests pass unmarked; the overflow rule stays Hypothesis-checked against `reference.evaluate` across restores; live, ingest and precheck bench rows met.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_7.py -k "stall or snapshot" tests/policy/test_monitor.py tests/api -q` · `python backend/scripts/bench_policy.py --path ingest --assert-budget` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+
+### SG-A7.4 A paused stream is not cut off (AUDIT-7 A7-5 medium)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** an append to a trace the idle sweeper closed (`meta.stream = "idle"`) reopens it (back to `open`, re-tracked in `streams:open`, monitor rebuilt from spans) instead of a 409; the batch check runs again on the next close and stores nothing twice. Default picked; the alternative is a configurable idle window several times longer. Documented in `docs/policy-dsl.md` or the API docs.
+- **Acceptance:** the A7-5 test passes unmarked; a reopened trace's later violations are stored live and by its next batch check; `final` traces stay closed (409).
+- **Verify:** `cd backend && pytest tests/audit/test_audit_7.py -k idle tests/api/test_idle_streams.py tests/api/test_event_ingest.py -q`
+
 ### SG-A8.1 Checks of a stopped stream see the whole trace (AUDIT-8 A8-1 high)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-8
 - **Scope:** a check of a streamed trace whose stream stopped (any fatal rejection, `trace_closed` from the idle sweep included) sends the events the server lacks (`events[_sent:]`) as `prefix` with the `trace_uid`, so it is judged on the whole trace (SDK only; `/check` already evaluates a prefix after the stored events). `/check` on a trace at the event cap answers from the stored events and prefix instead of refusing (the cap bounds only the prefix); if it must refuse, it answers 413 as the append does (A8-5) and the SDK does not allow on it.
 - **Acceptance:** `test_check_after_idle_close_sees_undelivered_events`, `test_check_at_the_event_cap_does_not_allow` and `test_check_and_append_agree_on_trace_too_long` (if the refusal is kept) pass unmarked on SQLite and Postgres; the SDK suite's `FakeServer` tests for A6-3 assert the prefix sent.
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_8.py tests/api && TEST_DB=postgres pytest -q tests/audit/test_audit_8.py` · `cd sdk && pytest -q` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
 
-### SG-A8.2 AUDIT-8 mediums (A8-2, A8-3, A8-4, A8-6)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** SG-A8.1 for A8-2 (same SDK code)
-- **Scope:** a live trace that pauses over the idle time keeps its later events and outcome (a late append reopens an idle-closed trace, or the SDK uploads the whole trace on `trace_closed`; either changes the `meta.stream = "idle"` contract and is approved by the fixing thread under the standing rule if sound) (A8-2). `@guard` neither lets calls gathered inside a guarded call skip the per-trace lock nor deadlocks a guarded call that awaits another task's guarded call (the fixing thread picks how; recording the event before the call runs, then releasing the lock, is one way, at the cost of the event's status and latency) (A8-3). `/ws/ingest` re-checks the API key's `revoked_at` per message and closes the socket with 4401 once revoked (A8-4). A streamed trace with tool calls and no events sends them as the check's prefix (A8-6).
-- **Acceptance:** the A8-2, A8-3, A8-4 and A8-6 tests pass unmarked on SQLite and Postgres; `python backend/scripts/mutants_audit8.py` still kills every `probe` row.
+### SG-A8.2 AUDIT-8 mediums (A8-3, A8-4, A8-6)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none. A8-2 is AUDIT-7's A7-5: SG-A7.4 fixes it and unmarks `test_events_after_an_idle_pause_are_stored` too.
+- **Scope:** `@guard` neither lets calls gathered inside a guarded call skip the per-trace lock nor deadlocks a guarded call that awaits another task's guarded call (the fixing thread picks how; recording the event before the call runs, then releasing the lock, is one way, at the cost of the event's status and latency) (A8-3). `/ws/ingest` re-checks the API key's `revoked_at` per message and closes the socket with 4401 once revoked (A8-4). A streamed trace with tool calls and no events sends them as the check's prefix (A8-6).
+- **Acceptance:** the A8-3, A8-4 and A8-6 tests pass unmarked on SQLite and Postgres; `python backend/scripts/mutants_audit8.py` still kills every `probe` row.
 - **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api tests/audit` · `cd sdk && pytest -q`
 
 ## Audits (after SG5b; SG6 included if built)
@@ -380,6 +404,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A4 | Test coverage and quality; done, see `AUDIT-4.md`: 1 high → SG-A4.1 | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
 | A5 | Round 2: correctness and performance; done, see `AUDIT-5.md`: 1 critical, 2 high → SG-A5.1 to SG-A5.3 | Round-1 fixes re-checked; checkers probed outside the bench shapes (tag reuse, large count bounds, nested `count by`, 10 000-event traces); end to end through the app and SDK. |
 | A6 | Round 2: API/SDK consistency and test quality; done, see `AUDIT-6.md`: 4 high → SG-A6.1 to SG-A6.3 | Route, schema and SDK read-through, sync vs async diff, tests against the real app, hand-picked mutants of the API and SDK paths. |
+| A7 | Round 3: checker correctness, performance and security; done, see `AUDIT-7.md`: 1 critical, 3 high → SG-A7.1 to SG-A7.3 | Round-2 fixes re-checked, property tests at 10x, inputs sized to the caps (glob shape, policies near 20 000 characters, 10 000-event traces and prefixes, many `count ... by name` nodes), a paused stream. |
 | A8 | Round 3: API/SDK consistency, contracts, security and test quality; done, see `AUDIT-8.md`: 1 high → SG-A8.1 | Read-through of the round-2 changes, tests against the real app with the real SDK, 31 mutants of the round-2 fixes. |
 
 ## Interface contracts
@@ -525,4 +550,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG-A4.2 done (A4 mediums: every replayed mutant killed; coverage and a Postgres run in CI).
 - 2026-10-14: Audit A5 (round 2, correctness and performance) done: 1 critical, 2 high, 2 medium, 5 low in AUDIT-5.md; SG-A5.1 to SG-A5.4 proposed. Round-1 fixes hold.
 - 2026-10-14: Audit A6 (round 2, API/SDK and tests) done: 0 critical, 4 high, 6 medium, 4 low in AUDIT-6.md (two more lows were AUDIT-5's); SG-A6.1 to SG-A6.5 proposed (SG-A6.5 changes the storage contract).
-- 2026-10-14: Audit A8 (round 3, API/SDK and tests) done: 0 critical, 1 high, 4 medium, 3 low in AUDIT-8.md; SG-A8.1 and SG-A8.2 proposed.
+- 2026-10-14: Audit A7 (round 3, checker correctness, performance and security) done: 1 critical, 3 high, 1 medium, 1 low in AUDIT-7.md; SG-A7.1 to SG-A7.4 proposed. Round-2 fixes hold.
+- 2026-10-14: Audit A8 (round 3, API/SDK and tests) done: 0 critical, 1 high, 3 medium, 3 low in AUDIT-8.md (one more medium is AUDIT-7's A7-5); SG-A8.1 and SG-A8.2 proposed.

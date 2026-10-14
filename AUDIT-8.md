@@ -2,7 +2,7 @@
 
 Audited at `53ea0df` (everything through PR #35 merged) by a session that wrote none of the code. Scope: API and SDK consistency, contracts and security (org scoping, auth, `/check`, REST and websocket ingest, streamed traces, check history, idle stream state, SDK `check`/`acheck`/`@guard`, buffering, `fail_closed`), and test quality, including a mutation probe of the round-2 fixes (PRs #24 to #35). Checker correctness, performance and checker security are AUDIT-7's, which ran in parallel. Known and accepted gaps from AUDIT-1 to AUDIT-6 and the PLAN.md results are not re-reported.
 
-**Result: 0 critical, 1 high, 4 medium, 3 low.** The high finding is PLAN.md sub-goal `SG-A8.1`; the mediums are grouped into `SG-A8.2`.
+**Result: 0 critical, 1 high, 3 medium, 3 low**, plus A8-2, a medium AUDIT-7 also found (A7-5; it merged first). The high finding is PLAN.md sub-goal `SG-A8.1`; the other mediums are grouped into `SG-A8.2`, and A8-2 is fixed by AUDIT-7's `SG-A7.4`.
 
 Failing tests: `backend/tests/audit/test_audit_8.py`, each `xfail(strict=True)` against the real app (the async SDK through `ASGITransport`). Each fails today at its final assertion, after its control assertions pass, on SQLite and on Postgres, and will XPASS, failing CI, once fixed, so the fixing sub-goal removes the marker. Run them with `cd backend && pytest tests/audit/test_audit_8.py -q --runxfail` (add `TEST_DB=postgres` for the Postgres run).
 
@@ -11,7 +11,7 @@ Failing tests: `backend/tests/audit/test_audit_8.py`, each `xfail(strict=True)` 
 | ID | Severity | Finding | Sub-goal |
 |---|---|---|---|
 | A8-1 | high | Once a stream stops (idle close, event cap, 422, ...), checks are judged on the server's events only, and at the event cap `/check` answers 409, which the SDK allows: a guarded call after an undelivered secret read is allowed | SG-A8.1 |
-| A8-2 | medium | The idle sweep closes a trace that is only slow (a tool call or human approval over an hour): its later events, output, status and cost are dropped for good | SG-A8.2 |
+| A8-2 | medium | The idle sweep closes a trace that is only slow (a tool call or human approval over an hour): its later events, output, status and cost are dropped for good (AUDIT-7's A7-5) | SG-A7.4 |
 | A8-3 | medium | `@guard`'s per-trace lock follows the context, not the call: guarded calls gathered inside a guarded call skip it (A6-7 again), and a guarded call awaiting a task that makes its own guarded call deadlocks | SG-A8.2 |
 | A8-4 | medium | `/ws/ingest` checks the API key once, at connect: an open socket keeps writing traces and events after the key is revoked | SG-A8.2 |
 | A8-6 | medium | A streamed trace's `add_tool_call` history is invisible to its checks: never streamed, and no `prefix` sent | SG-A8.2 |
@@ -32,7 +32,7 @@ Failing tests: `backend/tests/audit/test_audit_8.py`, each `xfail(strict=True)` 
 
 SG-A6.2 made a fail-open client keep checking a trace after the server rejected one of its appends: "later checks still go to the server and are judged on the events it holds" (`sdk/README.md`). The events the SDK added after that rejection are never sent, neither as appends (`_batch` returns `None` once `_dead`) nor as the check's `prefix` (`Trace._check_body` sends none for a streamed trace). So every guarded call after the stream stops is checked against a history that ends at the rejection:
 
-- **Idle close (new in #35).** An agent pauses for over an hour (a slow tool call, a human approval), the sweep closes the trace, the next push is `409 trace_closed` and the stream stops. With `tool("http_post") -> not once tool("read_secret")` as a `block` policy, `read_secret` added after the pause and then `acheck("http_post")` is allowed. Nothing else records the secret read (A8-2), so no batch violation follows either.
+- **Idle close (new in #35; SG-A7.4 removes this trigger).** An agent pauses for over an hour (a slow tool call, a human approval), the sweep closes the trace, the next push is `409 trace_closed` and the stream stops. With `tool("http_post") -> not once tool("read_secret")` as a `block` policy, `read_secret` added after the pause and then `acheck("http_post")` is allowed. Nothing else records the secret read (A8-2), so no batch violation follows either.
 - **Event cap.** A long agent loop streams one event per push, so the server holds exactly `MAX_TRACE_EVENTS` when the next push is a 413. `/check` on that trace then raises `TraceTooLong`, which the route maps to a 409 (A8-5); the SDK reads a 409 as an outage and, by default, allows. So at the cap every guarded call is allowed even when the server holds the secret read. This is A6-3's own `trace_too_long` case: its test passes because `FakeServer` answers the check with 200.
 - **Any other fatal rejection** (422 on an event payload, `agent_mismatch`, a legacy block on the trace text): the same as the idle case.
 
@@ -43,6 +43,9 @@ Tests: `test_check_after_idle_close_sees_undelivered_events`, `test_check_at_the
 ## Medium
 
 ### A8-2 An hour's pause ends a live trace and drops the rest (API + SDK)
+
+AUDIT-7 reports the same as A7-5 and proposes `SG-A7.4` (an append reopens an idle-closed trace), which also fixes this test; it is kept because it asserts the SDK end of it (the outcome fields and the events after the pause are stored).
+
 
 `close_idle_streams` closes a streamed trace after `STREAM_IDLE_S` (1 h) without an append. That is meant for agents that crashed (A6-12), but an agent that is alive and slow looks the same: a long tool call, a queue wait, a human-in-the-loop confirmation (the DSL's own example is "no `delete_*` without a prior confirmation event"). Its next push is `409 trace_closed`, which the SDK treats as fatal: the events after the pause, and the final push's `output`, `status`, error, latency, tokens and cost, are logged once and dropped. The whole-trace upload is not used as a fallback (`_finish` sees a streamed trace), so the trace is stored as its pre-pause prefix, batch-checked as such, and the post-pause events are never checked by anything. Either an idle-closed trace should accept a late append (reopen it, or start a continuation), or the SDK should fall back to uploading the whole trace on `trace_closed`; both change the documented contract (`meta.stream = "idle"` is final).
 
