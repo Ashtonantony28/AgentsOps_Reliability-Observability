@@ -5,6 +5,9 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Iterator
+
+MAX_REQUEST_EVENTS = 10_000  # the server's cap on events per bulk request (TraceBulkIn)
 
 
 def now_ms() -> int:
@@ -42,6 +45,30 @@ def buffer_rejected(path: Path, items: list[dict], response) -> None:
         else:
             logging.getLogger("agentops_sdk").warning(
                 "agentops dropped trace %s: %s", items[i].get("trace_id"), r.get("reason"))
+
+
+def _event_count(payload: dict) -> int:
+    return sum(len(payload[k]) for k in ("events", "tool_calls") if isinstance(payload.get(k), list))
+
+
+def batches(items: list[dict], size: int, max_events: int = MAX_REQUEST_EVENTS) -> Iterator[list[dict]]:
+    """Splits traces into bulk requests of at most `size` traces and `max_events` events. A trace over the event
+    cap alone is logged and dropped: no retry can deliver it."""
+    out: list[dict] = []
+    n = 0
+    for it in items:
+        k = _event_count(it)
+        if k > max_events:
+            logging.getLogger("agentops_sdk").warning(
+                "agentops dropped trace %s: %d events, the server takes at most %d", it.get("trace_id"), k, max_events)
+            continue
+        if out and (len(out) >= size or n + k > max_events):
+            yield out
+            out, n = [], 0
+        out.append(it)
+        n += k
+    if out:
+        yield out
 
 
 def drain_disk(path: Path) -> list[dict]:

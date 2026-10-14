@@ -14,7 +14,7 @@ import httpx
 
 from agentops_sdk.precheck import PrecheckMixin
 from agentops_sdk.trace import Trace
-from agentops_sdk.utils import append_to_disk, buffer_rejected, disk_buffer_path, drain_disk
+from agentops_sdk.utils import append_to_disk, batches, buffer_rejected, disk_buffer_path, drain_disk
 
 log = logging.getLogger("agentops_sdk.async")
 
@@ -85,18 +85,19 @@ class AsyncAgentOpsClient(PrecheckMixin):
                 await asyncio.wait_for(self._stop.wait(), timeout=self.flush_interval_s)
             except asyncio.TimeoutError:
                 pass
-            items: list[dict] = []
-            while not self._queue.empty() and len(items) < self.batch_size:
-                items.append(await self._queue.get())
-            if items:
-                await self._post(items)
+            await self.flush()
 
     async def flush(self) -> None:
         items: list[dict] = []
         while not self._queue.empty():
-            items.append(await self._queue.get())
-        if items:
-            await self._post(items)
+            items.append(self._queue.get_nowait())
+        up = True
+        for batch in batches(items, self.batch_size):
+            if up:
+                up = await self._post(batch)
+            else:  # the server is down: don't wait out a timeout per batch, at exit above all
+                for it in batch:
+                    append_to_disk(self._disk, it)
 
     async def close(self) -> None:
         self._stop.set()
@@ -107,7 +108,8 @@ class AsyncAgentOpsClient(PrecheckMixin):
                 pass
         await self.flush()
 
-    async def _post(self, items: list[dict]) -> None:
+    async def _post(self, items: list[dict]) -> bool:
+        """Sends one bulk request; False when the server could not be reached."""
         headers = {"X-API-Key": self.api_key}
         try:
             async with httpx.AsyncClient(timeout=10.0) as c:
@@ -117,9 +119,11 @@ class AsyncAgentOpsClient(PrecheckMixin):
                     log.warning("ingest failed: %s %s", r.status_code, r.text[:200])
                     for it in items:
                         append_to_disk(self._disk, it)
-                else:
-                    buffer_rejected(self._disk, items, r)
+                    return True
+                buffer_rejected(self._disk, items, r)
+                return True
         except Exception as e:
             log.warning("ingest exception, buffering: %s", e)
             for it in items:
                 append_to_disk(self._disk, it)
+            return False

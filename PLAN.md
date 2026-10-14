@@ -313,10 +313,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Result (A5-6 only):** fixed by SG-A6.4's depth bound (A6-10); `test_deeply_nested_policy_is_a_validation_error` passes unmarked. A5-4 and A5-5 are still open.
 
 ### SG-A6.1 SDK delivers every trace (AUDIT-6 A6-1, A6-2 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none (SDK only)
+- **Owner:** thread "SDK drops traces on shutdown" · **Status:** done · **Depends:** none (SDK only)
 - **Scope:** `close()`, `flush()` and the `atexit` hook of both clients send the whole queue in requests of at most `batch_size` traces (the async `flush()` currently ignores `batch_size`) and buffer what they can't send (A6-1). Requests are also split so none holds more than the server's 10 000 events; a single trace over the cap is logged and dropped, never buffered, since no retry can succeed (A6-2). The sync-client fixture stops making `close()` a no-op, so close is tested; tests kill A6-16's three SDK mutants.
 - **Acceptance:** `sdk/tests/test_audit_6.py` A6-1 and A6-2 tests pass unmarked; tests for an over-cap single trace and for async `flush()` batching; SDK suite and coverage floor green.
 - **Verify:** `cd sdk && pytest -q` · `python backend/scripts/mutants_audit6.py` (SDK rows killed)
+- **Result:** `utils.batches` splits a flush into requests of at most `batch_size` traces and 10 000 events; a single trace over the cap is logged and dropped, not buffered. Both clients' `flush()` (and so `close()`, `atexit`, and each flusher tick) send the whole queue that way, and once the server can't be reached the rest of that flush goes straight to the disk buffer; the sync flusher waits on `_stop` instead of sleeping, so `close()` wakes it. The `make_client` fixture no longer sets `_stop`, so `close()` is tested; it unregisters the `atexit` hook at teardown. `tests/test_delivery.py` covers the splitting, close buffering, both flushers and kills A6-16's three SDK mutants (the async-flusher mutant in `mutants_audit6.py` is updated to the new loop).
 
 ### SG-A6.2 A rejected stream does not switch the guard off (AUDIT-6 A6-3 high)
 - **Owner:** thread "Fix enforcement after a blocked call" · **Status:** done · **Depends:** SG-A5.3 (same code; can share its thread)

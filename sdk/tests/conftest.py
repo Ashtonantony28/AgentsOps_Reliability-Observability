@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import json
 import uuid
 
@@ -8,6 +9,7 @@ import pytest
 from agentops_sdk import client as client_mod
 from agentops_sdk.async_client import AsyncAgentOpsClient
 from agentops_sdk.client import AgentOpsClient
+from agentops_sdk.utils import drain_disk
 
 _RealClient, _RealAsyncClient = httpx.Client, httpx.AsyncClient
 
@@ -81,12 +83,19 @@ def _key() -> str:
 
 @pytest.fixture
 def make_client(server):
+    made = []
+
     def make(**kw):
-        c = AgentOpsClient(api_key=_key(), agent_id="a1", base_url="http://test", flush_interval_s=3600, **kw)
-        c._stop.set()  # the flusher thread sleeps out the test; queued payloads stay inspectable
+        # the flusher waits out the test, so queued payloads stay inspectable
+        c = AgentOpsClient(api_key=_key(), agent_id="a1", base_url="http://test", **{"flush_interval_s": 3600, **kw})
+        made.append(c)
         return c
 
-    return make
+    yield make
+    for c in made:
+        atexit.unregister(c.close)
+        c._stop.set()
+        drain_disk(c._disk)
 
 
 @pytest.fixture
