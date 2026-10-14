@@ -56,6 +56,8 @@ class Trace:
     _refused: int = field(default=0, init=False, repr=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
     _alock: Any = field(default=None, init=False, repr=False, compare=False)
+    _guard_lock: Any = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
+    _guard_alock: Any = field(default=None, init=False, repr=False, compare=False)
     _tasks: set = field(default_factory=set, init=False, repr=False, compare=False)
     _token: Any = field(default=None, init=False, repr=False, compare=False)
 

@@ -180,3 +180,97 @@ def test_sync_guard_inside_async_trace(client, server):
     t = asyncio.run(run())
     assert [e["name"] for e in t.events] == ["tool"]
     assert agentops_sdk.guard is guard
+
+
+# A6-7: guarded calls in one trace run one at a time, each checked after the ones before it are recorded
+@pytest.mark.parametrize("stream", [False, True])
+def test_concurrent_async_guarded_calls_are_checked_in_turn(client, aclient, server, stream):
+    for c in (client, aclient):
+        server.requests.clear()
+        ran = []
+
+        @guard
+        async def delete_user(uid):
+            ran.append(("start", uid))
+            await asyncio.sleep(0.01)
+            ran.append(("end", uid))
+
+        async def main():
+            async with c.trace(stream=stream):
+                await asyncio.gather(delete_user(1), delete_user(2))
+
+        asyncio.run(main())
+        assert ran == [("start", 1), ("end", 1), ("start", 2), ("end", 2)]
+        first, second = server.bodies("check")
+        if stream:
+            routes = server.routes()
+            assert routes.index("events") < len(routes) - 1 - routes[::-1].index("check")
+            assert server.bodies("events")[0]["events"][0]["name"] == "delete_user"
+        else:
+            assert (first["prefix"], [e["name"] for e in second["prefix"]]) == ([], ["delete_user"])
+
+
+def test_concurrent_sync_guarded_calls_are_checked_in_turn(client, server):
+    import contextvars
+    import threading
+    import time
+
+    @guard
+    def delete_user():
+        time.sleep(0.02)
+
+    with client.trace():
+        threads = [threading.Thread(target=contextvars.copy_context().run, args=(delete_user,)) for _ in range(2)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+    assert sorted(len(b["prefix"]) for b in server.bodies("check")) == [0, 1]
+
+
+def test_nested_guarded_calls_do_not_deadlock(client, server):
+    @guard
+    def inner():
+        return 1
+
+    @guard
+    def outer():
+        return inner() + 1
+
+    @guard
+    async def ainner():
+        return 1
+
+    @guard
+    async def aouter():
+        return await ainner() + 1
+
+    async def amain():
+        async with client.trace() as t:
+            assert await asyncio.wait_for(aouter(), 1) == 2
+        return t
+
+    with client.trace() as t:
+        assert outer() == 2
+    assert [e["name"] for e in t.events] == ["inner", "outer"]
+    assert [e["name"] for e in asyncio.run(amain()).events] == ["ainner", "aouter"]
+
+
+def test_guarded_calls_in_different_traces_run_concurrently(client, server):
+    ran = []
+
+    @guard
+    async def slow(i):
+        ran.append(("start", i))
+        await asyncio.sleep(0.01)
+        ran.append(("end", i))
+
+    async def one(i):
+        async with client.trace():
+            await slow(i)
+
+    async def main():
+        await asyncio.gather(one(1), one(2))
+
+    asyncio.run(main())
+    assert ran[:2] == [("start", 1), ("start", 2)]

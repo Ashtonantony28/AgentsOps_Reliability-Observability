@@ -12,12 +12,13 @@ m.MUTANTS = [
      "sdk", m.SDK_TESTS),
     ("A6-16", "backend/app/routers/ws.py", "            if ak and not ak.revoked_at:", "            if ak:",
      "backend", m.BACKEND_TESTS),
+    # the /ws/ingest rollback after a TraceConflict is gone: each message has its own session (SG-A6.4)
     ("A6-16", "backend/app/routers/ws.py",
-     "                    except TraceConflict as tc:\n                        await db.rollback()\n",
-     "                    except TraceConflict as tc:\n", "backend", m.BACKEND_TESTS),
+     "            async with async_session_maker() as db:\n                await websocket.send_json(await _ingest_message(",
+     "            if True:\n                await websocket.send_json(await _ingest_message(", "backend", m.BACKEND_TESTS),
     ("A6-16", "backend/app/services/trace_service.py",
-     "    environment = agent.environment if trace is None else trace.environment",
-     "    environment = agent.environment", "backend", m.BACKEND_TESTS),
+     "    environment = (req.environment or agent.environment) if trace is None else trace.environment",
+     "    environment = req.environment or agent.environment", "backend", m.BACKEND_TESTS),
 ]
 
 if __name__ == "__main__":

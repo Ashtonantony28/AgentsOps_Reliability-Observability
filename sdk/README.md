@@ -52,7 +52,9 @@ has action `block`, i.e. exactly when the server would reject the event with a 4
 
 Or guard a function (sync or async). The check runs first and raises `agentops.PolicyBlocked` (with
 `.result`) instead of calling the function; inside an active trace the call is then recorded with
-`add_event` (status `success` / `error`). Function arguments are never sent.
+`add_event` (status `success` / `error`). Guarded calls in one trace run one at a time, from check through
+record, so two started together (`asyncio.gather`, threads) cannot both pass a check meant to admit one; a guarded
+call made inside another passes straight through. Function arguments are never sent.
 
 ```python
 @agentops.guard                              # or @agentops.guard(name="refund", kind="tool", tier="gold")
@@ -77,11 +79,14 @@ streaming that trace; later checks still go to the server and are judged on the 
 `session_id`, `agent_version` and metadata, and the final one its `output`, `status`, error, latency, tokens, cost
 and metadata, so a streamed trace is stored, scoped and scanned like a whole one; the environment is fixed by the
 first push (a different one later is `409 environment_mismatch`). Checks send the trace's environment too.
-A streamed trace that never adds an event is sent the normal way.
+A streamed trace that never adds an event is sent the normal way. The server closes a streamed trace with no
+push for an hour and batch-checks it, so later pushes to it are `409 trace_closed`.
 
-**Failure policy.** A check that cannot complete (network error, timeout, non-2xx, malformed reply) logs a
+**Failure policy.** A check that cannot complete (network error, timeout, 5xx, 429, malformed reply) logs a
 warning and returns `CheckResult(allowed=not fail_closed, violations=[], error="<reason>")`. The default is
-fail-open; pass `fail_closed=True` to `init()` / the client to block instead. `check_timeout_s` (default 2.0)
+fail-open; pass `fail_closed=True` to `init()` / the client to block instead. A 401, 403, 404 or 422 (revoked
+or wrong API key, unknown `agent_id`, rejected request) is a configuration error, not an outage: it is logged at
+ERROR and never allows, whatever `fail_closed` says. `check_timeout_s` (default 2.0)
 bounds each check.
 
 ```python
@@ -93,7 +98,9 @@ agentops.init(api_key="aop_...", agent_id="agent-uuid", fail_closed=True, check_
 - Context manager (sync + async)
 - Auto-capture exceptions → marks trace status = error
 - Background batched flush (configurable interval, batch size)
-- Local disk buffer if the API is unreachable; auto-replay on next start
+- Local disk buffer if the API is unreachable; auto-replay on next start. It holds raw trace input and output,
+  so it lives in `<tempdir>/agentops_sdk-<uid>/` (mode 0700, files 0600); a directory there that is not the
+  user's own is refused for a fresh private one
 - Bulk ingestion uses `/api/traces/ingest/bulk` for efficiency
 
 ## Install

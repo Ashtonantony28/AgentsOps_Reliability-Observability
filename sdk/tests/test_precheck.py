@@ -16,7 +16,8 @@ FAILURES = [
     (httpx.ConnectError("refused"), "ConnectError"),
     (httpx.ReadTimeout("slow"), "timeout"),
     ((500, {"error": {"code": "internal_error"}}), "http 500"),
-    ((403, {"error": {"code": "forbidden"}}), "http 403"),
+    ((429, {"error": {"code": "rate_limited"}}), "http 429"),
+    ((409, {"error": {"code": "agent_mismatch"}}), "http 409"),
     ((200, "not json"), "malformed response"),
     ((200, {"violations": []}), "malformed response"),
     ((200, {"allowed": "yes", "violations": []}), "malformed response"),
@@ -50,6 +51,17 @@ def test_check_fail_open(client, server, caplog, reply, reason):
         r = client.check("x")
     assert r.allowed is True and r.violations == [] and reason in r.error
     assert "policy check failed" in caplog.text
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 422])
+def test_check_config_errors_block_both_clients(client, aclient, server, caplog, status):
+    for c in (client, aclient):
+        server.queue("check", (status, {"error": {"code": "http_error", "message": "invalid_api_key"}}))
+        with caplog.at_level(logging.ERROR, logger="agentops_sdk"):
+            r = c.check("x") if c is client else asyncio.run(c.acheck("x"))
+        assert r == CheckResult(allowed=False, error=f"http {status}")
+    assert [rec.levelname for rec in caplog.records] == ["ERROR", "ERROR"]
+    assert "invalid_api_key" in caplog.text
 
 
 @pytest.mark.parametrize("reply,reason", FAILURES)

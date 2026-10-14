@@ -373,3 +373,13 @@ async def test_prefix_past_the_trace_cap_is_409(client, db, org, agent, api_key_
     assert r.status_code == 200
     r = await _check_prefix(client, api_key_headers, agent, [ev(1, "b"), ev(2, "c")], ev(3, "d"), "u1")
     assert r.status_code == 409 and r.json()["error"]["details"]["max_events"] == 3
+
+
+async def test_check_uses_the_stored_traces_environment(client, db, org, agent, api_key_headers):
+    await _policy(db, org, NO_DROP, environment="prod")
+    assert agent.environment != "prod"
+    r = await client.post("/api/traces/ingest", headers=api_key_headers, json={
+        "trace_id": "whole", "agent_id": agent.id, "environment": "prod", "events": [ev(0, "search")]})
+    assert r.status_code == 202, r.text
+    assert (await _check(client, api_key_headers, agent, ev(0, "drop_db"), "whole")).json()["allowed"] is False
+    assert (await _check(client, api_key_headers, agent, ev(0, "drop_db"))).json()["allowed"] is True  # control

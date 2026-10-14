@@ -58,7 +58,6 @@ async def test_summary_report_lists_only_own_evaluation_runs(client, db, auth_he
 
 
 # A6-7: two guarded calls running concurrently in one trace are both checked against the same prefix
-@pytest.mark.xfail(strict=True, reason="A6-7: guard records the event after the call, so concurrent calls both pass")
 async def test_concurrent_guarded_calls_respect_a_count_policy(db, org, sdk_client):
     await _policy(db, org, ONE_DELETE)
     ran = []

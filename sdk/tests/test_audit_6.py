@@ -50,8 +50,7 @@ def test_check_after_trace_too_long_is_not_allowed(client, server):
     assert not result.allowed
 
 
-# A6-4: 401, 404 and 422 from /check are configuration errors, not outages, but fail open like a timeout
-@pytest.mark.xfail(strict=True, reason="A6-4: client errors on /check fail open under the default config")
+# A6-4: 401, 404 and 422 from /check are configuration errors, not outages, but failed open like a timeout
 @pytest.mark.parametrize("reply", [
     (401, {"error": {"code": "http_error", "message": "invalid_api_key"}}),
     (404, {"error": {"code": "http_error", "message": "agent_not_found"}}),
@@ -66,7 +65,6 @@ def test_check_client_errors_do_not_allow(client, server, reply):
 
 # A6-5: undelivered traces, with raw input and output, sit in a world-readable file in the shared temp dir
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
-@pytest.mark.xfail(strict=True, reason="A6-5: disk buffer is created with the process umask in a shared directory")
 def test_disk_buffer_is_private():
     old = os.umask(0o022)
     try:

@@ -108,9 +108,7 @@ async def test_sdk_end_to_end(db, org, sdk_client):
     assert sorted((s.seq, s.name) for s in spans) == [(0, "search"), (1, "user_confirmed"), (2, "delete_user")]
 
 
-async def test_sdk_fails_open_when_server_errors(sdk_client):
+async def test_sdk_check_with_a_wrong_key_does_not_allow(sdk_client):
     sdk_client.api_key = "wrong"
     result = await sdk_client.acheck("delete_user")
-    assert result.allowed and result.error == "http 401"
-    sdk_client.fail_closed = True
-    assert not (await sdk_client.acheck("delete_user")).allowed
+    assert not result.allowed and result.error == "http 401"  # a configuration error, not an outage (A6-4)

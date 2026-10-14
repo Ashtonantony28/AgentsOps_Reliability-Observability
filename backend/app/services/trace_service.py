@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -18,6 +20,11 @@ from app.services import trace_policy_service as tps
 from app.services.security_service import detect_pii, injection_score, mask_pii
 from app.services.violation_service import publish_violations
 from app.tasks.policy_tasks import enqueue_trace_check
+
+log = logging.getLogger(__name__)
+
+OPEN_STREAMS_KEY = "streams:open"  # sorted set: open streamed trace id -> time of its last append
+STREAM_IDLE_S = 3600  # a streamed trace with no append for this long is closed and batch-checked
 
 
 class PolicyViolation(Exception):
@@ -305,6 +312,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             rows = await tps.record_violations(db, trace, policies, replayed + pv.violations, "live")
             db.add(_block_log(org_id, agent.id, pv, trace_uid=trace_uid))
             await db.commit()
+            await _track_stream(trace.id, True)
         else:
             for ev in req.events:
                 db.add(_span(trace.id, ev))
@@ -319,6 +327,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                 trace.meta = {**(trace.meta or {}), "stream": "final"}
             await db.commit()
             await tps.save_monitor(trace.id, None if req.final else monitor)
+            await _track_stream(trace.id, not req.final)
     finally:
         with suppress(LockError):
             await lock.release()
@@ -328,6 +337,50 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
     if req.final:
         await enqueue_trace_check(trace.id)
     return trace, rows
+
+
+async def _track_stream(trace_id: str, open_: bool) -> None:
+    """Under the trace's append lock, so the idle sweep never closes a trace mid-append."""
+    try:
+        if open_:
+            await get_redis().zadd(OPEN_STREAMS_KEY, {trace_id: time.time()})
+        else:
+            await get_redis().zrem(OPEN_STREAMS_KEY, trace_id)
+    except Exception:
+        log.exception("could not track streamed trace %s", trace_id)
+
+
+async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limit: int = 1000) -> list[str]:
+    """Closes streamed traces with no append for STREAM_IDLE_S (`meta.stream = "idle"`) and queues their batch
+    check; a trace an append holds is left for the next sweep. Returns the closed trace ids."""
+    r = get_redis()
+    cutoff = (time.time() if now is None else now) - STREAM_IDLE_S
+    closed = []
+    for trace_id in await r.zrangebyscore(OPEN_STREAMS_KEY, "-inf", cutoff, start=0, num=limit):
+        trace = await db.get(Trace, trace_id)
+        if trace is None or (trace.meta or {}).get("stream") != "open":
+            await r.zrem(OPEN_STREAMS_KEY, trace_id)
+            continue
+        lock = r.lock(f"lock:trace-events:{trace.org_id}:{trace.trace_uid}", timeout=60)
+        if not await lock.acquire(blocking=False):
+            continue
+        try:
+            score = await r.zscore(OPEN_STREAMS_KEY, trace_id)
+            if score is None or score > cutoff:
+                continue
+            await db.refresh(trace)
+            if (trace.meta or {}).get("stream") == "open":
+                trace.meta = {**trace.meta, "stream": "idle"}
+                await db.commit()
+                closed.append(trace_id)
+            await r.zrem(OPEN_STREAMS_KEY, trace_id)
+            await tps.save_monitor(trace_id, None)
+        finally:
+            with suppress(LockError):
+                await lock.release()
+    for trace_id in closed:
+        await enqueue_trace_check(trace_id)
+    return closed
 
 
 async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyCheckOut:

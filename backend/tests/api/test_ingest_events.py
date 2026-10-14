@@ -1,12 +1,14 @@
 import asyncio
 import json
+from datetime import datetime
 
 import pytest
 from sqlalchemy import select
 from starlette.testclient import TestClient
 
-from app.models import AuditLog, PolicyRule, Span, Trace
+from app.models import ApiKey, AuditLog, PolicyRule, Span, Trace
 from app.policy.events import Event, events_from_spans
+from app.middleware.auth import hash_api_key
 
 TOOL_CALLS = [
     {"name": "search", "input": {"q": "x"}, "output": {"n": 1}, "latency_ms": 5},
@@ -169,6 +171,25 @@ def test_ws_ingest_rejects_bad_key(app_):
     with TestClient(app_) as tc:
         with pytest.raises(WebSocketDisconnect) as exc:
             with tc.websocket_connect("/ws/ingest?api_key=nope") as ws:
+                ws.receive_json()
+        assert exc.value.code == 4401
+
+
+def test_ws_ingest_rejects_revoked_key(app_, api_key, session_maker):
+    from starlette.websockets import WebSocketDisconnect
+
+    async def revoke():
+        async with session_maker() as s:
+            ak = (await s.execute(select(ApiKey).where(ApiKey.key_hash == hash_api_key(api_key)))).scalar_one()
+            ak.revoked_at = datetime.utcnow()
+            await s.commit()
+
+    with TestClient(app_) as tc:
+        with tc.websocket_connect(f"/ws/ingest?api_key={api_key}"):
+            pass  # control: the key works until revoked
+        asyncio.run(revoke())
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tc.websocket_connect(f"/ws/ingest?api_key={api_key}") as ws:
                 ws.receive_json()
         assert exc.value.code == 4401
 
