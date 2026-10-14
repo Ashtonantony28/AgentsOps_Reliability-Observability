@@ -182,6 +182,30 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - SDK: `Trace.add_event`, `trace(..., stream=True)` (each `add_event` is sent to the events endpoint, `final` on exit), `check`/`acheck` on both clients, the module and `Trace` (a trace's check carries its `trace_uid` when streaming, and follows the failure policy without calling the server while any of the trace's events are undelivered; a `seq_conflict` showing the server already stored part of a batch resyncs), `@guard` (sync and async; checks, raises `PolicyBlocked`, then records the call as an event in the active trace). Failure policy: `fail_closed=False` by default, so a failed check logs a warning and returns `allowed=True` with `error` set; `check_timeout_s=2.0`. The contract test compares the SDK's request builders and `CheckResult` with the OpenAPI schemas and drives the SDK against the app end to end. Legacy payloads are unchanged (existing SDK tests untouched; a trace with no events serialises exactly as before).
   - Open: a streamed trace sends only events, so its `output`, tokens, cost and status never reach the server (`EventsAppendIn` has no field for them). Legacy `PolicyRule` block rules (`forbid_tool`, PII, injection) are not part of the precheck. After a fatal stream rejection (403, `seq_conflict`) the SDK stops streaming that trace and the server-side trace stays open. Without `stream=True` a check has no history. Checks are rate-limited with ingest, so with the default fail-open a rate-limited org's checks allow everything. The endpoint never writes a rebuilt monitor back to Redis, so a trace whose state expired replays its spans on each check until the next append.
 
+### SG-A2.1 Bounded counterexamples (AUDIT-2 A2-1 critical, A2-7)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** `count … by` counterexamples are about cubic in the window (7.5 s at 200 events, 53 s at 352) and overlapping globs are 2^k. Make `minimal_counterexample` meet its budget row for those shapes, or time-box it and fall back to a sufficient (non-minimal) set, without changing the `Violation` contract.
+- **Acceptance:** `count … by name` counterexample for a 200-event window within the counterexample row (p95 ≤ 500 ms); worst case for any policy and trace ≤ 5 s with a sufficient result; 13 overlapping globs ≤ 500 ms; SG3 sufficiency/minimality property tests still pass; the bench gains a `count by` counterexample case in CI; xfail markers removed.
+- **Verify:** `cd backend && pytest tests/test_audit2.py -k "count_by_name or overlapping_globs" tests/policy/test_counterexample.py -q` · `python backend/scripts/bench_audit2.py countby 200 400` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
+
+### SG-A2.2 Bounded batch pipeline (AUDIT-2 A2-2 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none (pairs with SG-A2.1)
+- **Scope:** cap events per trace and per request (413/422 with a clear code), a soft time limit on `check_completed_trace` that records an unchecked or partial result instead of losing it, a dedicated Celery queue for policy checks so alerting and anomaly tasks are never behind them, and violations of other policies stored even when one policy's counterexample is slow.
+- **Acceptance:** a trace over the cap is rejected on every ingest path; a batch check that hits the soft limit still stores each policy's violation row (empty or partial counterexample) and logs it; with two poisoned traces queued, a normal trace is checked and `evaluate_alert_rules` runs within 10 s (Celery repro in AUDIT-2.md); full backend suite green.
+- **Verify:** `cd backend && pytest -q` · AUDIT-2.md **Celery repro** with `celery -A app.celery_app worker -c 2`
+
+### SG-A2.3 Precheck and append after monitor-state loss (AUDIT-2 A2-3 high, A2-5)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** after the Redis monitor state is gone, a trace is replayed from spans at most once (precheck writes the rebuilt state back, or an equivalent), the replay loads only the columns the checker needs, and rebuilds are bounded so a Redis restart can't stampede.
+- **Acceptance:** `test_precheck_after_state_loss_replays_spans_once` passes; after `FLUSHDB`, the second and later prechecks on a 5 000-event trace are within the precheck row over HTTP (`load_e2e.py flush`); SG6 precheck semantics (stores nothing user-visible, `allowed` rule) unchanged.
+- **Verify:** `cd backend && pytest tests/test_audit2.py -k precheck tests/api/test_precheck.py -q` · `python backend/scripts/load_e2e.py setup && python backend/scripts/load_e2e.py flush --traces 10 --prefix 5000`
+
+### SG-A2.4 AUDIT-2 mediums (A2-4, A2-6)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** serialise `policy_violations` alert firing per rule (one `AlertEvent` and incident per rule per dedup window under concurrent ingests); bound `count … by name` monitor state per trace (documented behaviour past the bound).
+- **Acceptance:** `test_concurrent_violations_fire_a_rule_once` and `test_ingest_step_with_many_distinct_names_meets_budget` pass; the race repro in AUDIT-2.md A2-4 gives exactly one alert on Postgres.
+- **Verify:** `cd backend && pytest tests/test_audit2.py tests/api/test_violation_pipeline.py tests/policy/test_monitor.py -q`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -326,3 +350,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG5b done.
 - 2026-10-14: SG5a done.
 - 2026-10-14: SG6 done.
+- 2026-10-14: Audit A2 (performance) done: 1 critical, 2 high, 4 medium, 3 low in AUDIT-2.md; SG-A2.1 to SG-A2.4 proposed.
