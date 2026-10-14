@@ -238,9 +238,21 @@ def test_bench_workload_needs_every_event():
                  st.builds(Count, formulas(vocab_atoms, max_leaves=3), st.sampled_from(CMPS), st.integers(0, 10))),
        _few_names, st.data())
 def test_sufficient_and_minimal_bit_vector_counts(formula, events, data):
-    with patch.object(counterexample, "_UNARY_MAX", 0):
+    with patch.object(counterexample, "_UNARY_CELLS", 0):
         _assert_sufficient_and_minimal(formula, events, data)
 
+
+
+# bounds up to 64 over traces long enough to reach them
+_dense = st.lists(st.tuples(st.sampled_from(["tool", "llm"]), st.sampled_from(["a", "b", "ab"])), max_size=70).map(
+    lambda es: [Event(i, k, n, "success", {}) for i, (k, n) in enumerate(es)])
+
+
+@settings(PROPERTY, max_examples=40)
+@given(st.builds(Count, formulas(st.one_of(vocab_atoms, _globbed), max_leaves=2), st.sampled_from(CMPS),
+                 st.integers(0, 64), st.sampled_from([None, "name", "kind"])), _dense, st.data())
+def test_sufficient_and_minimal_large_bound_counts(formula, events, data):
+    _assert_sufficient_and_minimal(formula, events, data)
 
 @settings(PROPERTY, max_examples=200)
 @given(formulas(st.one_of(vocab_atoms, _globbed), max_leaves=4), _few_names, st.data())

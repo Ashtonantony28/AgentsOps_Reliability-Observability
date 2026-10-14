@@ -56,7 +56,6 @@ check_trace([c], events)
 
 
 # A5-2: counts with a bound of 16 or more are bit-vector sums, which the deletion pass cannot shrink in budget
-@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits")
 def test_large_bound_count_counterexample_is_minimal():
     (p,) = parse('policy cap severity high:\n  always count(tool("fetch_url")) <= 40')
     hits = set(range(3, 200, 5)) | {199}  # 41 hits; the other events are never counted
@@ -141,7 +140,6 @@ async def test_blocked_append_is_surfaced(db, org, sdk_client):
 
 
 # A5-6: a deeply nested policy raises RecursionError in the parser, which the routes do not catch
-@pytest.mark.xfail(strict=True, reason="A5-6: 1000 nested 'not' is a 500, not a validation error")
 async def test_deeply_nested_policy_is_a_validation_error(client, auth_headers):
     source = "policy deep:\n  always " + "not " * 1000 + 'tool("a")'
     r = await client.post("/api/trace-policies/validate", headers=auth_headers, json={"source": source})
