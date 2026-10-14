@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { WS_URL } from "@/api/client";
 import { useAuthStore } from "@/stores/authStore";
+import { Violation } from "@/types/policy";
 
 type TraceEvent = {
   id: string;
@@ -15,14 +16,20 @@ type TraceEvent = {
 type WsState = {
   connected: boolean;
   recent: TraceEvent[];
+  violations: Violation[];
+  toasts: Violation[];
   socket: WebSocket | null;
   connect: () => void;
   disconnect: () => void;
+  receive: (msg: any) => void;
+  dismissToast: (v: Violation) => void;
 };
 
 export const useWsStore = create<WsState>((set, get) => ({
   connected: false,
   recent: [],
+  violations: [],
+  toasts: [],
   socket: null,
   connect: () => {
     const existing = get().socket;
@@ -35,10 +42,7 @@ export const useWsStore = create<WsState>((set, get) => ({
     ws.onerror = () => set({ connected: false });
     ws.onmessage = (ev) => {
       try {
-        const parsed = JSON.parse(ev.data);
-        if (parsed.type === "trace") {
-          set((s) => ({ recent: [parsed.data, ...s.recent].slice(0, 100) }));
-        }
+        get().receive(JSON.parse(ev.data));
       } catch {}
     };
     set({ socket: ws });
@@ -48,4 +52,15 @@ export const useWsStore = create<WsState>((set, get) => ({
     if (s) s.close();
     set({ socket: null, connected: false });
   },
+  receive: (msg) => {
+    if (msg?.type === "trace") {
+      set((s) => ({ recent: [msg.data, ...s.recent].slice(0, 100) }));
+    } else if (msg?.type === "violation") {
+      set((s) => ({
+        violations: [msg.data, ...s.violations].slice(0, 100),
+        toasts: [msg.data, ...s.toasts].slice(0, 3),
+      }));
+    }
+  },
+  dismissToast: (v) => set((s) => ({ toasts: s.toasts.filter((t) => t !== v) })),
 }));

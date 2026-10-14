@@ -5,6 +5,7 @@ import { API_URL } from "@/api/client";
 import StatusBadge from "@/components/common/StatusBadge";
 import Loading from "@/components/common/Loading";
 import MetricCard from "@/components/common/MetricCard";
+import TracePolicies from "@/components/policies/TracePolicies";
 
 export default function Governance() {
   const qc = useQueryClient();
@@ -55,6 +56,8 @@ export default function Governance() {
                     tone={(sc.data?.injection_attempts_30d || 0) > 0 ? "bad" : "good"} />
         <MetricCard label="Policy blocks" value={Number(sc.data?.policy_blocks_30d || 0).toLocaleString()} />
       </div>
+
+      <TracePolicies />
 
       <section className="bg-ink-900 border border-ink-800 rounded p-4">
         <h2 className="text-sm uppercase text-ink-400 mb-2">Policies</h2>

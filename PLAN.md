@@ -152,10 +152,14 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest tests/api/test_violation_pipeline.py tests/api/test_reports_violations.py -q`
 
 ### SG5b Integration: UI
-- **Owner:** unassigned · **Status:** proposed · **Depends:** SG4 (API), SG5a for live events
+- **Owner:** SG5b thread · **Status:** done · **Depends:** SG4 (API), SG5a for live events
 - **Scope:** policy list/editor (with server-side validation errors inline) under Governance, violations panel on `TraceDetail` highlighting counterexample events in the span tree, live violation toast via `wsStore`.
 - **Acceptance:** typecheck and build pass; component tests for the violations panel and editor error display; manual run screenshot of a seeded violation in TraceDetail attached to the PR.
 - **Verify:** `cd frontend && npx tsc --noEmit && npm run build && npm test -- --run`
+- **Result:** all three pass locally and now run in CI (vitest + Testing Library + jsdom added; 30 tests over the panel, span tree, editor, policy list, toasts, `wsStore` and `TraceDetail`). Screenshots in the PR were taken against the real UI with the API mocked, since `GET /api/traces/{id}/violations` is SG5a's and still 501 at `18f2d0f`.
+  - Trace policies sit above the legacy policies on Governance: the editor validates as you type (`/validate`, 400 ms debounce) and shows 422 `invalid_policy` errors from save the same way, as line/col, message and the source line with a caret; other save errors (409 name taken, 403 non-admin) show as a message.
+  - `TraceDetail` selects the first violation by default; its counterexample events get an amber outline and the `at_seq` event a red one. Spans match on `seq`, or on their position when `seq` is null. A live violation with an empty counterexample shows as pending and the query polls every 5 s (up to 5 min) until the batch check fills it in; an empty counterexample on a batch row means the violation holds whatever the events are.
+  - `wsStore.receive` handles `{"type":"violation"}`: up to 3 toasts (8 s, link to the trace at `at_seq`), and `TraceDetail` refetches when one arrives for the open trace.
 
 ### SG6 SDK streaming and pre-execution checks (stretch)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** SG4
@@ -308,3 +312,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG4 done.
 - 2026-10-14: SG0b done.
 - 2026-10-14: SG3 done.
+- 2026-10-14: SG5b done.
