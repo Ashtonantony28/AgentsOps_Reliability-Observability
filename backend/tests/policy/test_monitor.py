@@ -136,6 +136,15 @@ def test_restore_rejects_other_policies_and_garbage():
             Monitor.restore(policies, data)
 
 
+def test_restore_rejects_renamed_or_reclassified_policy():
+    f = ast.Once(ast.Match(kind="llm"))
+    blob = Monitor(_compiled([ast.Policy("a", "low", f)])).snapshot()
+    for other in [ast.Policy("a", "high", f), ast.Policy("b", "low", f)]:
+        with pytest.raises(ValueError):
+            Monitor.restore(_compiled([other]), blob)
+    Monitor.restore(_compiled([ast.Policy("a", "low", f, source="other text")]), blob)
+
+
 def test_attr_values_stay_type_distinct():
     p = ast.Policy("p", "low", ast.Not(ast.Match(attrs=(("a", 1),))))
     q = ast.Policy("q", "low", ast.Not(ast.Match(attrs=(("a", True),))))

@@ -1,8 +1,10 @@
 import json
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Optional
 
+from redis.exceptions import LockError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -178,7 +180,10 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
 async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                         req: EventsAppendIn) -> tuple[Trace, list[TracePolicyViolation]]:
     """Appends events to a streamed trace and checks them live; `final` closes the trace and queues the batch check."""
-    async with get_redis().lock(f"lock:trace-events:{org_id}:{trace_uid}", timeout=30, blocking_timeout=10):
+    lock = get_redis().lock(f"lock:trace-events:{org_id}:{trace_uid}", timeout=60, blocking_timeout=10)
+    if not await lock.acquire():
+        raise TraceConflict("trace_busy", "another append to this trace is in progress; retry")
+    try:
         agent = (await db.execute(
             select(Agent).where(Agent.id == req.agent_id, Agent.org_id == org_id)
         )).scalar_one_or_none()
@@ -231,6 +236,9 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             trace.meta = {**(trace.meta or {}), "stream": "final"}
         await db.commit()
         await tps.save_monitor(trace.id, None if req.final else monitor)
+    finally:
+        with suppress(LockError):
+            await lock.release()
     if req.final:
         await enqueue_trace_check(trace.id)
     return trace, rows

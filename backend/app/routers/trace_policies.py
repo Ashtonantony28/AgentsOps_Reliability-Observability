@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import List
 
@@ -107,8 +108,8 @@ async def create_trace_policy(
         org_id=ctx.org_id, name=parsed.name, source=req.source, severity=parsed.severity,
         action=req.action, agent_id=req.agent_id, environment=req.environment, enabled=req.enabled, version=1,
     )
+    p.id = str(uuid.uuid4())
     db.add(p)
-    await db.flush()
     db.add(_audit(ctx, "trace_policy_create", p.id, {"name": p.name, "action": p.action}))
     await _commit_or_409(db, parsed.name)
     await db.refresh(p)

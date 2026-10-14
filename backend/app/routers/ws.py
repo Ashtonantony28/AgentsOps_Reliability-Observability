@@ -119,6 +119,7 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
                     except PolicyViolation as pv:
                         await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name})
                     except TraceConflict as tc:
+                        await db.rollback()
                         await websocket.send_json({"ok": False, "error": tc.code, "message": tc.message, **tc.details})
                     except Exception as e:
                         await db.rollback()

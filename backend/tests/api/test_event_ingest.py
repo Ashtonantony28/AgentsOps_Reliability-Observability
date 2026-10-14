@@ -287,3 +287,21 @@ def test_ws_events_messages(app_, api_key, agent, session_maker):
             assert send(ws, [ev(1, "drop_db")]) == {"ok": False, "error": "policy_block", "rule": "no_drop"}
             assert send(ws, [ev(1, "search")], final=True)["ok"] is True
             assert send(ws, [ev(2, "x")])["error"] == "trace_closed"
+
+
+async def test_severity_edit_mid_trace_reports_under_new_version(client, db, org, agent, api_key_headers):
+    p = await _policy(db, org, NO_DROP)
+    r = await _append(client, api_key_headers, agent, "u1", [ev(0, "drop_db")])
+    assert [v["policy_version"] for v in r.json()["violations"]] == [1]
+    p.source, p.severity, p.version = NO_DROP.replace("critical", "low"), "low", 2
+    await db.commit()
+    r = await _append(client, api_key_headers, agent, "u1", [ev(1, "search")])
+    assert [(v["at_seq"], v["policy_version"], v["severity"]) for v in r.json()["violations"]] == [(0, 2, "low")]
+
+
+async def test_busy_trace_is_409(client, agent, api_key_headers, redis, org, monkeypatch):
+    real = redis.lock
+    monkeypatch.setattr(redis, "lock", lambda *a, **kw: real(*a, **{**kw, "blocking_timeout": 0.05}))
+    await redis.set(f"lock:trace-events:{org.id}:u1", "someone-else")
+    r = await _append(client, api_key_headers, agent, "u1", [ev(0, "a")])
+    assert r.status_code == 409 and r.json()["error"]["code"] == "trace_busy"

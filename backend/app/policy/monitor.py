@@ -4,6 +4,7 @@ Same recurrences as the linear Z3 encoding, evaluated on concrete values so a li
 """
 import hashlib
 import operator
+from functools import lru_cache
 from typing import Any
 
 from app.policy import ast
@@ -15,14 +16,24 @@ _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.n
 _INIT = {"Previously": False, "Once": False, "Historically": True, "Since": False}
 
 
+@lru_cache(maxsize=4096)
+def _plan(key: str, policy: ast.Policy) -> "Plan":
+    return Plan(policy.formula, hashlib.sha256(key.encode()).hexdigest()[:16])
+
+
+def plan_for(policy: ast.Policy) -> "Plan":
+    """Plans are immutable and cached; the digest changes with the formula, name or severity."""
+    return _plan(repr((policy.name, policy.severity, policy.formula)), policy)
+
+
 class Plan:
     """`formula` flattened to nodes in evaluation order (children first), shared subformulas evaluated once."""
 
-    def __init__(self, formula: ast.Formula):
+    def __init__(self, formula: ast.Formula, digest: str):
         self.nodes: list[tuple[str, Any, tuple[int, ...]]] = []
         self._index: dict[Any, int] = {}
         self.root = self._add(formula)[1]
-        self.digest = hashlib.sha256(repr(formula).encode()).hexdigest()[:16]
+        self.digest = digest
 
     def _add(self, f: ast.Formula) -> tuple[Any, int]:
         op = type(f).__name__

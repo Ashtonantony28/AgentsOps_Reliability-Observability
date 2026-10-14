@@ -5,7 +5,7 @@ from typing import Any, Sequence
 from app.policy.ast import Policy
 from app.policy.encode import first_violations
 from app.policy.events import Event
-from app.policy.monitor import Plan
+from app.policy.monitor import plan_for
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class Monitor:
 
     def __init__(self, policies: Sequence[CompiledPolicy]):
         self.policies = list(policies)
-        self._plans = [Plan(p.policy.formula) for p in self.policies]
+        self._plans = [plan_for(p.policy) for p in self.policies]
         self._states = [plan.initial() for plan in self._plans]
         self._done = [False] * len(self.policies)
         self.next_seq = 0
