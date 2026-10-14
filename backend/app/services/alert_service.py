@@ -5,10 +5,11 @@ import numpy as np
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicyViolation
+from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicy, TracePolicyViolation
 from app.schemas.policy import PolicySeverity
 
 SEVERITIES = get_args(PolicySeverity)  # ascending
+ALERTING_ACTIONS = ("alert", "block")  # `log` policies record violations without paging anyone
 
 
 def severities_at_least(rule: AlertRule) -> tuple[str, ...]:
@@ -17,9 +18,10 @@ def severities_at_least(rule: AlertRule) -> tuple[str, ...]:
 
 
 def policy_violations_query(rule: AlertRule, since: datetime):
-    q = select(func.count()).select_from(TracePolicyViolation).where(
+    q = select(func.count()).select_from(TracePolicyViolation).join(
+        TracePolicy, TracePolicy.id == TracePolicyViolation.policy_id).where(
         TracePolicyViolation.org_id == rule.org_id, TracePolicyViolation.detected_at >= since,
-        TracePolicyViolation.severity.in_(severities_at_least(rule)))
+        TracePolicyViolation.severity.in_(severities_at_least(rule)), TracePolicy.action.in_(ALERTING_ACTIONS))
     return q.where(TracePolicyViolation.agent_id == rule.agent_id) if rule.agent_id else q
 
 

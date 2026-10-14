@@ -128,6 +128,13 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
     )).scalar_one_or_none()
     if not agent:
         raise ValueError("agent_not_found")
+    if payload.trace_id:
+        existing = (await db.execute(
+            select(Trace).where(Trace.org_id == org_id, Trace.agent_id == agent.id,
+                               Trace.trace_uid == payload.trace_id).limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            return existing
     events = event_inputs(payload)
 
     # policy enforcement

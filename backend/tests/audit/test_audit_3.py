@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "sdk"))
 
 from agentops_sdk.async_client import AsyncAgentOpsClient  # noqa: E402
-from app.models import AlertEvent, AlertRule, PolicyRule, Span, Trace, TracePolicy  # noqa: E402
+from app.models import Agent, AlertEvent, AlertRule, PolicyRule, Span, Trace, TracePolicy  # noqa: E402
 from app.policy.dsl import parse  # noqa: E402
 from app.schemas.policy import PolicyCheckIn  # noqa: E402
 from app.services import violation_service  # noqa: E402
@@ -115,7 +115,6 @@ async def test_non_streamed_trace_check_sees_its_events(db, org, sdk_client):
 
 
 # A3-6: checks share the ingest rate limit, and the SDK fails open on 429
-@pytest.mark.xfail(strict=True, reason="A3-6: a rate-limited org's checks are 429, which the SDK turns into allowed")
 async def test_check_is_not_starved_by_ingest(client, db, org, agent, api_key_headers):
     await _policy(db, org, NO_DROP)
     org.rate_limit_per_min = 2
@@ -144,7 +143,6 @@ async def test_violation_says_when_counterexample_is_final(client, db, org, agen
 
 
 # A3-8: `log` and `alert` actions behave the same
-@pytest.mark.xfail(strict=True, reason="A3-8: a `log` policy's violation fires policy_violations alert rules")
 async def test_log_policy_does_not_fire_alert_rule(client, db, org, agent, api_key_headers):
     await _policy(db, org, NO_DROP, action="log")
     db.add(AlertRule(org_id=org.id, name="pv", metric="policy_violations", operator=">=", threshold=1,
@@ -157,7 +155,6 @@ async def test_log_policy_does_not_fire_alert_rule(client, db, org, agent, api_k
 
 
 # A3-9: whole-trace ingest is not idempotent on trace_id
-@pytest.mark.xfail(strict=True, reason="A3-9: re-sending a trace stores it, and checks it, twice")
 async def test_resent_trace_is_stored_once(client, db, org, agent, api_key_headers):
     await _policy(db, org, NO_DROP, action="log")
     body = {"agent_id": agent.id, "trace_id": "uid-1", "events": [{"seq": 0, "name": "drop_db"}]}
@@ -167,8 +164,19 @@ async def test_resent_trace_is_stored_once(client, db, org, agent, api_key_heade
     assert await _count(db, Trace, Trace.trace_uid == "uid-1") == 1
 
 
+async def test_resent_trace_returns_first_id_and_other_agents_keep_their_own(client, db, org, agent, api_key_headers):
+    other = Agent(org_id=org.id, name="other")
+    db.add(other)
+    await db.commit()
+    ids = []
+    for a in (agent, agent, other):
+        r = await client.post("/api/traces/ingest", headers=api_key_headers, json={"agent_id": a.id, "trace_id": "uid-1"})
+        assert r.status_code == 202
+        ids.append(r.json()["id"])
+    assert ids[0] == ids[1] != ids[2]
+
+
 # A3-11: /ws/ingest skips the rate limit the REST ingest paths enforce
-@pytest.mark.xfail(strict=True, reason="A3-11: /ws/ingest has no rate limit")
 def test_ws_ingest_is_rate_limited(app_, session_maker, org, agent, api_key):
     import asyncio
 

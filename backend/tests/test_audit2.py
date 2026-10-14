@@ -96,7 +96,7 @@ async def test_concurrent_violations_fire_a_rule_once(db, session_maker, org, ag
     db.add(AlertRule(org_id=org.id, name="any violation", metric="policy_violations", operator=">=", threshold=1,
                      window_minutes=15, dedup_minutes=30, severity="critical", context={}))
     (p,) = parse(NO_DROP)
-    policy = TracePolicy(org_id=org.id, name=p.name, source=NO_DROP, severity=p.severity, action="log")
+    policy = TracePolicy(org_id=org.id, name=p.name, source=NO_DROP, severity=p.severity, action="alert")
     db.add(policy)
     await db.commit()
     rows = []
