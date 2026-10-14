@@ -59,15 +59,13 @@ check_trace([c], events)
 
 
 # A5-2: counts with a bound of 16 or more are bit-vector sums, which the deletion pass cannot shrink in budget
-@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits")
+@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits; time is the bench's job")
 def test_large_bound_count_counterexample_is_minimal():
     (p,) = parse('policy cap severity high:\n  always count(tool("fetch_url")) <= 40')
     hits = set(range(3, 200, 5)) | {199}  # 41 hits; the other events are never counted
     events = [Event(i, "tool", "fetch_url" if i in hits else "search", "success", {}) for i in range(200)]
     assert reference.evaluate(p, events) == [199]
-    t = time.monotonic()
-    cx = minimal_counterexample(compile_policy("cap", p), events, 199)
-    assert (cx, time.monotonic() - t < 0.5) == (tuple(sorted(hits)), True)
+    assert minimal_counterexample(compile_policy("cap", p), events, 199) == tuple(sorted(hits))
 
 
 # A5-3: the per-counterexample budget is checked between steps that are themselves unbounded

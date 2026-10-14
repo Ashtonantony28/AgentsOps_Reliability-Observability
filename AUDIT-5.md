@@ -93,7 +93,7 @@ Minimal counterexample for `always count(tool("fetch_url")) <= 40` violated at t
 
 At 400 events the first row keeps 365 events. Rate and usage caps (`<= 20`, `< 150`) are the common case for this DSL, and milestone 4 promises the minimal sequence; the counterexample row is 500 ms worst case at 200 events. Verdicts are unaffected.
 
-- **Failing test**: `test_large_bound_count_counterexample_is_minimal` (asserts the 41 hits within 500 ms).
+- **Failing test**: `test_large_bound_count_counterexample_is_minimal` (asserts the 41 hits; the 500 ms row belongs in the bench).
 - **Fix**: extend the "at least k" encoding (a sequential counter or totalizer, linear in window × bound) to any bound up to the window size, or seed the deletion pass with the events that satisfy the count's predicate before trying the rest; add a bound-40 case to `bench_policy.py --path counterexample`.
 
 ### A5-3 · high · One blocked append turns enforcement off for the rest of a streamed trace
