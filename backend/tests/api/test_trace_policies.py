@@ -190,13 +190,31 @@ async def test_cross_org_isolation(client, auth_headers, other_org):
     assert (await client.get(URL, headers=other_headers)).json()[0]["enabled"] is True
 
 
-async def test_delete_then_404(client, auth_headers, db):
+async def test_delete_archives(client, auth_headers, db):
     p = await _create(client, auth_headers)
+    keep = await _create(client, auth_headers, SRC_B)
     r = await client.delete(f"{URL}/{p['id']}", headers=auth_headers)
     assert r.status_code == 200 and r.json() == {"ok": True}
-    assert (await db.execute(select(TracePolicy).where(TracePolicy.id == p["id"]))).first() is None
+    row = (await db.execute(select(TracePolicy).where(TracePolicy.id == p["id"]))).scalar_one()
+    assert row.archived_at is not None and row.enabled
     assert (await client.delete(f"{URL}/{p['id']}", headers=auth_headers)).status_code == 404
     assert (await client.put(f"{URL}/{p['id']}", json={}, headers=auth_headers)).status_code == 404
+    assert [x["id"] for x in (await client.get(URL, headers=auth_headers)).json()] == [keep["id"]]
+
+    again = await _create(client, auth_headers)  # an archived policy's name is free again
+    _err(await client.post(URL, json={"source": SRC_A}, headers=auth_headers), 409, "policy_name_taken")
+    listed = (await client.get(URL, params={"include_archived": True}, headers=auth_headers)).json()
+    assert [(x["id"], x["archived_at"] is None) for x in listed] == [
+        (again["id"], True), (p["id"], False), (keep["id"], True)]
+    assert again["archived_at"] is None
+
+
+async def test_archived_name_does_not_block_rename(client, auth_headers):
+    p = await _create(client, auth_headers)
+    b = await _create(client, auth_headers, SRC_B)
+    await client.delete(f"{URL}/{p['id']}", headers=auth_headers)
+    r = await client.put(f"{URL}/{b['id']}", json={"source": SRC_B.replace("beta", "alpha")}, headers=auth_headers)
+    assert r.status_code == 200 and r.json()["name"] == "alpha"
 
 
 async def test_audit_log_rows(client, auth_headers, db, admin_user):

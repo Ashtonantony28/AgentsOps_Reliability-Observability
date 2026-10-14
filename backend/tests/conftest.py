@@ -70,6 +70,7 @@ async def engine(request, tmp_path):
     else:
         # A file database with a connection per session: a session sees only what others have committed.
         eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", connect_args={"timeout": 30})
+        sa.event.listen(eng.sync_engine, "connect", lambda c, _: c.execute("PRAGMA foreign_keys = ON"))
         async with eng.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     yield eng

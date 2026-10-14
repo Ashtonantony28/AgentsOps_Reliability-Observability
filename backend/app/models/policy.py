@@ -1,6 +1,6 @@
 from datetime import datetime
 import uuid
-from sqlalchemy import String, DateTime, ForeignKey, Integer, JSON, Boolean, Index
+from sqlalchemy import String, DateTime, ForeignKey, Integer, JSON, Boolean, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -25,9 +25,11 @@ class TracePolicy(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # set by delete; never enforced
 
     __table_args__ = (
-        Index("ix_trace_policy_org_name", "org_id", "name", unique=True),
+        Index("ix_trace_policy_org_name", "org_id", "name", unique=True,
+              postgresql_where=text("archived_at IS NULL"), sqlite_where=text("archived_at IS NULL")),
     )
 
 
