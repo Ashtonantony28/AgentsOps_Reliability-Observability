@@ -284,6 +284,36 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest -q` · `cd sdk && pytest -q` · `python backend/scripts/mutants_audit4.py`
 - **Result:** `mutants_audit4.py` (all findings, full suites, local Postgres 16) kills every mutant with a test this sub-goal added. A4-2: `sdk/tests/test_async_paths.py`. A4-3: single-sample wall-clock asserts are the median of 3 to 20 runs (`tests/timing.py`); p95 budgets stay with `bench_policy.py`. A4-4: `engine` runs on Postgres for tests marked `postgres` (`tests/api/test_postgres.py`: upsert dedup, row lock across workers with per-worker in-process locks) and for every test under `TEST_DB=postgres`, which CI runs over `tests/api`, `tests/audit` and `test_audit2.py`; the marker skips only where no Postgres is reachable and `CI` is unset. A4-5: solver timeout spy and no budget warning from `check_verdicts`. A4-6: `backend/.coveragerc` (greenlet), CI floors 72 % backend (74.6 % now), 90 % policy code (98 % now), 80 % SDK (84 % now). A4-7: `tests/api/test_frontend_contract.py` checks every `frontend/src/api` call against OpenAPI routes and `types/policy.ts` fields and optionality against the schemas (the mutant script now copies `frontend`). A4-8: `/check` and events route 429 tests. A4-9: deterministic repro in `test_monitor.py`. A4-10: empty stub tests removed, viewer assertion exact, stale skip gone. Not done: A4-11 (other lows), A4-12 (lockfile).
 
+### SG-A6.1 SDK delivers every trace (AUDIT-6 A6-1, A6-2 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none (SDK only)
+- **Scope:** `close()`, `flush()` and the `atexit` hook of both clients send the whole queue in requests of at most `batch_size` traces (the async `flush()` currently ignores `batch_size`) and buffer what they can't send (A6-1). Requests are also split so none holds more than the server's 10 000 events; a single trace over the cap is logged and dropped, never buffered, since no retry can succeed (A6-2). The sync-client fixture stops making `close()` a no-op, so close is tested; tests kill A6-16's three SDK mutants.
+- **Acceptance:** `sdk/tests/test_audit_6.py` A6-1 and A6-2 tests pass unmarked; tests for an over-cap single trace and for async `flush()` batching; SDK suite and coverage floor green.
+- **Verify:** `cd sdk && pytest -q` · `python backend/scripts/mutants_audit6.py` (SDK rows killed)
+
+### SG-A6.2 A rejected stream does not switch the guard off (AUDIT-6 A6-3 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none (SDK only)
+- **Scope:** after a `policy_block` rejection of a streamed append, checks of that trace return `allowed: false` whatever `fail_closed` says (the server has refused the trace); after any other fatal rejection (`trace_too_long`, `trace_closed`, 422), checks still go to the server with the `trace_uid`, so the delivered prefix keeps counting, instead of failing open locally. Default picked; the alternative is failing per `fail_closed` but logging at ERROR. `test_stops_streaming_on_rejection` is updated to the new behaviour.
+- **Acceptance:** the A6-3 test passes unmarked; a test per fatal code for the check that follows it; sync and async clients behave the same.
+- **Verify:** `cd sdk && pytest -q` · `cd backend && pytest tests/api/test_sdk_contract.py -q`
+
+### SG-A6.3 Summary report scoped to the caller's org (AUDIT-6 A6-6 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** `org_summary`'s `recent_evals` only lists runs whose evaluation set (or agent) belongs to the caller's org; check the other `report_service` and report-task queries for the same omission.
+- **Acceptance:** the A6-6 test passes unmarked; a test that the PDF and weekly digest builders see only the org's runs.
+- **Verify:** `cd backend && pytest tests/audit/test_audit_6.py -k summary tests/api/test_reports_violations.py -q` (and with `TEST_DB=postgres`)
+
+### SG-A6.4 AUDIT-6 mediums without contract changes (A6-4, A6-5, A6-7, A6-10, A6-12; A6-14, A6-16 ride along)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Scope:** a 401, 404 or 422 from `/check` is a failed check that does not allow, logged at ERROR (A6-4; outages stay `fail_closed`'s call). The disk buffer lives in a per-user directory created `0700`, the file `0600`, and a directory owned by another user is refused (A6-5). `@guard` serialises guarded calls within one trace from check through record (A6-7; default picked, the alternative is recording the event before the call runs). Create and update reject a formula deeper than a fixed bound with a 422, and `active_policies` skips a policy whose monitor plan can't be built (A6-10, A6-14 rides along). A Celery beat task closes streamed traces with no append for a fixed idle time and queues their batch check (A6-12). Tests kill A6-16's three backend mutants.
+- **Acceptance:** the A6-4, A6-5, A6-7 and A6-10 tests pass unmarked; a test that an idle open trace is closed and checked and a recent one is not; precheck and live bench rows still met.
+- **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api tests/audit` · `cd sdk && pytest -q` · `python backend/scripts/bench_policy.py --path precheck --assert-budget` · `python backend/scripts/mutants_audit6.py` (every row killed)
+
+### SG-A6.5 Violation history outlives its policy (AUDIT-6 A6-8 medium)
+- **Owner:** unassigned · **Status:** proposed: changes the storage contract (`policy_violations.policy_id` cascade, or a soft-deleted policy), so stop-and-report before dispatch · **Depends:** none
+- **Scope:** deleting a policy keeps its violations in the trace view, reports and alert counts (soft delete, or `policy_id` made nullable with `ON DELETE SET NULL` and `ViolationOut.policy_id` optional); the SQLite test engine enables foreign keys so both databases agree (A6-9).
+- **Acceptance:** the A6-8 and A6-9 tests pass unmarked on both databases.
+- **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api tests/audit`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -294,6 +324,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A2 | Performance under load | Load at 2× the SG4 rate, long traces (5 000 events), 50 policies, Redis restarts mid-trace; every budget row checked. |
 | A3 | API/SDK consistency; done, see `AUDIT-3.md`: 4 high → SG-A3.1 to SG-A3.3 | OpenAPI vs pydantic vs TS types vs SDK models; error codes; legacy payload compatibility. |
 | A4 | Test coverage and quality; done, see `AUDIT-4.md`: 1 high → SG-A4.1 | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
+| A6 | Round 2: API/SDK consistency and test quality; done, see `AUDIT-6.md`: 4 high → SG-A6.1 to SG-A6.3 | Route, schema and SDK read-through, sync vs async diff, tests against the real app, hand-picked mutants of the API and SDK paths. |
 
 ## Interface contracts
 
@@ -436,3 +467,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: Audit A4 (test coverage) done: 0 critical, 1 high, 7 medium, 4 low in AUDIT-4.md; SG-A4.1 and SG-A4.2 proposed (tests and CI only, no contract change).
 - 2026-10-14: SG-A4.1 done (test sessions no longer share a connection).
 - 2026-10-14: SG-A4.2 done (A4 mediums: every replayed mutant killed; coverage and a Postgres run in CI).
+- 2026-10-14: Audit A6 (round 2, API/SDK and tests) done: 0 critical, 4 high, 6 medium, 6 low in AUDIT-6.md; SG-A6.1 to SG-A6.5 proposed (SG-A6.5 changes the storage contract).
