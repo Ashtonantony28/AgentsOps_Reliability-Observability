@@ -45,8 +45,9 @@ BUDGET_S = 2.0
 _MAX_NAME_STATES = 512
 # an unmentioned character stands for this many, and this many names with one pattern are as good as unbounded
 _MANY = 1 << 20
-# past this many count cells (window x bound terms) in all, the encoding gives up at once: building and parsing
-# it would overrun the budget; `count ... by` cells, quadratic in the window, are much slower to solve and count 3
+# past this many cells (window x distinct atoms, plus window x bound terms per count) in all, the encoding gives up
+# at once: building and parsing it would overrun the budget; `count ... by` cells, quadratic in the window, are much
+# slower to solve and count 3
 _MAX_CELLS = 100_000
 _SYMBOL = re.compile(r"[a-z_]+\d+")
 # counts of window x (bound + 1) up to this are unary; bit-vector adders above, whose unsat cores are near the window
@@ -172,6 +173,7 @@ class FactEncoding(TraceEncoding):
         self._cells, self._deadline = 0, deadline
         nodes = list(_nodes(formula))
         ms = [m for m in nodes if isinstance(m, ast.Match)]
+        self._charge(len(ms) * len(self.events))  # atom terms, and the name and attr codes behind them
         self.statuses = list(dict.fromkeys(m.status for m in ms if m.status is not None))
         self.attrs: dict[str, dict[Hashable, Any]] = {}
         for m in ms:

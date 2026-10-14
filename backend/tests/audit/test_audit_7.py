@@ -56,7 +56,6 @@ async def test_check_with_a_backtracking_glob_returns_quickly(client, db, org, a
 
 
 # A7-2: the batch verdict solve is superlinear in distinct atoms x events and has no time limit
-@pytest.mark.xfail(strict=True, reason="A7-2: the batch verdict solve is superlinear in atoms x events")
 def test_batch_verdicts_scale_with_atoms_times_events():
     p, events = _compiled(_many_atoms(100)), _trace(1000)
     t = time.perf_counter()
@@ -66,7 +65,6 @@ def test_batch_verdicts_scale_with_atoms_times_events():
 
 
 # A7-2: atom terms are built and parsed before the counterexample deadline is ever checked
-@pytest.mark.xfail(strict=True, reason="A7-2: atom terms are built before the counterexample deadline is checked")
 def test_counterexample_budget_holds_for_many_atoms(monkeypatch):
     monkeypatch.setattr(counterexample, "BUDGET_S", 0.2)
     p, events = _compiled(_many_atoms(150)), _trace(1000)

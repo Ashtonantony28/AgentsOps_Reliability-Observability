@@ -1,12 +1,12 @@
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from app.policy.ast import Policy
 from app.policy.counterexample import bounded_counterexample
-from app.policy.encode import first_violations
 from app.policy.events import Event
 from app.policy.monitor import plan_for
 
@@ -48,9 +48,27 @@ def check_verdicts(policies: Sequence[CompiledPolicy], events: Sequence[Event]) 
     return _check(policies, events, None)
 
 
+def first_violations(policies: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[int | None]:
+    """For each policy, the first seq at which it is false, or None: the monitor's recurrences with exact counts,
+    linear in events x policy nodes. Each violation is re-derived by Z3 in its counterexample search, and
+    `encode.first_violations` (the Z3 encoding) is differential-tested equal."""
+    plans = [plan_for(p.policy) for p in policies]
+    states = [plan.initial() for plan in plans]
+    out: list[int | None] = [None] * len(plans)
+    todo = list(range(len(plans)))
+    for e in events:
+        for i in todo:
+            if not plans[i].step(states[i], e, math.inf):
+                out[i] = e.seq
+        todo = [i for i in todo if out[i] is None]
+        if not todo:
+            break
+    return out
+
+
 def _check(policies: Sequence[CompiledPolicy], events: Sequence[Event], deadline: float | None) -> list[Violation]:
     out = []
-    for p, at in zip(policies, first_violations([p.policy.formula for p in policies], events)):
+    for p, at in zip(policies, first_violations(policies, events)):
         if at is None:
             continue
         cx, minimal = None, False

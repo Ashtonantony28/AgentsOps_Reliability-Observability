@@ -17,7 +17,7 @@ MAX_GROUPS = 1000
 _OVERFLOW, _UNSURE = "\0", "\0?"
 
 
-def _count_group(groups: dict, g: str, hit: bool) -> tuple[int, int]:
+def _count_group(groups: dict, g: str, hit: bool, max_groups: float) -> tuple[int, int]:
     """Bounds on the count of `g` after this event: exact for the first MAX_GROUPS values seen with a hit (event
     names are client-chosen); later values share one overflow counter, so at least this event, at most every
     overflow hit."""
@@ -26,7 +26,7 @@ def _count_group(groups: dict, g: str, hit: bool) -> tuple[int, int]:
     if g in groups:
         c = groups[g] = groups[g] + hit
         return c, c
-    if hit and len(groups) < MAX_GROUPS:
+    if hit and len(groups) < max_groups:
         groups[g] = 1
         return 1, 1
     hi = groups.get(_OVERFLOW, 0) + hit
@@ -66,9 +66,11 @@ class Plan:
     def initial(self) -> list:
         return [({} if f.by else 0) if op == "Count" else _INIT.get(op) for op, f, _ in self.nodes]
 
-    def step(self, state: list, e: Event) -> bool:
-        """Advances `state` in place by event `e`; returns the formula's value at `e`."""
+    def step(self, state: list, e: Event, max_groups: float | None = None) -> bool:
+        """Advances `state` in place by event `e`; returns the formula's value at `e`. `max_groups=math.inf`
+        counts every group exactly, for a batch check whose state is never stored."""
         v: list[bool] = [False] * len(self.nodes)
+        max_groups = MAX_GROUPS if max_groups is None else max_groups
         for k, (op, f, kids) in enumerate(self.nodes):
             if op == "Match":
                 v[k] = matches(f, e)
@@ -94,7 +96,7 @@ class Plan:
                     state[k] += v[kids[0]]
                     v[k] = cmp(state[k], f.bound)
                 else:
-                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]])
+                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]], max_groups)
                     v[k] = cmp(hi, f.bound)
                     if lo != hi and len({v[k], cmp(lo, f.bound), cmp(min(max(f.bound, lo), hi), f.bound)}) > 1:
                         state[k][_UNSURE] = 1
