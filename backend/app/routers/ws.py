@@ -13,8 +13,8 @@ from app.middleware.auth import decode_token
 from app.models import OrgMembership, ApiKey
 from app.middleware.auth import hash_api_key
 from app.redis import get_redis
-from app.services.trace_service import PolicyViolation, ingest_trace
-from app.schemas.policy import WsEventsMessage
+from app.services.trace_service import PolicyViolation, TraceConflict, append_events, ingest_trace
+from app.schemas.policy import ViolationOut, WsEventsMessage
 from app.schemas.trace import TraceIn
 
 log = logging.getLogger(__name__)
@@ -106,11 +106,23 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
                 raw = await websocket.receive_text()
                 if _is_events_message(raw):
                     try:
-                        WsEventsMessage.model_validate_json(raw)
+                        msg = WsEventsMessage.model_validate_json(raw)
                     except Exception as e:
                         await websocket.send_json({"ok": False, "error": f"invalid_payload: {e}"})
                         continue
-                    await websocket.send_json({"ok": False, "error": "not_implemented"})
+                    try:
+                        trace, rows = await append_events(db, org_id, msg.trace_uid, msg)
+                        await websocket.send_json({
+                            "ok": True, "id": trace.id, "accepted": len(msg.events),
+                            "violations": [ViolationOut.model_validate(r).model_dump(mode="json") for r in rows],
+                        })
+                    except PolicyViolation as pv:
+                        await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name})
+                    except TraceConflict as tc:
+                        await websocket.send_json({"ok": False, "error": tc.code, "message": tc.message, **tc.details})
+                    except Exception as e:
+                        await db.rollback()
+                        await websocket.send_json({"ok": False, "error": str(e)})
                     continue
                 try:
                     payload = TraceIn.model_validate_json(raw)

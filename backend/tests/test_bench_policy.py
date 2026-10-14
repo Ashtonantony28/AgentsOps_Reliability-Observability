@@ -18,11 +18,17 @@ def test_dry_run_prints_every_path():
     assert all(row.rstrip().endswith("ok") for row in rows.values())
 
 
-def test_single_path_and_load_unavailable():
+def test_single_path():
     r = _run("--dry-run", "--path", "batch", "--iterations", "5")
     assert r.returncode == 0 and "batch" in r.stdout and "live" not in r.stdout
+
+
+def test_load_reports_live_and_ingest_rows():
     r = _run("--load", "500", "--seconds", "1")
-    assert r.returncode == 2 and "SG4" in r.stderr
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "500 events over 50 traces" in r.stdout
+    rows = [line for line in r.stdout.splitlines()[1:]]
+    assert [row.split()[0] for row in rows] == ["live", "ingest"] and all(row.endswith("ok") for row in rows)
 
 
 def test_percentile_and_workloads():
