@@ -4,6 +4,14 @@ import { Span } from "@/types/trace";
 import { ChevronRight, ChevronDown } from "lucide-react";
 import StatusBadge from "@/components/common/StatusBadge";
 
+// same numbering as the backend's events_from_spans: if any span lacks seq, all are numbered by start order
+export function spanSeqs(spans: Span[]): Map<string, number> {
+  if (spans.every((s) => s.seq != null)) return new Map(spans.map((s) => [s.id, s.seq!]));
+  const ordered = [...spans].sort((a, b) =>
+    (a.started_at || "").localeCompare(b.started_at || "") || a.id.localeCompare(b.id));
+  return new Map(ordered.map((s, i) => [s.id, i]));
+}
+
 type Props = {
   spans: Span[];
   counterexample?: number[];
@@ -15,10 +23,11 @@ export default function TraceSpanTree({ spans, counterexample = [], atSeq = null
     return <div className="text-ink-400 text-sm">No spans recorded.</div>;
   }
   const cx = new Set(counterexample);
+  const seqs = spanSeqs(spans);
   return (
     <div className="space-y-1">
-      {spans.map((s, i) => {
-        const seq = s.seq ?? i;
+      {spans.map((s) => {
+        const seq = seqs.get(s.id)!;
         return <SpanNode key={s.id} span={s} seq={seq} inCounterexample={cx.has(seq)} violatedHere={seq === atSeq} />;
       })}
     </div>

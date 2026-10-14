@@ -8,7 +8,7 @@ import { violation } from "@/test/render";
 const push = (v = violation()) => act(() => useWsStore.getState().receive({ type: "violation", data: v }));
 const renderToasts = () => render(<MemoryRouter><ViolationToasts /></MemoryRouter>);
 
-beforeEach(() => useWsStore.setState({ violations: [], toasts: [] }));
+beforeEach(() => useWsStore.setState({ lastViolation: null, toasts: [] }));
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -20,6 +20,22 @@ describe("ViolationToasts", () => {
     expect(screen.getByRole("status")).toHaveTextContent("no_exfil_after_secret");
     expect(screen.getByText("critical")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open trace at event #4" })).toHaveAttribute("href", "/traces/t1");
+  });
+
+  it("opens the trace with the toast's violation selected", async () => {
+    const { Routes, Route } = await import("react-router-dom");
+    const { useLocation } = await import("react-router-dom");
+    const Where = () => <div data-testid="state">{JSON.stringify(useLocation().state)}</div>;
+    render(
+      <MemoryRouter>
+        <ViolationToasts />
+        <Routes><Route path="/traces/:id" element={<Where />} /><Route path="*" element={null} /></Routes>
+      </MemoryRouter>
+    );
+    push(violation({ id: "v9" }));
+    fireEvent.click(screen.getByRole("link"));
+    expect(screen.getByTestId("state")).toHaveTextContent('{"violation":"v9"}');
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("omits the link for violations without a trace", () => {

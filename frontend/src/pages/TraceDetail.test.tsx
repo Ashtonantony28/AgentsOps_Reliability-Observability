@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import TraceDetail from "./TraceDetail";
+import TraceDetail, { recentlyPending } from "./TraceDetail";
 import { tracesApi } from "@/api/traces";
 import { tracePoliciesApi } from "@/api/tracePolicies";
 import { useWsStore } from "@/stores/wsStore";
@@ -32,7 +32,7 @@ const show = () => renderWithProviders(<TraceDetail />, { path: "/traces/:id", r
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useWsStore.setState({ violations: [], toasts: [] });
+  useWsStore.setState({ lastViolation: null, toasts: [] });
   traces.get.mockResolvedValue(trace);
 });
 
@@ -48,6 +48,13 @@ describe("TraceDetail violations", () => {
     fireEvent.click(screen.getByText("confirm_before_delete"));
     expect(highlighted()).toEqual(["3"]);
     expect(screen.getByText("violated here").closest("[data-seq]")).toHaveAttribute("data-seq", "3");
+  });
+
+  it("selects the violation passed in navigation state", async () => {
+    violations.mockResolvedValue([exfil, confirm]);
+    renderWithProviders(<TraceDetail />, { path: "/traces/:id", route: { pathname: "/traces/t1", state: { violation: "v2" } } });
+    await screen.findByText("no_exfil_after_secret");
+    expect(highlighted()).toEqual(["3"]);
   });
 
   it("marks only the violating event while the counterexample is pending", async () => {
@@ -66,6 +73,15 @@ describe("TraceDetail violations", () => {
     expect(highlighted()).toEqual([]);
   });
 
+  it("does not refetch on mount for a violation that arrived earlier", async () => {
+    useWsStore.setState({ lastViolation: confirm });
+    violations.mockResolvedValue([confirm]);
+    show();
+    await screen.findByText("confirm_before_delete");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(violations).toHaveBeenCalledTimes(1);
+  });
+
   it("refetches when a live violation arrives for this trace only", async () => {
     violations.mockResolvedValue([]);
     show();
@@ -78,5 +94,15 @@ describe("TraceDetail violations", () => {
     expect(await screen.findByText("confirm_before_delete")).toBeInTheDocument();
     await waitFor(() => expect(highlighted()).toEqual(["3"]));
     expect(violations).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("recentlyPending", () => {
+  const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+  it("polls only for recent live rows without a counterexample", () => {
+    expect(recentlyPending(violation({ mode: "live", counterexample: [], detected_at: ago(1) }))).toBe(true);
+    expect(recentlyPending(violation({ mode: "live", counterexample: [], detected_at: ago(11) }))).toBe(false);
+    expect(recentlyPending(violation({ mode: "live", counterexample: [1], detected_at: ago(1) }))).toBe(false);
+    expect(recentlyPending(violation({ mode: "batch", counterexample: [], detected_at: ago(1) }))).toBe(false);
   });
 });

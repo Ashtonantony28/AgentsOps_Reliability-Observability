@@ -23,6 +23,10 @@ export default function TracePolicies() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["trace-policies"] }),
   });
   const mutationError = toggle.error || remove.error;
+  const run = <T,>(m: { mutate: (x: T) => void }, other: { reset: () => void }, x: T) => {
+    other.reset();
+    m.mutate(x);
+  };
 
   return (
     <section className="bg-ink-900 border border-ink-800 rounded p-4">
@@ -64,10 +68,10 @@ export default function TracePolicies() {
                 <div className="flex items-center gap-3 shrink-0 text-xs">
                   <label className="flex items-center gap-1 text-ink-300">
                     <input type="checkbox" checked={p.enabled}
-                           onChange={(e) => toggle.mutate({ id: p.id, enabled: e.target.checked })} /> enabled
+                           onChange={(e) => run(toggle, remove, { id: p.id, enabled: e.target.checked })} /> enabled
                   </label>
                   <button className="text-ink-200 hover:underline" onClick={() => setEditing(p.id)}>edit</button>
-                  <button className="text-rose-300 hover:underline" onClick={() => remove.mutate(p.id)}>delete</button>
+                  <button className="text-rose-300 hover:underline" onClick={() => confirm(`Delete policy ${p.name}?`) && run(remove, toggle, p.id)}>delete</button>
                 </div>
               </li>
             )

@@ -48,7 +48,7 @@ export default function PolicyEditor({ policy, onDone }: Props) {
       tracePoliciesApi
         .validate(source)
         .then((r) => n === latest.current && setErrors(r.errors))
-        .catch(() => {});
+        .catch(() => n === latest.current && setErrors([]));
     }, 400);
     return () => clearTimeout(t);
   }, [source]);

@@ -16,7 +16,7 @@ type TraceEvent = {
 type WsState = {
   connected: boolean;
   recent: TraceEvent[];
-  violations: Violation[];
+  lastViolation: Violation | null;
   toasts: Violation[];
   socket: WebSocket | null;
   connect: () => void;
@@ -28,7 +28,7 @@ type WsState = {
 export const useWsStore = create<WsState>((set, get) => ({
   connected: false,
   recent: [],
-  violations: [],
+  lastViolation: null,
   toasts: [],
   socket: null,
   connect: () => {
@@ -55,11 +55,8 @@ export const useWsStore = create<WsState>((set, get) => ({
   receive: (msg) => {
     if (msg?.type === "trace") {
       set((s) => ({ recent: [msg.data, ...s.recent].slice(0, 100) }));
-    } else if (msg?.type === "violation") {
-      set((s) => ({
-        violations: [msg.data, ...s.violations].slice(0, 100),
-        toasts: [msg.data, ...s.toasts].slice(0, 3),
-      }));
+    } else if (msg?.type === "violation" && msg.data?.policy_id) {
+      set((s) => ({ lastViolation: msg.data, toasts: [msg.data, ...s.toasts].slice(0, 3) }));
     }
   },
   dismissToast: (v) => set((s) => ({ toasts: s.toasts.filter((t) => t !== v) })),

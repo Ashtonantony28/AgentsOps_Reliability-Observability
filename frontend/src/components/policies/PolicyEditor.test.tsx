@@ -62,6 +62,16 @@ describe("PolicyEditor", () => {
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
   });
 
+  it("drops stale errors when validation itself fails", async () => {
+    const { source } = renderEditor();
+    fireEvent.change(source, { target: { value: BAD } });
+    await screen.findByText(/expected a formula/);
+    api.validate.mockRejectedValue(new Error("network"));
+    fireEvent.change(source, { target: { value: "policy ok severity low:\n  always true" } });
+    await waitFor(() => expect(screen.queryByText(/expected a formula/)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
+  });
+
   it("creates a policy with its scope and closes", async () => {
     api.create.mockResolvedValue({} as TracePolicy);
     const { onDone, source } = renderEditor();

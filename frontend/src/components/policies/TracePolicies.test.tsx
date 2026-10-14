@@ -42,6 +42,10 @@ describe("TracePolicies", () => {
     renderWithProviders(<TracePolicies />);
     fireEvent.click(await screen.findByRole("checkbox"));
     await waitFor(() => expect(api.update).toHaveBeenCalledWith("p1", { enabled: false }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    fireEvent.click(screen.getByText("delete"));
+    expect(confirm).toHaveBeenCalledWith("Delete policy confirm_before_delete?");
+    expect(api.remove).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("delete"));
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith("p1"));
 
@@ -55,9 +59,16 @@ describe("TracePolicies", () => {
     api.remove.mockRejectedValue(Object.assign(new Error("x"), {
       response: { status: 403, data: { error: { code: "forbidden", message: "admin role required" } } },
     }));
+    api.update.mockRejectedValue(Object.assign(new Error("x"), {
+      response: { status: 500, data: { error: { code: "internal_error", message: "toggle failed" } } },
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithProviders(<TracePolicies />);
-    fireEvent.click(await screen.findByText("delete"));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    expect(await screen.findByText("toggle failed")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("delete"));
     expect(await screen.findByText("admin role required")).toBeInTheDocument();
+    expect(screen.queryByText("toggle failed")).not.toBeInTheDocument();
   });
 
   it("shows an empty state and the new-policy editor", async () => {

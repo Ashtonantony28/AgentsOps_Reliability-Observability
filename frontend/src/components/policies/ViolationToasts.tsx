@@ -4,6 +4,7 @@ import { ShieldAlert, X } from "lucide-react";
 import { useWsStore } from "@/stores/wsStore";
 import StatusBadge from "@/components/common/StatusBadge";
 import { Violation } from "@/types/policy";
+import { violationKey } from "@/components/traces/ViolationsPanel";
 
 export const TOAST_MS = 8000;
 
@@ -12,7 +13,7 @@ export default function ViolationToasts() {
   return (
     <div className="fixed bottom-4 right-4 z-50 space-y-2 w-80">
       {toasts.map((v) => (
-        <Toast key={`${v.id ?? v.policy_id}:${v.detected_at}`} v={v} />
+        <Toast key={`${violationKey(v)}:${v.detected_at}`} v={v} />
       ))}
     </div>
   );
@@ -36,7 +37,7 @@ function Toast({ v }: { v: Violation }) {
       </div>
       <div className="text-xs text-ink-300 mt-1">{v.message}</div>
       {v.trace_id && (
-        <Link to={`/traces/${v.trace_id}`} className="text-xs text-brand-500 hover:underline" onClick={() => dismiss(v)}>
+        <Link to={`/traces/${v.trace_id}`} state={{ violation: violationKey(v) }} className="text-xs text-brand-500 hover:underline" onClick={() => dismiss(v)}>
           Open trace at event #{v.at_seq}
         </Link>
       )}

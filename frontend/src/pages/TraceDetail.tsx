@@ -1,13 +1,21 @@
-import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { tracesApi } from "@/api/traces";
 import { tracePoliciesApi } from "@/api/tracePolicies";
 import { useWsStore } from "@/stores/wsStore";
+import { Violation } from "@/types/policy";
 import ViolationsPanel, { counterexamplePending, violationKey } from "@/components/traces/ViolationsPanel";
 import StatusBadge from "@/components/common/StatusBadge";
 import TraceSpanTree from "@/components/traces/TraceSpanTree";
 import Loading from "@/components/common/Loading";
+
+const POLL_FOR_MS = 10 * 60 * 1000;
+
+// a live row stays pending until the batch check fills in its counterexample; stop polling eventually
+// since a computed counterexample can also be empty
+export const recentlyPending = (v: Violation) =>
+  counterexamplePending(v) && Date.now() - new Date(v.detected_at).getTime() < POLL_FOR_MS;
 
 export default function TraceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -16,17 +24,20 @@ export default function TraceDetail() {
   const violations = useQuery({
     queryKey: ["trace-violations", id],
     queryFn: () => tracePoliciesApi.traceViolations(id!),
-    refetchInterval: (q) =>
-      q.state.data?.some(counterexamplePending) && q.state.dataUpdateCount < 60 ? 5000 : false,
+    retry: false,
+    refetchInterval: (q) => (q.state.data?.some(recentlyPending) ? 5000 : false),
   });
-  const latestLive = useWsStore((s) => s.violations[0]);
+  const lastViolation = useWsStore((s) => s.lastViolation);
+  const seen = useRef(lastViolation);
   useEffect(() => {
-    if (latestLive?.trace_id === id) {
+    if (lastViolation !== seen.current && lastViolation?.trace_id === id) {
       qc.invalidateQueries({ queryKey: ["trace-violations", id] });
       qc.invalidateQueries({ queryKey: ["trace", id] });
     }
-  }, [latestLive, id, qc]);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+    seen.current = lastViolation;
+  }, [lastViolation, id, qc]);
+  const location = useLocation();
+  const [selectedKey, setSelectedKey] = useState<string | null>(location.state?.violation ?? null);
   const selected =
     violations.data?.find((v) => violationKey(v) === selectedKey) ?? violations.data?.[0] ?? null;
 
