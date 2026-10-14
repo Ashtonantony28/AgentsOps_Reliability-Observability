@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Agent, Trace, Span, PolicyRule, AuditLog, TracePolicyViolation
-from app.policy.checker import Monitor
+from app.policy.checker import Monitor, Violation
 from app.policy.events import Event, event_inputs
 from app.redis import get_redis
 from app.schemas.policy import EventsAppendIn, PolicyCheckIn, PolicyCheckOut, ViolationOut
@@ -21,11 +21,13 @@ from app.tasks.policy_tasks import enqueue_trace_check
 
 
 class PolicyViolation(Exception):
-    def __init__(self, message: str, rule_name: str, rule_id: Optional[str] = None):
+    def __init__(self, message: str, rule_name: str, rule_id: Optional[str] = None,
+                 violations: Optional[list[Violation]] = None):
         super().__init__(message)
         self.message = message
         self.rule_name = rule_name
         self.rule_id = rule_id
+        self.violations = violations  # set for a trace policy block: the violations of the refused event
 
 
 class TraceConflict(Exception):
@@ -108,18 +110,19 @@ def _span(trace_id: str, ev: EventIn) -> Span:
                 started_at=_naive_utc(ev.timestamp) or datetime.utcnow(), ended_at=datetime.utcnow())
 
 
+def _block_log(org_id: str, agent_id: str, pv: PolicyViolation, **details) -> AuditLog:
+    return AuditLog(org_id=org_id, actor_type="agent", actor_id=agent_id, action="policy_block",
+                    resource_type="trace", rationale=pv.message, details={"rule": pv.rule_name, **details})
+
+
 async def _block(db: AsyncSession, org_id: str, agent_id: str, pv: PolicyViolation, **details) -> None:
     await db.rollback()
-    db.add(AuditLog(
-        org_id=org_id, actor_type="agent", actor_id=agent_id,
-        action="policy_block", resource_type="trace",
-        rationale=pv.message, details={"rule": pv.rule_name, **details},
-    ))
+    db.add(_block_log(org_id, agent_id, pv, **details))
     await db.commit()
 
 
-def _trace_policy_block(name: str, seq: int) -> PolicyViolation:
-    return PolicyViolation(f"trace policy '{name}' violated at seq {seq}", name)
+def _trace_policy_block(name: str, seq: int, violations: Optional[list[Violation]] = None) -> PolicyViolation:
+    return PolicyViolation(f"trace policy '{name}' violated at seq {seq}", name, violations=violations)
 
 
 async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace:
@@ -245,6 +248,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             db.add(trace)
             await db.flush()
 
+        refused = None
         try:
             legacy = _event_trace(agent, trace.environment, req.events)
             policy_note = await evaluate_policies(db, org_id, agent, legacy, req.events)
@@ -253,30 +257,39 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             blocking = {row.id: c.policy.name for row, c in policies if row.action == "block"}
             found = []
             for e in _events(req.events):
-                found += monitor.step(e)
+                hits = monitor.step(e)
+                found += hits
                 blocked = [blocking[pid] for pid in monitor.failing if pid in blocking]
                 if blocked:
-                    raise _trace_policy_block(blocked[0], e.seq)
+                    raise _trace_policy_block(blocked[0], e.seq, [v for v in hits if v.policy_id in blocking])
         except PolicyViolation as pv:
-            await _block(db, org_id, agent.id, pv, trace_uid=trace_uid)
-            raise
-
-        for ev in req.events:
-            db.add(_span(trace.id, ev))
-        rows = await tps.record_violations(db, trace, policies, replayed + found, "live")
-        if policy_note:
-            db.add(AuditLog(
-                org_id=org_id, actor_type="agent", actor_id=agent.id,
-                action="policy_warn", resource_type="trace", resource_id=trace.id, rationale=policy_note,
-            ))
-        if req.final:
-            trace.meta = {**(trace.meta or {}), "stream": "final"}
-        await db.commit()
-        await tps.save_monitor(trace.id, None if req.final else monitor)
+            if pv.violations is None:
+                await _block(db, org_id, agent.id, pv, trace_uid=trace_uid)
+                raise
+            # the batch is refused and the monitor not saved, but the trace stays open and the block is a violation
+            refused = pv
+            rows = await tps.record_violations(db, trace, policies, replayed + pv.violations, "live")
+            db.add(_block_log(org_id, agent.id, pv, trace_uid=trace_uid))
+            await db.commit()
+        else:
+            for ev in req.events:
+                db.add(_span(trace.id, ev))
+            rows = await tps.record_violations(db, trace, policies, replayed + found, "live")
+            if policy_note:
+                db.add(AuditLog(
+                    org_id=org_id, actor_type="agent", actor_id=agent.id,
+                    action="policy_warn", resource_type="trace", resource_id=trace.id, rationale=policy_note,
+                ))
+            if req.final:
+                trace.meta = {**(trace.meta or {}), "stream": "final"}
+            await db.commit()
+            await tps.save_monitor(trace.id, None if req.final else monitor)
     finally:
         with suppress(LockError):
             await lock.release()
     await publish_violations(db, rows)
+    if refused:
+        raise refused
     if req.final:
         await enqueue_trace_check(trace.id)
     return trace, rows

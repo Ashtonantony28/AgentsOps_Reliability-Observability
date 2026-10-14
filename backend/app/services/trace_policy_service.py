@@ -162,14 +162,15 @@ async def check_completed_trace(db: AsyncSession, trace_id: str,
     check = check_trace if counterexamples else check_verdicts
     violations = check([c for _, c in policies], events_from_spans(spans))
     rows = await record_violations(db, trace, policies, violations, "batch")
-    # live rows were stored before counterexamples existed; fill them in from the batch result
-    with_cx = {v.policy_id: list(v.counterexample) for v in violations if v.counterexample}
+    # live rows were stored before counterexamples existed; fill in those the batch found at the same event
+    with_cx = {v.policy_id: v for v in violations if v.counterexample}
     if with_cx:
         versions = {row.id: row.version for row, _ in policies}
         stored = (await db.execute(select(TracePolicyViolation).where(
             TracePolicyViolation.trace_id == trace_id, TracePolicyViolation.policy_id.in_(with_cx)))).scalars().all()
         for s in stored:
-            if not s.counterexample and s.policy_version == versions[s.policy_id]:
-                s.counterexample = with_cx[s.policy_id]
+            v = with_cx[s.policy_id]
+            if not s.counterexample and s.policy_version == versions[s.policy_id] and s.at_seq == v.at_seq:
+                s.counterexample = list(v.counterexample)
     await db.commit()
     return rows

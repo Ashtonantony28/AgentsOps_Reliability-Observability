@@ -89,7 +89,7 @@ def test_counterexample_encoding_stays_within_what_the_budget_can_parse(monkeypa
     minimal_counterexample(compile_policy("p", p), events, 299)
 
 
-# A5-3: one block on an append ends the stream; the SDK then skips the server for every later check
+# A5-3: one block on an append no longer ends the stream or enforcement
 NO_DROP = 'policy no_drop severity critical:\n  always not tool("drop_db")'
 RETRY_CAP = 'policy retry_cap severity medium:\n  always count(tool(*) and status("error")) by name <= 1'
 
@@ -107,7 +107,6 @@ def sdk_client(app_, api_key, agent, monkeypatch):
     return AsyncAgentOpsClient(api_key=api_key, agent_id=agent.id, base_url="http://test")
 
 
-@pytest.mark.xfail(strict=True, reason="A5-3: after a blocked append every later guard check fails open unchecked")
 async def test_guard_still_enforced_after_a_blocked_append(db, org, sdk_client):
     await _policy(db, org, NO_DROP)
     await _policy(db, org, RETRY_CAP)
@@ -129,7 +128,6 @@ async def test_guard_still_enforced_after_a_blocked_append(db, org, sdk_client):
         t.add_event("llm", "answer")
 
 
-@pytest.mark.xfail(strict=True, reason="A5-3: a blocked append stores no violation, and the trace never closes")
 async def test_blocked_append_is_surfaced(db, org, sdk_client):
     await _policy(db, org, RETRY_CAP)
     async with sdk_client.trace(stream=True) as t:

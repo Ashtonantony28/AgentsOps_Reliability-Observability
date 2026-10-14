@@ -41,8 +41,7 @@ def test_bulk_requests_stay_under_the_server_event_cap(client, server):
     assert all(sum(len(t["events"]) for t in b["traces"]) <= MAX_EVENTS_PER_REQUEST for b in bodies)
 
 
-# A6-3: after the server rejects a streamed append (here: the trace is too long), later checks allow everything
-@pytest.mark.xfail(strict=True, reason="A6-3: a dead stream turns every later check into a fail-open allow")
+# A6-3: after the server rejects a streamed append (here: the trace is too long), later checks still ask it
 def test_check_after_trace_too_long_is_not_allowed(client, server):
     server.queue("events", (413, {"error": {"code": "trace_too_long", "details": {"max_events": 10_000}}}))
     server.queue("check", (200, {"allowed": False, "violations": [{"policy_id": "p1", "policy_name": "p"}]}))

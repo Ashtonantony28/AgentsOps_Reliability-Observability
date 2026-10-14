@@ -77,15 +77,19 @@ def _error(r: httpx.Response) -> dict:
 
 
 def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, int]:
-    """'ok', 'retry' (keep pending events), 'fatal' (drop the batch and stop streaming the trace), or the
-    server's expected seq on a seq conflict, so a batch stored before a lost reply can be resynced."""
+    """'ok', 'retry' (keep pending events), 'refused' (a policy blocked the batch; the trace goes on without it),
+    'fatal' (drop the batch and stop streaming the trace), or the server's expected seq on a seq conflict,
+    so a batch stored before a lost reply can be resynced."""
     if isinstance(outcome, BaseException):
         return "retry"
     if outcome.is_success:
         return "ok"
     if outcome.status_code >= 500 or outcome.status_code == 429:
         return "retry"
-    err = _error(outcome) if outcome.status_code == 409 else {}
+    err = _error(outcome) if outcome.status_code in (403, 409) else {}
+    if outcome.status_code == 403 and err.get("code") == "policy_block":
+        log.warning("agentops events refused by policy: %s", err.get("message"))
+        return "refused"
     if err.get("code") == "trace_busy":
         return "retry"
     expected = (err.get("details") or {}).get("expected_seq") if err.get("code") == "seq_conflict" else None

@@ -68,8 +68,12 @@ With `AsyncAgentOpsClient`, use `await t.acheck(...)` so pending events are push
 Streaming retries on network errors, 5xx, 429 and `409 trace_busy` (the batch stays pending and goes with the
 next push). A `409 seq_conflict` whose `expected_seq` shows the server already stored part of the batch (a reply
 lost after commit) resyncs and sends the rest. While any added event is not on the server, a check does not
-call the server and follows the failure policy below (`error="trace events not delivered"`). Any other rejection (`403 policy_block`, `409 seq_conflict`, `422`, ...) drops that batch, logs a
-warning and stops streaming that trace. Only events are streamed: trace-level fields (`output`, tokens, cost,
+call the server and follows the failure policy below (`error="trace events not delivered"`). A `403 policy_block`
+refuses the event a `block` policy forbids: it is dropped from `t.events`, later events are renumbered, and
+streaming goes on (a refused batch of several events is resent one event at a time to find it). Any other
+rejection (`409 seq_conflict`, `413 trace_too_long`, `422`, ...) drops that batch, logs a warning and stops
+streaming that trace; later checks still go to the server and are judged on the events it holds
+(with `fail_closed=True` they fail instead). Only events are streamed: trace-level fields (`output`, tokens, cost,
 `status`) are not sent for a streamed trace. A streamed trace that never adds an event is sent the normal way.
 
 **Failure policy.** A check that cannot complete (network error, timeout, non-2xx, malformed reply) logs a

@@ -52,6 +52,8 @@ class Trace:
     stream: bool = False
     _sent: int = field(default=0, init=False, repr=False)
     _dead: bool = field(default=False, init=False, repr=False)
+    _split: int = field(default=0, init=False, repr=False)  # events before this index are pushed one at a time
+    _refused: int = field(default=0, init=False, repr=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
     _alock: Any = field(default=None, init=False, repr=False, compare=False)
     _tasks: set = field(default_factory=set, init=False, repr=False, compare=False)
@@ -109,8 +111,9 @@ class Trace:
             self._check_body(name, kind, input, attrs))
 
     def _undelivered(self) -> Optional[CheckResult]:
-        """A failed check when the server is missing some of this streamed trace's events."""
-        if self._streaming() and (self._dead or self._sent < len(self.events)):
+        """A failed check when the server lacks some of this streamed trace's events. Once it rejected some, a
+        fail-open client checks against the events the server holds instead."""
+        if self._streaming() and self._sent < len(self.events) and (not self._dead or self._client.fail_closed):
             return failed_result("trace events not delivered", self._client.fail_closed)
         return None
 
@@ -133,17 +136,19 @@ class Trace:
         if self._dead:
             return None
         start = self._sent
-        pending = self.events[start:]
+        pending = self.events[start:start + 1] if start < self._split else self.events[start:]
         if not pending and not final:
             return None
-        return start, len(pending), events_request(self.agent_id, pending, final)
+        last = start + len(pending) == len(self.events)
+        return start, pending, events_request(self.agent_id, pending, final and last)
 
-    def _settle(self, outcome, start: int, n: int, final: bool) -> bool:
-        """Applies the outcome of pushing events[start:start + n]; True when the server already held part of
-        the batch and the rest should go now. A sync and an async push of the same trace may overlap."""
+    def _settle(self, outcome, start: int, sent: list, final: bool) -> bool:
+        """Applies the outcome of pushing `sent`, which was events[start:start + len(sent)]; True when another
+        batch should go now. A sync and an async push of the same trace may overlap."""
+        n = len(sent)
         if outcome == "ok":
             self._sent = max(self._sent, start + n)
-            return False
+            return self._sent < len(self.events) and (self._sent < self._split or final)
         if isinstance(outcome, int) and start < outcome <= len(self.events):
             self._sent = max(self._sent, outcome)
             return True
@@ -151,13 +156,27 @@ class Trace:
             if final:
                 log.warning("agentops final push failed for trace %s; %d events not delivered", self.trace_id, n)
             return False
+        if outcome == "refused":
+            if not n:  # a legacy rule refused the empty final push: nothing to drop
+                return False
+            if any(a is not b for a, b in zip(self.events[start:start + n], sent)) or len(self.events) < start + n:
+                return True  # an overlapping push already settled this batch
+            if n > 1:  # find the refused event: the ones before it are allowed
+                self._split = start + n
+                return True
+            del self.events[start]
+            for i in range(start, len(self.events)):
+                self.events[i]["seq"] = i
+            self._split = max(start, self._split - 1)
+            self._refused += 1
+            return final or start < len(self.events)
         self._dead = True
         log.warning("agentops stopped streaming trace %s; dropped %d events", self.trace_id, n)
         return False
 
     def _push(self, final: bool = False) -> None:
         with self._lock:
-            for _ in range(2):
+            for _ in range(2 * (len(self.events) - self._sent) + 2):
                 batch = self._batch(final)
                 if batch is None or not self._settle(self._client._send_events(self.trace_id, batch[2]),
                                                      *batch[:2], final):
@@ -167,7 +186,7 @@ class Trace:
         if self._alock is None:
             self._alock = asyncio.Lock()
         async with self._alock:
-            for _ in range(2):
+            for _ in range(2 * (len(self.events) - self._sent) + 2):
                 batch = self._batch(final)
                 if batch is None or not self._settle(await self._client._asend_events(self.trace_id, batch[2]),
                                                      *batch[:2], final):
@@ -217,7 +236,7 @@ class Trace:
             except ValueError:
                 pass
             self._token = None
-        return self._streaming() and bool(self.events)
+        return self._streaming() and bool(self.events or self._refused)
 
     def __enter__(self) -> "Trace":
         return self._enter()
