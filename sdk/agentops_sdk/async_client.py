@@ -12,13 +12,16 @@ from typing import Optional
 
 import httpx
 
+from agentops_sdk.precheck import PrecheckMixin
 from agentops_sdk.trace import Trace
 from agentops_sdk.utils import append_to_disk, disk_buffer_path
 
 log = logging.getLogger("agentops_sdk.async")
 
 
-class AsyncAgentOpsClient:
+class AsyncAgentOpsClient(PrecheckMixin):
+    is_async = True
+
     def __init__(
         self,
         api_key: str,
@@ -28,6 +31,8 @@ class AsyncAgentOpsClient:
         agent_version: str = "1.0.0",
         flush_interval_s: float = 2.0,
         batch_size: int = 50,
+        fail_closed: bool = False,
+        check_timeout_s: float = 2.0,
     ):
         if not api_key:
             raise ValueError("api_key is required")
@@ -38,6 +43,8 @@ class AsyncAgentOpsClient:
         self.agent_version = agent_version
         self.flush_interval_s = flush_interval_s
         self.batch_size = batch_size
+        self.fail_closed = fail_closed
+        self.check_timeout_s = check_timeout_s
 
         self._queue: asyncio.Queue = asyncio.Queue()
         self._stop = asyncio.Event()
@@ -50,7 +57,7 @@ class AsyncAgentOpsClient:
 
     def trace(self, *, input: str = "", session_id: Optional[str] = None,
               agent_id: Optional[str] = None, environment: Optional[str] = None,
-              agent_version: Optional[str] = None) -> Trace:
+              agent_version: Optional[str] = None, stream: bool = False) -> Trace:
         return Trace(
             agent_id=agent_id or self.agent_id,
             environment=environment or self.environment,
@@ -58,6 +65,7 @@ class AsyncAgentOpsClient:
             session_id=session_id,
             input=input,
             _client=self,
+            stream=stream,
         )
 
     def enqueue(self, payload: dict) -> None:

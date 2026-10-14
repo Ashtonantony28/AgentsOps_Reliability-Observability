@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import AuthContext, authenticate_api_key, get_current_user, require_role
+from app.middleware.rate_limit import enforce_rate_limit
 from app.models import Agent, AuditLog, TracePolicy
 from app.policy.ast import Policy
 from app.policy.dsl import PolicyParseError, parse
@@ -22,6 +23,7 @@ from app.schemas.policy import (
     TracePolicyOut,
     TracePolicyUpdate,
 )
+from app.services.trace_service import TraceConflict, precheck
 
 router = APIRouter(prefix="/api/trace-policies", tags=["trace-policies"])
 
@@ -131,7 +133,13 @@ async def validate_trace_policy(
 @router.post("/check", response_model=PolicyCheckOut)
 async def check_candidate(req: PolicyCheckIn, request: Request, db: AsyncSession = Depends(get_db)):
     org, _api_key = await authenticate_api_key(request, db)
-    raise HTTPException(501, "not_implemented")
+    await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
+    try:
+        return await precheck(db, org.id, req)
+    except TraceConflict as e:
+        raise HTTPException(409, detail={"error": e.code, "message": e.message, **e.details})
+    except ValueError as e:
+        raise HTTPException(404, detail=str(e))
 
 
 @router.put("/{policy_id}", response_model=TracePolicyOut)

@@ -59,6 +59,15 @@ class Monitor:
                                      f"{p.policy.name} violated at seq {event.seq}"))
         return out
 
+    def check(self, event: Event) -> list[Violation]:
+        """Policies false at `event` as the next event, whether or not violated before; the state is unchanged."""
+        if event.seq != self.next_seq:
+            raise ValueError(f"expected seq {self.next_seq}, got {event.seq}")
+        return [Violation(p.policy_id, p.policy.name, p.policy.severity, event.seq, (),
+                          f"{p.policy.name} would be violated at seq {event.seq}")
+                for p, plan, state in zip(self.policies, self._plans, self._states)
+                if not plan.step([dict(x) if isinstance(x, dict) else x for x in state], event)]
+
     def snapshot(self) -> bytes:
         return json.dumps({"v": 1, "n": self.next_seq, "p": [
             [p.policy_id, plan.digest, done, state]
@@ -84,4 +93,7 @@ class Monitor:
 
 
 def would_violate(policies: Sequence[CompiledPolicy], prefix: Sequence[Event], candidate: Event) -> list[Violation]:
-    raise NotImplementedError
+    m = Monitor(policies)
+    for e in prefix:
+        m.step(e)
+    return m.check(candidate)

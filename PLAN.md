@@ -169,7 +169,7 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - `wsStore.receive` handles `{"type":"violation"}`: up to 3 toasts (8 s, link to the trace with that violation selected), and `TraceDetail` refetches when one arrives for the open trace.
 
 ### SG6 SDK streaming and pre-execution checks (stretch)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** SG4
+- **Owner:** SG6 thread · **Status:** done · **Depends:** SG4
 - **Scope:** `Trace.add_event(...)`, `agentops.trace(..., stream=True)`, `client.check(name, input=...)` / async twin calling `POST /api/trace-policies/check`, optional `@agentops.guard` decorator that raises `PolicyBlocked` before running a tool.
 - **Acceptance:**
   - Legacy SDK payloads unchanged (existing SDK tests pass untouched).
@@ -177,6 +177,10 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - `check` on a would-violate candidate returns `allowed=False` with the violating policy; a network failure follows a documented fail-open/fail-closed setting (default fail-open, logged).
   - Pre-execution budget row met server-side.
 - **Verify:** `cd sdk && pytest -q` · `cd backend && pytest tests/api/test_precheck.py -q` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+- **Result:** all three verify commands pass (SDK 69 tests; `test_precheck.py` 41 API tests, plus 38 checker tests in `tests/policy/test_precheck.py` and 7 in `tests/api/test_sdk_contract.py`); precheck p95 ≈ 5 ms against the 10 ms row, now in CI.
+  - Server: `would_violate` replays the prefix through `Monitor` and calls the new `Monitor.check(event)`, which steps a copy of each policy's state and reports every policy whose formula is false at the candidate, even one already violated earlier in the trace (a guard should stop the second bad call too). Checked against `reference.truth` on 1 500 Hypothesis cases. `POST /api/trace-policies/check` loads the trace's monitor from Redis (rebuilt from spans if missing or stale, never written back), evaluates the candidate as the next event (its own `seq` is ignored; no or unknown `trace_uid` means an empty prefix) and stores nothing. `violations` lists every applicable enabled policy it would violate (`mode: precheck`, `id`/`trace_id` null, empty counterexample); `allowed` is false only when one of them is a `block` policy, i.e. exactly when appending the event would be a 403 (tested by streaming every violating fixture). Unknown agent 404, trace of another agent 409 `agent_mismatch`; rate-limited like the events path.
+  - SDK: `Trace.add_event`, `trace(..., stream=True)` (each `add_event` is sent to the events endpoint, `final` on exit), `check`/`acheck` on both clients, the module and `Trace` (a trace's check carries its `trace_uid` when streaming), `@guard` (sync and async; checks, raises `PolicyBlocked`, then records the call as an event in the active trace). Failure policy: `fail_closed=False` by default, so a failed check logs a warning and returns `allowed=True` with `error` set; `check_timeout_s=2.0`. The contract test compares the SDK's request builders and `CheckResult` with the OpenAPI schemas and drives the SDK against the app end to end. Legacy payloads are unchanged (existing SDK tests untouched; a trace with no events serialises exactly as before).
+  - Open: a streamed trace sends only events, so its `output`, tokens, cost and status never reach the server (`EventsAppendIn` has no field for them). Legacy `PolicyRule` block rules (`forbid_tool`, PII, injection) are not part of the precheck. After a fatal stream rejection (403, `seq_conflict`) the SDK stops streaming that trace and the server-side trace stays open. Without `stream=True` a check has no history.
 
 ## Audits (after SG5b; SG6 included if built)
 
@@ -321,3 +325,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG3 done.
 - 2026-10-14: SG5b done.
 - 2026-10-14: SG5a done.
+- 2026-10-14: SG6 done.

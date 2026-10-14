@@ -25,6 +25,59 @@ async with agentops.trace(input=q) as t:
     t.set_output(result)
 ```
 
+## Events and policy pre-checks
+
+Record typed events instead of tool calls (a trace holds one or the other, never both):
+
+```python
+with agentops.trace(input=q) as t:
+    t.add_event("retrieval", "kb_search", input={"q": q}, output={"hits": 3}, index="faq")
+    t.add_event("llm", "answer")
+```
+
+`kind` is one of `tool`, `llm`, `retrieval`, `confirmation`, `custom`; extra keyword arguments become the
+event's `attrs` (`latency_ms=` sets the event latency). Events get `seq` 0, 1, 2, ... in the order added.
+
+Ask the server whether an action would violate a trace policy before doing it:
+
+```python
+r = agentops.check("issue_refund", input={"amount": 120}, tier="gold")   # or: await agentops.acheck(...)
+if not r.allowed:
+    print(r.violations)          # ViolationOut dicts (policy_name, severity, message, ...)
+```
+
+`violations` lists every enabled policy the action would violate; `allowed` is `False` only when one of them
+has action `block`, i.e. exactly when the server would reject the event with a 403.
+
+Or guard a function (sync or async). The check runs first and raises `agentops.PolicyBlocked` (with
+`.result`) instead of calling the function; inside an active trace the call is then recorded with
+`add_event` (status `success` / `error`). Function arguments are never sent.
+
+```python
+@agentops.guard                              # or @agentops.guard(name="refund", kind="tool", tier="gold")
+def issue_refund(order_id, amount): ...
+```
+
+**History-aware checks need streaming.** `t.check(...)` / `await t.acheck(...)` evaluate the candidate after the
+events the server already holds for that trace. With `agentops.trace(stream=True)` every `add_event` is sent at
+once to `/api/traces/{trace_id}/events` (the trace is closed with `final=true` on exit), so the server sees the
+whole prefix. Without `stream=True` the server has none of the trace yet, and checks see an empty history.
+With `AsyncAgentOpsClient`, use `await t.acheck(...)` so pending events are pushed before the check.
+
+Streaming retries on network errors, 5xx, 429 and `409 trace_busy` (the batch stays pending and goes with the
+next push). Any other rejection (`403 policy_block`, `409 seq_conflict`, `422`, ...) drops that batch, logs a
+warning and stops streaming that trace. Only events are streamed: trace-level fields (`output`, tokens, cost,
+`status`) are not sent for a streamed trace. A streamed trace that never adds an event is sent the normal way.
+
+**Failure policy.** A check that cannot complete (network error, timeout, non-2xx, malformed reply) logs a
+warning and returns `CheckResult(allowed=not fail_closed, violations=[], error="<reason>")`. The default is
+fail-open; pass `fail_closed=True` to `init()` / the client to block instead. `check_timeout_s` (default 2.0)
+bounds each check.
+
+```python
+agentops.init(api_key="aop_...", agent_id="agent-uuid", fail_closed=True, check_timeout_s=1.0)
+```
+
 ## Features
 
 - Context manager (sync + async)

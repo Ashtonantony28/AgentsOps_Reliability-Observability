@@ -9,9 +9,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Agent, Trace, Span, PolicyRule, AuditLog, TracePolicyViolation
+from app.policy.checker import Monitor
 from app.policy.events import Event, event_inputs
 from app.redis import get_redis
-from app.schemas.policy import EventsAppendIn
+from app.schemas.policy import EventsAppendIn, PolicyCheckIn, PolicyCheckOut, ViolationOut
 from app.schemas.trace import EventIn, TraceIn
 from app.services import trace_policy_service as tps
 from app.services.security_service import detect_pii, injection_score, mask_pii
@@ -255,3 +256,38 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
     if req.final:
         await enqueue_trace_check(trace.id)
     return trace, rows
+
+
+async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyCheckOut:
+    """Evaluates `req.candidate` as the next event of the stored trace (its own seq is ignored); stores nothing."""
+    agent = (await db.execute(
+        select(Agent).where(Agent.id == req.agent_id, Agent.org_id == org_id)
+    )).scalar_one_or_none()
+    if not agent:
+        raise ValueError("agent_not_found")
+    trace = None if req.trace_uid is None else (await db.execute(
+        select(Trace).where(Trace.org_id == org_id, Trace.trace_uid == req.trace_uid)
+        .order_by(Trace.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    if trace is not None and trace.agent_id != agent.id:
+        raise TraceConflict("agent_mismatch", "trace belongs to another agent")
+    environment = agent.environment if trace is None else trace.environment
+    policies = await tps.active_policies(db, org_id, agent.id, environment)
+    compiled = [c for _, c in policies]
+    if trace is None:
+        monitor = Monitor(compiled)
+    else:
+        last = (await db.execute(select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
+        monitor, _ = await tps.load_monitor(db, trace.id, compiled, 0 if last is None else last + 1)
+    c = req.candidate
+    found = monitor.check(Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
+    rows = {row.id: row for row, _ in policies}
+    now = datetime.utcnow()
+    return PolicyCheckOut(
+        allowed=not any(rows[v.policy_id].action == "block" for v in found),
+        violations=[ViolationOut(
+            agent_id=agent.id, policy_id=v.policy_id, policy_name=v.policy_name,
+            policy_version=rows[v.policy_id].version, severity=v.severity, at_seq=v.at_seq, counterexample=[],
+            message=v.message, mode="precheck", detected_at=now,
+        ) for v in found],
+    )

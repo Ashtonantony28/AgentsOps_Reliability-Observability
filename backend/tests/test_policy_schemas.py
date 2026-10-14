@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.policy import ast
-from app.policy.checker import CompiledPolicy, Monitor, Violation, check_trace, compile_policy, would_violate
+from app.policy.checker import Monitor, Violation, check_trace, compile_policy, would_violate
 from app.policy.counterexample import minimal_counterexample
 from app.policy.dsl import PolicyParseError, parse
 from app.policy.events import Event, events_from_spans, events_from_trace
@@ -19,13 +19,6 @@ from app.schemas.policy import (
     WsEventsMessage,
 )
 from app.schemas.trace import EventIn, TraceIn
-
-POLICY = ast.Policy(
-    name="confirm_before_delete",
-    severity="high",
-    formula=ast.Implies(ast.Match(kind="tool", globs=("delete_*",)), ast.Once(ast.Match(kind="confirmation"))),
-)
-EVENT = Event(seq=0, kind="tool", name="delete_user", status="success", attrs={})
 
 
 def test_contract_symbols_import():
@@ -53,14 +46,6 @@ def test_parse_error_fields():
     e = PolicyParseError(3, 7, "expected ':'")
     assert (e.line, e.col, e.message) == (3, 7, "expected ':'")
     assert str(e) == "3:7: expected ':'"
-
-
-@pytest.mark.parametrize("call", [
-    lambda: would_violate([CompiledPolicy("p1", POLICY)], [], EVENT),
-], ids=["would_violate"])
-def test_stubs_raise_not_implemented(call):
-    with pytest.raises(NotImplementedError):
-        call()
 
 
 def _roundtrip(model):

@@ -20,7 +20,7 @@ API_KEY_ROUTES = [
     ("POST", "/api/traces/uid-1/events", {"agent_id": "a1", "events": [EVENT], "final": True}),
 ]
 ALL = [r[:3] for r in JWT_ROUTES] + API_KEY_ROUTES
-IMPLEMENTED = {"/api/trace-policies", "/api/trace-policies/p1", "/api/trace-policies/validate",
+IMPLEMENTED = {"/api/trace-policies", "/api/trace-policies/check", "/api/trace-policies/p1", "/api/trace-policies/validate",
                "/api/traces/uid-1/events", "/api/traces/t1/violations", "/api/reports/violations.csv"}
 JWT_STUBS = [r for r in JWT_ROUTES if r[1] not in IMPLEMENTED]
 API_KEY_STUBS = [r for r in API_KEY_ROUTES if r[1] not in IMPLEMENTED]
