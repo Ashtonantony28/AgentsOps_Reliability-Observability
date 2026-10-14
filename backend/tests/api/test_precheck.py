@@ -203,7 +203,7 @@ async def test_precheck_predicts_the_live_block(client, db, org, agent, api_key_
 @pytest.mark.parametrize("fx", [f for f in load_fixtures() if f.expected], ids=lambda f: f.name)
 async def test_block_after_a_logged_violation_blocks_every_later_one(client, db, org, agent, api_key_headers, redis, fx):
     """Policies log their first violation, then switch to block: every later violating event is a 403, the precheck
-    agrees, and live rows stay one per policy at the reference's first violation of the stored events."""
+    agrees, and live rows stay one per policy at its first violation, of the stored events or else a refused one."""
     policies = parse(fx.source)
     rows = [await _policy(db, org, pretty(p), action="log") for p in policies]
     first = min(x.at_seq for x in fx.expected)
@@ -214,6 +214,7 @@ async def test_block_after_a_logged_violation_blocks_every_later_one(client, db,
     for row in rows:
         row.action = "block"
     await db.commit()
+    refused = {}
     for e in fx.events[first + 1:]:
         e = dataclasses.replace(e, seq=len(stored))
         violates = any(reference.evaluate(p, stored + [e])[-1:] == [e.seq] for p in policies)
@@ -223,10 +224,13 @@ async def test_block_after_a_logged_violation_blocks_every_later_one(client, db,
         assert (allowed, r.status_code) == ((False, 403) if violates else (True, 202)), r.text
         if not violates:
             stored.append(e)
+        for p in policies:
+            if violates and reference.evaluate(p, stored + [e])[-1:] == [e.seq]:
+                refused.setdefault(p.name, e.seq)
     live = (await db.execute(select(TracePolicyViolation).execution_options(populate_existing=True))).scalars()
     names = {row.id: row.name for row in rows}
-    assert sorted((names[v.policy_id], v.at_seq) for v in live) == \
-        sorted((p.name, seqs[0]) for p in policies if (seqs := reference.evaluate(p, stored)))
+    expected = {p.name: seqs[0] for p in policies if (seqs := reference.evaluate(p, stored))}
+    assert sorted((names[v.policy_id], v.at_seq) for v in live) == sorted({**refused, **expected}.items())
 
 
 async def _replays(monkeypatch):

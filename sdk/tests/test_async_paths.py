@@ -25,13 +25,9 @@ def test_async_check_uses_check_timeout(make_async_client, server):
 
 
 @pytest.mark.parametrize("fail_closed", [False, True])
-@pytest.mark.parametrize("failure", [
-    [(403, {"error": {"code": "policy_block"}})],  # stream dead
-    [(503, {}), (503, {})],  # events still pending
-])
-def test_acheck_with_undelivered_events_skips_the_server(make_async_client, server, fail_closed, failure):
+def test_acheck_with_undelivered_events_skips_the_server(make_async_client, server, fail_closed):
     c = make_async_client(fail_closed=fail_closed)
-    server.queue("events", *failure)
+    server.queue("events", (503, {}), (503, {}))  # events still pending
 
     async def run():
         async with c.trace(stream=True) as t:

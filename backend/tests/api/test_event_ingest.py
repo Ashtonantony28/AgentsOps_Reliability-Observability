@@ -122,17 +122,55 @@ async def test_block_policy_rejects_request_with_403(client, db, org, agent, api
     r = await _append(client, api_key_headers, agent, "u1", [ev(0, "drop_db")])
     assert r.status_code == 403, r.text
     assert r.json()["error"]["details"]["rule"] == "no_drop"
-    assert await _rows(db, Trace) == []
+    (trace,) = await _rows(db, Trace)
+    assert trace.meta == {"stream": "open"} and await _rows(db, Span) == []
 
     assert (await _append(client, api_key_headers, agent, "u1", [ev(0, "search")])).status_code == 202
     r = await _append(client, api_key_headers, agent, "u1", [ev(1, "plan", "llm"), ev(2, "drop_db")])
     assert r.status_code == 403
     assert [s.name for s in await _rows(db, Span)] == ["search"]
-    assert await _rows(db, TracePolicyViolation) == []
     logs = await _rows(db, AuditLog, AuditLog.action == "policy_block")
     assert len(logs) == 2 and all(log.details == {"rule": "no_drop", "trace_uid": "u1"} for log in logs)
     assert sorted(log.rationale[-5:] for log in logs) == ["seq 0", "seq 2"]
     assert (await _append(client, api_key_headers, agent, "u1", [ev(1, "plan", "llm")])).status_code == 202
+
+
+async def test_blocked_event_is_stored_as_a_live_violation(client, db, org, agent, api_key_headers, redis,
+                                                           enqueued):
+    await _policy(db, org, NO_DROP, action="block")
+    await _policy(db, org, CONFIRM)
+    sub = redis.pubsub()
+    await sub.subscribe(f"violations:{org.id}")
+    await sub.get_message(timeout=1)  # subscribe ack
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "search")])
+    r = await _append(client, api_key_headers, agent, "u1", [ev(1, "delete_user"), ev(2, "drop_db")])
+    assert r.status_code == 403
+    (row,) = await _rows(db, TracePolicyViolation)  # the refused delete_user's violation is not stored
+    assert (row.policy_name, row.at_seq, row.mode, row.counterexample) == ("no_drop", 2, "live", [])
+    msgs = [await sub.get_message(ignore_subscribe_messages=True, timeout=0.1) for _ in range(10)]
+    await sub.aclose()
+    assert [json.loads(m["data"])["policy_name"] for m in msgs if m] == ["no_drop"]
+
+    assert (await _append(client, api_key_headers, agent, "u1", [ev(1, "drop_db")])).status_code == 403
+    assert len(await _rows(db, TracePolicyViolation)) == 1  # first violation per policy per trace
+    r = await _append(client, api_key_headers, agent, "u1", [ev(1, "plan", "llm")], final=True)
+    assert r.status_code == 202 and r.json()["violations"] == []
+    (trace,) = await _rows(db, Trace)
+    assert trace.meta["stream"] == "final" and enqueued == [trace.id]
+    await tps.check_completed_trace(db, trace.id)
+    (row,) = await _rows(db, TracePolicyViolation)
+    assert row.counterexample == []  # the batch has no event that explains it
+
+
+async def test_block_rebuilt_from_spans_records_the_replayed_violations(client, db, org, agent, api_key_headers,
+                                                                        redis):
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "search")])
+    await _policy(db, org, NO_DROP.replace("drop_db", "search").replace("no_drop", "no_search"))
+    await _policy(db, org, NO_DROP, action="block")
+    r = await _append(client, api_key_headers, agent, "u1", [ev(1, "drop_db")])
+    assert r.status_code == 403
+    rows = await _rows(db, TracePolicyViolation)
+    assert sorted((v.policy_name, v.at_seq) for v in rows) == [("no_drop", 1), ("no_search", 0)]
 
 
 async def test_legacy_forbid_tool_rule_applies_to_appended_events(client, db, org, agent, api_key_headers):
@@ -322,3 +360,16 @@ async def test_busy_trace_is_409(client, agent, api_key_headers, redis, org, mon
     await redis.set(f"lock:trace-events:{org.id}:u1", "someone-else")
     r = await _append(client, api_key_headers, agent, "u1", [ev(0, "a")])
     assert r.status_code == 409 and r.json()["error"]["code"] == "trace_busy"
+
+
+async def test_batch_does_not_fill_a_live_row_from_a_later_violation(client, db, org, agent, api_key_headers, redis):
+    p = await _policy(db, org, NO_DROP, action="block")
+    assert (await _append(client, api_key_headers, agent, "u1", [ev(0, "drop_db")])).status_code == 403
+    p.action = "log"
+    await db.commit()
+    r = await _append(client, api_key_headers, agent, "u1", [ev(0, "search"), ev(1, "drop_db")], final=True)
+    assert r.status_code == 202 and r.json()["violations"] == []  # already recorded at the refused seq 0
+    (trace,) = await _rows(db, Trace)
+    await tps.check_completed_trace(db, trace.id)
+    (row,) = await _rows(db, TracePolicyViolation)
+    assert (row.at_seq, row.counterexample) == (0, [])

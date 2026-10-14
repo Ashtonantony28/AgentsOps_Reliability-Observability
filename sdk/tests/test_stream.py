@@ -54,23 +54,72 @@ def test_pending_flushed_with_final(client, server):
 
 
 @pytest.mark.parametrize("failure", [
-    (403, {"error": {"code": "policy_block", "message": "blocked"}}),
     (409, {"error": {"code": "seq_conflict", "message": "gap", "details": {"expected_seq": 4}}}),
     (409, {"error": {"code": "trace_closed"}}),
+    (409, {"error": {"code": "agent_mismatch"}}),
+    (413, {"error": {"code": "trace_too_long", "details": {"max_events": 10_000}}}),
     (422, {"error": {"code": "validation_error"}}),
 ])
-def test_stops_streaming_on_rejection(client, server, caplog, failure):
+def test_stops_streaming_on_rejection_but_keeps_checking(client, server, caplog, failure):
     server.queue("events", failure)
+    server.queue("check", (200, {"allowed": False, "violations": [{"policy_name": "p"}]}))
     with caplog.at_level(logging.WARNING, logger="agentops_sdk"):
         with client.trace(stream=True) as t:
             t.add_event("tool", "a")
             t.add_event("tool", "b")
             result = t.check("c")
     assert seqs(server) == [[0]]
-    assert server.routes() == ["events"]  # the server lacks the trace's events, so the check fails open
-    assert result.allowed and result.error == "trace events not delivered"
+    assert server.routes() == ["events", "check"]  # checked against the events the server holds
+    assert server.bodies("check")[0]["trace_uid"] == t.trace_id
+    assert not result.allowed and result.error is None
     assert client._queue.empty()
     assert "stopped streaming" in caplog.text and caplog.text.count("stopped streaming") == 1
+
+
+BLOCK = (403, {"error": {"code": "policy_block", "message": "trace policy 'p' violated at seq 0"}})
+
+
+def test_policy_block_drops_the_refused_event_and_streams_on(client, server, caplog):
+    server.queue("events", BLOCK)
+    with caplog.at_level(logging.WARNING, logger="agentops_sdk"):
+        with client.trace(stream=True) as t:
+            t.add_event("tool", "a")
+            t.add_event("tool", "b")
+            assert t.check("c").allowed
+    assert seqs(server) == [[0], [0], []] and finals(server) == [False, False, True]
+    assert server.routes() == ["events", "events", "check", "events"]
+    assert server.bodies("check")[0]["candidate"]["seq"] == 1
+    assert [(e["seq"], e["name"]) for e in t.events] == [(0, "b")] and not t._dead
+    assert "refused by policy: trace policy 'p' violated at seq 0" in caplog.text
+
+
+def test_refused_batch_is_resent_one_event_at_a_time(client, server):
+    server.queue("events", (500, {}), BLOCK, (202, {"accepted": 1}), BLOCK)
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")  # [a, b] refused: a alone is accepted, b alone refused
+        t.add_event("tool", "c")
+    assert seqs(server) == [[0], [0, 1], [0], [1], [1], []]
+    assert [(e["seq"], e["name"]) for e in t.events] == [(0, "a"), (1, "c")]
+    assert t._sent == 2
+
+
+def test_refused_final_batch_still_closes_the_trace(client, server):
+    server.queue("events", (503, {}), (503, {}), BLOCK, (202, {"accepted": 1}), BLOCK)
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert seqs(server) == [[0], [0, 1], [0, 1], [0], [1], []]
+    assert finals(server) == [False, False, True, False, True, True]
+    assert [e["name"] for e in t.events] == ["a"]
+
+
+def test_trace_whose_every_event_is_refused_is_closed_not_reuploaded(client, server):
+    server.queue("events", BLOCK)
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+    assert seqs(server) == [[0], []] and finals(server) == [False, True]
+    assert t.events == [] and client._queue.empty()
 
 
 def test_final_push_failure_logs_undelivered(client, server, caplog):
@@ -181,17 +230,19 @@ def test_async_client_acheck_awaits_push(aclient, server):
     assert check["trace_uid"] == t.trace_id and check["candidate"]["seq"] == 2
 
 
-def test_async_client_stops_on_policy_block(aclient, server):
-    server.queue("events", (403, {"error": {"code": "policy_block"}}))
+def test_async_client_streams_on_after_policy_block(aclient, server):
+    server.queue("events", BLOCK)
 
     async def run():
         async with aclient.trace(stream=True) as t:
             t.add_event("tool", "a")
             await asyncio.sleep(0.01)
             t.add_event("tool", "b")
+            return t, await t.acheck("c")
 
-    asyncio.run(run())
-    assert seqs(server) == [[0]]
+    t, r = asyncio.run(run())
+    assert seqs(server) == [[0], [0], []] and r.allowed and r.error is None
+    assert [e["name"] for e in t.events] == ["b"]
 
 
 def test_module_trace_stream_flag(singleton, server):
@@ -250,3 +301,19 @@ def test_sync_check_overlapping_async_push_keeps_order(aclient, server):
     assert server.routes()[:2] == ["events", "check"]
     assert seqs(server) == [[0], [0], [1], []] and finals(server)[-1] is True
     assert not t._dead and t._sent == 2
+
+
+def test_refused_event_in_a_batch_renumbers_the_rest(client, server):
+    server.queue("events", (500, {}), BLOCK, BLOCK)
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")  # [a, b] refused, then a alone refused: b becomes seq 0
+    assert seqs(server) == [[0], [0, 1], [0], [0], []]
+    assert [(e["seq"], e["name"]) for e in t.events] == [(0, "b")]
+
+
+def test_refusal_settled_by_an_overlapping_push_drops_nothing(client):
+    t = client.trace(stream=True)
+    t.events.append({"seq": 0, "name": "a"})  # recorded, not pushed
+    assert t._settle("refused", 0, [{"seq": 0, "name": "a"}], False) is True
+    assert t.events == [{"seq": 0, "name": "a"}] and t._refused == 0
