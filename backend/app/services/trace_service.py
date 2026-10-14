@@ -53,6 +53,7 @@ async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: 
     events = event_inputs(trace) if events is None else events
     rules = (await db.execute(
         select(PolicyRule).where(PolicyRule.org_id == org_id, PolicyRule.enabled == True)  # noqa
+        .order_by(PolicyRule.created_at, PolicyRule.id)
     )).scalars().all()
     note = None
     for r in rules:
