@@ -37,8 +37,10 @@ def event_dict(seq: int, kind: str, name: str, status: str = "success", input: O
             "output": output or {}, "attrs": attrs or {}, "latency_ms": int(latency_ms), "timestamp": timestamp}
 
 
-def check_request(agent_id: str, trace_uid: Optional[str], candidate: dict, environment: Optional[str] = None) -> dict:
-    return {"agent_id": agent_id, "trace_uid": trace_uid, "environment": environment, "candidate": candidate}
+def check_request(agent_id: str, trace_uid: Optional[str], candidate: dict,
+                  prefix: Optional[List[dict]] = None, environment: Optional[str] = None) -> dict:
+    return {"agent_id": agent_id, "trace_uid": trace_uid, "environment": environment, "prefix": prefix or [],
+            "candidate": candidate}
 
 
 def events_request(agent_id: str, events: List[dict], final: bool, **fields) -> dict:
@@ -112,7 +114,7 @@ class PrecheckMixin:
 
     def _check_body(self, name: str, kind: str, input: Optional[dict], attrs: dict) -> dict:
         return check_request(self.agent_id, None, event_dict(0, kind, name, input=input, attrs=attrs),
-                             self.environment)
+                             environment=self.environment)
 
     def check(self, name: str, *, kind: str = "tool", input: Optional[dict] = None, **attrs) -> CheckResult:
         return self._post_check(self._check_body(name, kind, input, attrs))

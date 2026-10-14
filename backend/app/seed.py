@@ -74,6 +74,7 @@ async def seed_trace_policies(db, org: Organization, agents: list[Agent], now: d
                         org_id=org.id, trace_id=tr.id, agent_id=a.id, policy_id=v.policy_id,
                         policy_name=v.policy_name, policy_version=1, severity=v.severity, at_seq=v.at_seq,
                         counterexample=list(v.counterexample), message=v.message, mode="batch",
+                        counterexample_status="minimal" if v.minimal else "fallback",
                         detected_at=ts + timedelta(seconds=1)))
     await db.flush()  # no ORM relationships, so traces must be inserted before their violations
     db.add_all(violations)

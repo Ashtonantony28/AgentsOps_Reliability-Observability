@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from app.policy.ast import Policy
-from app.policy.counterexample import minimal_counterexample
+from app.policy.counterexample import bounded_counterexample
 from app.policy.encode import first_violations
 from app.policy.events import Event
 from app.policy.monitor import plan_for
@@ -30,6 +30,7 @@ class Violation:
     at_seq: int
     counterexample: tuple[int, ...]
     message: str
+    minimal: bool = True  # False when `counterexample` is a sufficient fallback, not a minimal one
 
 
 def compile_policy(policy_id: str, policy: Policy) -> CompiledPolicy:
@@ -52,10 +53,10 @@ def _check(policies: Sequence[CompiledPolicy], events: Sequence[Event], deadline
     for p, at in zip(policies, first_violations([p.policy.formula for p in policies], events)):
         if at is None:
             continue
-        cx = None
+        cx, minimal = None, False
         if deadline is not None and time.monotonic() < deadline:
             try:
-                cx = minimal_counterexample(p, events, at)
+                cx, minimal = bounded_counterexample(p, events, at)
             except Exception:
                 log.exception("counterexample for %s at seq %d failed", p.policy.name, at)
         elif deadline is not None:
@@ -63,7 +64,7 @@ def _check(policies: Sequence[CompiledPolicy], events: Sequence[Event], deadline
         if cx is None:
             cx = tuple(e.seq for e in events if e.seq <= at)
         out.append(Violation(p.policy_id, p.policy.name, p.policy.severity, at, cx,
-                             f"{p.policy.name} violated at seq {at}"))
+                             f"{p.policy.name} violated at seq {at}", minimal))
     return out
 
 

@@ -46,6 +46,8 @@ class TracePolicyViolation(Base):
     severity: Mapped[str] = mapped_column(String(16))
     at_seq: Mapped[int] = mapped_column(Integer)
     counterexample: Mapped[list] = mapped_column(JSON, default=list)
+    counterexample_status: Mapped[str] = mapped_column(String(16), default="minimal",
+                                                       server_default="minimal")  # pending|minimal|fallback|none
     message: Mapped[str] = mapped_column(String, default="")
     mode: Mapped[str] = mapped_column(String(16))  # batch|live|precheck
     detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -331,7 +331,8 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
 
 
 async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyCheckOut:
-    """Evaluates `req.candidate` as the next event of the stored trace (its own seq is ignored); stores nothing."""
+    """Evaluates `req.candidate` as the next event after the stored trace and `req.prefix` (their own seqs are
+    ignored); stores nothing."""
     agent = (await db.execute(
         select(Agent).where(Agent.id == req.agent_id, Agent.org_id == org_id)
     )).scalar_one_or_none()
@@ -354,6 +355,11 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     else:
         last = (await db.execute(select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
         monitor = await tps.precheck_monitor(db, trace.id, compiled, 0 if last is None else last + 1)
+    if monitor.next_seq + len(req.prefix) >= MAX_TRACE_EVENTS:
+        raise TraceTooLong("trace_too_long", f"a trace holds at most {MAX_TRACE_EVENTS} events",
+                           max_events=MAX_TRACE_EVENTS)
+    for e in req.prefix:
+        monitor.step(Event(monitor.next_seq, e.kind, e.name, e.status, dict(e.attrs)))
     c = req.candidate
     found = monitor.check(Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
     rows = {row.id: row for row, _ in policies}
@@ -364,13 +370,14 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     except PolicyViolation as pv:  # a legacy block rule: the append would be a 403 too
         legacy = [ViolationOut(
             agent_id=agent.id, policy_id=pv.rule_id, policy_name=pv.rule_name, policy_version=1, severity="high",
-            at_seq=monitor.next_seq, counterexample=[], message=pv.message, mode="precheck", detected_at=now,
+            at_seq=monitor.next_seq, counterexample=[], counterexample_status="none", message=pv.message,
+            mode="precheck", detected_at=now,
         )]
     return PolicyCheckOut(
         allowed=not legacy and not any(rows[v.policy_id].action == "block" for v in found),
         violations=legacy + [ViolationOut(
             agent_id=agent.id, policy_id=v.policy_id, policy_name=v.policy_name,
             policy_version=rows[v.policy_id].version, severity=v.severity, at_seq=v.at_seq, counterexample=[],
-            message=v.message, mode="precheck", detected_at=now,
+            counterexample_status="none", message=v.message, mode="precheck", detected_at=now,
         ) for v in found],
     )

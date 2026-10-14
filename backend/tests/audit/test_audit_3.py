@@ -101,7 +101,6 @@ async def test_check_agrees_with_append_on_legacy_block_rule(client, db, org, ag
 
 
 # A3-5: a check from a non-streamed trace carries none of the trace's events
-@pytest.mark.xfail(strict=True, reason="A3-5: non-streamed Trace.acheck sends no history, so the guard misses it")
 async def test_non_streamed_trace_check_sees_its_events(db, org, sdk_client):
     await _policy(db, org, NO_EXFIL)
     async with sdk_client.trace() as t:
@@ -123,7 +122,6 @@ async def test_check_is_not_starved_by_ingest(client, db, org, agent, api_key_he
 
 
 # A3-7: the API cannot say whether an empty counterexample is pending or final
-@pytest.mark.xfail(strict=True, reason="A3-7: a live row reads the same before and after its batch check")
 async def test_violation_says_when_counterexample_is_final(client, db, org, agent, api_key_headers, auth_headers,
                                                            enqueued):
     await _policy(db, org, NEEDS_PRIOR, action="log")

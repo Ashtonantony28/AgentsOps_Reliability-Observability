@@ -30,7 +30,7 @@ def test_check_allowed_request_shape(client, server):
     (path, body, headers), = server.requests
     assert path == "/api/trace-policies/check"
     assert headers["x-api-key"] == client.api_key
-    assert body == {"agent_id": "a1", "trace_uid": None, "environment": "dev", "candidate": {
+    assert body == {"agent_id": "a1", "trace_uid": None, "environment": "dev", "prefix": [], "candidate": {
         "seq": 0, "kind": "tool", "name": "send_email", "status": "success", "input": {"to": "x"},
         "output": {}, "attrs": {"recipients": 3}, "latency_ms": 0, "timestamp": None}}
     assert server.timeouts == [2.0]
@@ -106,13 +106,33 @@ def test_init_passes_check_options(monkeypatch, server):
     assert isinstance(c, AgentOpsClient)
 
 
-def test_unstreamed_trace_check_has_no_history(client, server):
+def test_unstreamed_trace_check_sends_its_events_as_prefix(client, server):
     with client.trace() as t:
-        t.add_event("tool", "a")
+        t.add_event("tool", "a", input={"secret": 1}, region="eu")
+        t.add_event("llm", "b", status="error")
+        t.check("c")
+    body = server.bodies("check")[0]
+    assert body["trace_uid"] is None and body["candidate"]["seq"] == 2
+    assert [(e["seq"], e["kind"], e["name"], e["status"], e["attrs"], e["input"]) for e in body["prefix"]] == [
+        (0, "tool", "a", "success", {"region": "eu"}, {}), (1, "llm", "b", "error", {}, {})]
+    assert server.bodies("events") == []
+
+
+def test_unstreamed_tool_call_trace_check_sends_them_as_prefix(client, server):
+    with client.trace() as t:
+        t.add_tool_call("a", input={"q": 1}, status="error")
         t.check("b")
     body = server.bodies("check")[0]
-    assert body["trace_uid"] is None and body["candidate"]["seq"] == 0
-    assert server.bodies("events") == []
+    assert [(e["seq"], e["kind"], e["name"], e["status"], e["input"]) for e in body["prefix"]] == [
+        (0, "tool", "a", "error", {})]
+    assert body["candidate"]["seq"] == 1
+
+
+def test_streamed_trace_check_sends_no_prefix(client, server):
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.check("b")
+    assert server.bodies("check")[0]["prefix"] == []
 
 
 def test_trace_without_client_check_raises():

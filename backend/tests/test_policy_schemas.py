@@ -28,7 +28,7 @@ def test_contract_symbols_import():
     for fn in [events_from_trace, events_from_spans, parse, check_trace, compile_policy,
                would_violate, minimal_counterexample, evaluate]:
         assert callable(fn)
-    assert {"policy_id", "policy_name", "severity", "at_seq", "counterexample", "message"} == set(
+    assert {"policy_id", "policy_name", "severity", "at_seq", "counterexample", "message", "minimal"} == set(
         Violation.__dataclass_fields__)
 
 
@@ -65,10 +65,10 @@ def test_event_in_roundtrip():
 def test_violation_out_roundtrip():
     v = ViolationOut(id="v1", trace_id="t1", agent_id="a1", policy_id="p1", policy_name="no_exfil",
                      policy_version=2, severity="critical", at_seq=7, counterexample=[1, 3, 7],
-                     message="exfil after secret", mode="live", detected_at=datetime(2026, 10, 13))
+                     counterexample_status="minimal", message="exfil after secret", mode="live", detected_at=datetime(2026, 10, 13))
     assert _roundtrip(v) == v
     pre = ViolationOut(agent_id="a1", policy_id="p1", policy_name="x", policy_version=1, severity="low",
-                       at_seq=0, counterexample=[0], message="", mode="precheck", detected_at=datetime(2026, 1, 1))
+                       at_seq=0, counterexample=[], counterexample_status="none", message="", mode="precheck", detected_at=datetime(2026, 1, 1))
     assert pre.id is None and pre.trace_id is None
     assert _roundtrip(pre) == pre
     msg = ViolationMessage(data=v)

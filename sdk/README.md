@@ -59,10 +59,10 @@ Or guard a function (sync or async). The check runs first and raises `agentops.P
 def issue_refund(order_id, amount): ...
 ```
 
-**History-aware checks need streaming.** `t.check(...)` / `await t.acheck(...)` evaluate the candidate after the
-events the server already holds for that trace. With `agentops.trace(stream=True)` every `add_event` is sent at
-once to `/api/traces/{trace_id}/events` (the trace is closed with `final=true` on exit), so the server sees the
-whole prefix. Without `stream=True` the server has none of the trace yet, and checks see an empty history.
+**Checks see the trace's history.** `t.check(...)` / `await t.acheck(...)` evaluate the candidate after the
+trace's earlier events. With `agentops.trace(stream=True)` every `add_event` is sent at once to
+`/api/traces/{trace_id}/events` (the trace is closed with `final=true` on exit), so the server already holds them.
+Without `stream=True` each check sends the events so far (kind, name, status and attrs only) as its `prefix`.
 With `AsyncAgentOpsClient`, use `await t.acheck(...)` so pending events are pushed before the check.
 
 Streaming retries on network errors, 5xx, 429 and `409 trace_busy` (the batch stays pending and goes with the

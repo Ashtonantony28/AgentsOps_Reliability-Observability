@@ -29,6 +29,7 @@ export const violation = (over: Partial<Violation> = {}): Violation => ({
   severity: "high",
   at_seq: 2,
   counterexample: [2],
+  counterexample_status: "minimal",
   message: "delete_user without prior confirmation",
   mode: "batch",
   detected_at: "2026-10-14T05:00:00Z",

@@ -4,8 +4,7 @@ import { Violation } from "@/types/policy";
 
 export const violationKey = (v: Violation) => v.id ?? v.policy_id;
 
-// live rows are stored before the batch check computes their counterexample
-export const counterexamplePending = (v: Violation) => v.mode === "live" && v.counterexample.length === 0;
+export const counterexamplePending = (v: Violation) => v.counterexample_status === "pending";
 
 type Props = {
   violations: Violation[];
@@ -41,9 +40,14 @@ export default function ViolationsPanel({ violations, selected, onSelect }: Prop
               <div className="text-xs mt-1">
                 {counterexamplePending(v) ? (
                   <span className="text-ink-400">Counterexample pending: computed by the batch check once the trace completes.</span>
+                ) : v.counterexample_status === "none" ? (
+                  <span className="text-ink-400">No counterexample for this violation.</span>
                 ) : v.counterexample.length ? (
                   <span className="text-amber-300">
                     Counterexample: {v.counterexample.map((s) => `#${s}`).join(", ")}
+                    {v.counterexample_status === "fallback" && (
+                      <span className="text-ink-400"> (may not be minimal: the solver did not finish)</span>
+                    )}
                   </span>
                 ) : (
                   <span className="text-ink-400">Violated regardless of any event in the trace.</span>

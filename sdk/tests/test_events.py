@@ -58,8 +58,9 @@ def test_request_builders():
         "seq": 3, "kind": "retrieval", "name": "docs", "status": "success", "input": {}, "output": {},
         "attrs": {}, "latency_ms": 0, "timestamp": None}
     cand = event_dict(0, "tool", "x")
-    assert check_request("a1", None, cand, "prod") == {
-        "agent_id": "a1", "trace_uid": None, "environment": "prod", "candidate": cand}
+    assert check_request("a1", None, cand, environment="prod") == {
+        "agent_id": "a1", "trace_uid": None, "environment": "prod", "prefix": [], "candidate": cand}
+    assert check_request("a1", None, cand, [cand])["prefix"] == [cand]
     assert events_request("a1", [cand], True) == {"agent_id": "a1", "events": [cand], "final": True}
 
 

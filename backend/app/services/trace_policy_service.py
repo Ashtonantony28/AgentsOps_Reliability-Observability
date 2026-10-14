@@ -48,6 +48,10 @@ async def active_policies(db: AsyncSession, org_id: str, agent_id: str, environm
     return out
 
 
+def _status(mode: str, v: Violation) -> str:
+    return "pending" if mode == "live" else "minimal" if v.minimal else "fallback"
+
+
 async def record_violations(db: AsyncSession, trace: Trace, policies: Active, violations: Sequence[Violation],
                             mode: str) -> list[TracePolicyViolation]:
     """Inserts violations not already stored for (trace, policy, version); returns the new rows."""
@@ -59,7 +63,7 @@ async def record_violations(db: AsyncSession, trace: Trace, policies: Active, vi
         id=str(uuid.uuid4()), org_id=trace.org_id, trace_id=trace.id, agent_id=trace.agent_id,
         policy_id=v.policy_id, policy_name=v.policy_name, policy_version=by_id[v.policy_id].version,
         severity=v.severity, at_seq=v.at_seq, counterexample=list(v.counterexample), message=v.message,
-        mode=mode, detected_at=now,
+        mode=mode, detected_at=now, counterexample_status=_status(mode, v),
     ) for v in violations]
     insert = postgresql.insert if db.get_bind().dialect.name == "postgresql" else sqlite.insert
     stmt = (insert(TracePolicyViolation).values(values)
@@ -163,15 +167,18 @@ async def check_completed_trace(db: AsyncSession, trace_id: str,
     check = check_trace if counterexamples else check_verdicts
     violations = check([c for _, c in policies], events_from_spans(spans))
     rows = await record_violations(db, trace, policies, violations, "batch")
-    # live rows were stored before counterexamples existed; fill in those the batch found at the same event
-    with_cx = {v.policy_id: v for v in violations if v.counterexample}
-    if with_cx:
-        versions = {row.id: row.version for row, _ in policies}
-        stored = (await db.execute(select(TracePolicyViolation).where(
-            TracePolicyViolation.trace_id == trace_id, TracePolicyViolation.policy_id.in_(with_cx)))).scalars().all()
-        for s in stored:
-            v = with_cx[s.policy_id]
-            if not s.counterexample and s.policy_version == versions[s.policy_id] and s.at_seq == v.at_seq:
-                s.counterexample = list(v.counterexample)
+    # live rows are stored before their counterexample: fill in those the batch found at the same event; the rest
+    # (an older policy version, a refused call that was never stored) get none
+    pending = (await db.execute(select(TracePolicyViolation).where(
+        TracePolicyViolation.trace_id == trace_id, TracePolicyViolation.counterexample_status == "pending"
+    ))).scalars().all()
+    found = {v.policy_id: v for v in violations}
+    versions = {row.id: row.version for row, _ in policies}
+    for row in pending:
+        v = found.get(row.policy_id)
+        if v is not None and row.policy_version == versions[row.policy_id] and row.at_seq == v.at_seq:
+            row.counterexample, row.counterexample_status = list(v.counterexample), _status("batch", v)
+        else:
+            row.counterexample_status = "none"
     await db.commit()
     return rows

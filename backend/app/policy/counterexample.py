@@ -320,6 +320,11 @@ class _Entailment:
 
 def minimal_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_seq: int) -> tuple[int, ...]:
     """Within `BUDGET_S`; past it, a sufficient superset (at worst every event up to `at_seq`), logged."""
+    return bounded_counterexample(policy, events, at_seq)[0]
+
+
+def bounded_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_seq: int) -> tuple[tuple[int, ...], bool]:
+    """`minimal_counterexample` and whether it is minimal (False once the budget ran out)."""
     window = [e for e in events if e.seq <= at_seq]
     if not window or window[-1].seq != at_seq:
         raise ValueError(f"no event with seq {at_seq}")
@@ -332,9 +337,10 @@ def minimal_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_s
     if core is None and (check is None or check.gave_up):
         log.warning("counterexample for %s at seq %d over budget: keeping all %d events",
                     policy.policy.name, at_seq, len(window))
-        return tuple(e.seq for e in window)
+        return tuple(e.seq for e in window), False
     if core is None:
         raise ValueError(f"{policy.policy.name} is not violated at seq {at_seq}")
+    minimal = True
     for i in sorted(core):
         # deletion pass; an event found needed stays needed as the core shrinks
         smaller = check.core(core - {i}) if i in core else None
@@ -343,5 +349,6 @@ def minimal_counterexample(policy: CompiledPolicy, events: Sequence[Event], at_s
         elif check.gave_up:
             log.warning("counterexample for %s at seq %d over budget: %d events, may not be minimal",
                         policy.policy.name, at_seq, len(core))
+            minimal = False
             break
-    return tuple(window[i].seq for i in sorted(core))
+    return tuple(window[i].seq for i in sorted(core)), minimal
