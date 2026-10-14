@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from app.policy.ast import Policy
+from app.policy.encode import first_violations
 from app.policy.events import Event
 
 
@@ -23,11 +24,13 @@ class Violation:
 
 
 def compile_policy(policy_id: str, policy: Policy) -> CompiledPolicy:
-    raise NotImplementedError
+    return CompiledPolicy(policy_id, policy)
 
 
 def check_trace(policies: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[Violation]:
-    raise NotImplementedError
+    firsts = first_violations([p.policy.formula for p in policies], events)
+    return [Violation(p.policy_id, p.policy.name, p.policy.severity, at, (), f"{p.policy.name} violated at seq {at}")
+            for p, at in zip(policies, firsts) if at is not None]
 
 
 class Monitor:

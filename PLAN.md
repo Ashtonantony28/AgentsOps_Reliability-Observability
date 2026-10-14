@@ -84,7 +84,7 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
 - **Result:** verify passes with 100 % coverage on both files (248 tests); full backend suite 411 passed. Every fixture's verdict matches. `pretty`/`pretty_formula` live in `dsl.py`. The Hypothesis AST generator for SG2's differential test is `tests/policy/strategies.py` (`formulas()`, `policies`); it emits only atoms the DSL can express. `reference.truth(f, events)` gives per-position values. Attr equality compares Python types exactly, so a float `2.0` does not match `attr("k", 2)`. The evaluator is also cross-checked against a naive quantifier-literal oracle in `test_reference.py`.
 
 ### SG2 Trace → Z3 encoding
-- **Owner:** unassigned (must not be the SG1 owner) · **Status:** proposed · **Depends:** SG0
+- **Owner:** SG2 thread · **Status:** done · **Depends:** SG0
 - **Scope:** `app/policy/encode.py`, `check_trace` in `checker.py`. Linear state-carrying encoding; one solver, event facts shared across policies, each policy checked under its own assumption.
 - **Acceptance:**
   - Matches SG0 fixture verdicts exactly.
@@ -92,6 +92,9 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
   - Encoding size is linear: formula node count for 1 000 events ≤ 12 × count for 100 events.
   - Batch budget row met.
 - **Verify:** `cd backend && pytest tests/policy/test_encode.py -q` · `pytest tests/policy/test_differential.py -q --hypothesis-profile=ci` · `python scripts/bench_policy.py --path batch --assert-budget`
+- **Result:** all three verify commands pass locally and run in CI. Fixture verdicts match on all 31 fixtures, using hand-written ASTs (`tests/policy/fixture_policies.py`) that are also checked equal to `parse(source)`. Differential: 5 000 cases each against `reference.evaluate` for small-vocabulary ASTs and for SG1's `policies` generator, all agree; seeded mutants of `encode.py` (since, previously, count, attr typing, `?` glob) are each caught. Node count 6 244 at 100 events vs 62 484 at 1 000 (10.0×). Batch p95 ≈ 55–78 ms locally; 1 000 events ≈ 0.4 s, 5 000 events ≈ 2–4 s (for A2).
+  - How it works: `TraceEncoding` emits SMT-LIB text (the Python API alone cost ~330 ms per batch). One Bool per (distinct atom, event) with its observed value as a fact literal in `facts[i]`; temporal and count nodes are defined chains; structurally equal subformulas are encoded once across policies. Instead of one solver check per policy, one check covers all policies and each policy's first false position is read from an Int defined as a nested `ite`, which is equivalent because the facts fix the model. Each call uses its own `z3.Context` so threads can check concurrently.
+  - For SG3: `Violation.counterexample` is `()` until SG3 wires it. `facts[i]` are the per-event literals to put behind assumption literals, but `count … by name/kind` chains are grouped by the observed name/kind, so for counterexamples SG3 has to make that grouping depend on the event's facts. Note `Match(attrs=(("a", 1),)) == Match(attrs=(("a", True),))` under dataclass equality (`1 == True`); the encoder keys atoms by value type, and AST comparisons in tests should also compare `repr`.
 
 ### Fixture gate
 SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch budget met. Recorded here with the commit hash before SG3/SG4 start.
@@ -278,3 +281,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-13: Plan approved by Ashton; SG0 dispatched.
 - 2026-10-14: SG0 in review.
 - 2026-10-14: SG0 merged (`aa2f27a`). SG1 done.
+- 2026-10-14: SG2 done. With SG1 merged, its merge meets the fixture gate.

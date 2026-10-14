@@ -56,14 +56,12 @@ def test_parse_error_fields():
 
 
 @pytest.mark.parametrize("call", [
-    lambda: compile_policy("p1", POLICY),
-    lambda: check_trace([CompiledPolicy("p1", POLICY)], [EVENT]),
     lambda: Monitor([CompiledPolicy("p1", POLICY)]).step(EVENT),
     lambda: Monitor([CompiledPolicy("p1", POLICY)]).snapshot(),
     lambda: Monitor.restore([CompiledPolicy("p1", POLICY)], b""),
     lambda: would_violate([CompiledPolicy("p1", POLICY)], [], EVENT),
     lambda: minimal_counterexample(CompiledPolicy("p1", POLICY), [EVENT], 0),
-], ids=["compile_policy", "check_trace", "Monitor.step", "Monitor.snapshot", "Monitor.restore",
+], ids=["Monitor.step", "Monitor.snapshot", "Monitor.restore",
         "would_violate", "minimal_counterexample"])
 def test_stubs_raise_not_implemented(call):
     with pytest.raises(NotImplementedError):
