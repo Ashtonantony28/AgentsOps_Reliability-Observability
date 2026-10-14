@@ -1,0 +1,37 @@
+{
+  "name": "since_logout",
+  "description": "since (and its precedence over not): admin tools need a login not followed by a logout. The logout at seq 2 alone falsifies the since at seq 3.",
+  "source": "policy admin_in_session severity high:\n  always tool(\"admin_*\") -> not event(\"custom\", \"logout\") since event(\"custom\", \"login\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "custom",
+      "name": "login"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "admin_list"
+    },
+    {
+      "seq": 2,
+      "kind": "custom",
+      "name": "logout"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "admin_delete"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "admin_in_session",
+      "at_seq": 3,
+      "counterexample": [
+        2,
+        3
+      ]
+    }
+  ]
+}

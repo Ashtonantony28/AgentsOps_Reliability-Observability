@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,3 +37,9 @@ async def traces_csv(ctx: AuthContext = Depends(get_current_user), db: AsyncSess
     )).scalars().all()
     return Response(traces_to_csv(rows), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=traces.csv"})
+
+
+@router.get("/violations.csv")
+async def violations_csv(ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+                         days: int = Query(7, ge=1, le=90)):
+    raise HTTPException(501, "not_implemented")

@@ -1,0 +1,31 @@
+{
+  "name": "previously_at_seq0",
+  "description": "previously is false at seq 0, so a deploy as the first event violates at once.",
+  "source": "policy plan_before_deploy:\n  always tool(\"deploy*\") -> previously event(\"llm\", \"plan*\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "deploy_prod"
+    },
+    {
+      "seq": 1,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "deploy_prod"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "plan_before_deploy",
+      "at_seq": 0,
+      "counterexample": [
+        0
+      ]
+    }
+  ]
+}

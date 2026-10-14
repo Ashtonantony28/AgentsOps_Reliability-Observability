@@ -1,0 +1,283 @@
+{
+  "name": "long_trace_50",
+  "description": "50 events, the three plan policies: exfil at 41 after the only secret read at 17, and a fourth search error at 45.",
+  "source": "tag secret_read = tool(\"vault.read\", \"read_secret*\")\ntag network     = tool(\"http_*\", \"fetch_url\", \"send_email\")\n\npolicy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n\npolicy no_exfil_after_secret severity critical:\n  always @network -> not once @secret_read\n\npolicy retry_cap severity medium:\n  always count(tool(*) and status(\"error\")) by name <= 3\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "get_doc"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 5,
+      "kind": "confirmation",
+      "name": "user_confirmed"
+    },
+    {
+      "seq": 6,
+      "kind": "tool",
+      "name": "get_doc"
+    },
+    {
+      "seq": 7,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 8,
+      "kind": "tool",
+      "name": "delete_tmp"
+    },
+    {
+      "seq": 9,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 10,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 11,
+      "kind": "retrieval",
+      "name": "kb"
+    },
+    {
+      "seq": 12,
+      "kind": "tool",
+      "name": "fetch_url"
+    },
+    {
+      "seq": 13,
+      "kind": "tool",
+      "name": "rank"
+    },
+    {
+      "seq": 14,
+      "kind": "tool",
+      "name": "get_doc",
+      "status": "error"
+    },
+    {
+      "seq": 15,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 16,
+      "kind": "tool",
+      "name": "get_doc"
+    },
+    {
+      "seq": 17,
+      "kind": "tool",
+      "name": "vault.read"
+    },
+    {
+      "seq": 18,
+      "kind": "tool",
+      "name": "rank"
+    },
+    {
+      "seq": 19,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 20,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 21,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 22,
+      "kind": "retrieval",
+      "name": "kb"
+    },
+    {
+      "seq": 23,
+      "kind": "tool",
+      "name": "rank"
+    },
+    {
+      "seq": 24,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 25,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 26,
+      "kind": "tool",
+      "name": "get_doc",
+      "status": "error"
+    },
+    {
+      "seq": 27,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 28,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 29,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 30,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 31,
+      "kind": "tool",
+      "name": "get_doc"
+    },
+    {
+      "seq": 32,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 33,
+      "kind": "tool",
+      "name": "delete_tmp"
+    },
+    {
+      "seq": 34,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 35,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 36,
+      "kind": "tool",
+      "name": "get_doc"
+    },
+    {
+      "seq": 37,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 38,
+      "kind": "tool",
+      "name": "rank"
+    },
+    {
+      "seq": 39,
+      "kind": "tool",
+      "name": "lookup"
+    },
+    {
+      "seq": 40,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 41,
+      "kind": "tool",
+      "name": "send_email"
+    },
+    {
+      "seq": 42,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 43,
+      "kind": "tool",
+      "name": "rank"
+    },
+    {
+      "seq": 44,
+      "kind": "retrieval",
+      "name": "kb"
+    },
+    {
+      "seq": 45,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 46,
+      "kind": "tool",
+      "name": "get_doc"
+    },
+    {
+      "seq": 47,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 48,
+      "kind": "tool",
+      "name": "rank"
+    },
+    {
+      "seq": 49,
+      "kind": "llm",
+      "name": "think"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "no_exfil_after_secret",
+      "at_seq": 41,
+      "counterexample": [
+        17,
+        41
+      ]
+    },
+    {
+      "policy": "retry_cap",
+      "at_seq": 45,
+      "counterexample": [
+        10,
+        20,
+        30,
+        45
+      ]
+    }
+  ]
+}

@@ -14,6 +14,7 @@ from app.models import OrgMembership, ApiKey
 from app.middleware.auth import hash_api_key
 from app.redis import get_redis
 from app.services.trace_service import PolicyViolation, ingest_trace
+from app.schemas.policy import WsEventsMessage
 from app.schemas.trace import TraceIn
 
 log = logging.getLogger(__name__)
@@ -83,9 +84,17 @@ async def ws_traces_feed(
             pass
 
 
+def _is_events_message(raw: str) -> bool:
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("type") == "events"
+
+
 @router.websocket("/ws/ingest")
 async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=None)):
-    """Streaming ingestion (API-key authed). Each message is a TraceIn JSON."""
+    """Streaming ingestion (API-key authed). Each message is a TraceIn JSON, or a WsEventsMessage."""
     org_id, _mode = await _authenticate_ws(None, api_key)
     if not org_id:
         await websocket.close(code=4401)
@@ -95,6 +104,14 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
         async with async_session_maker() as db:
             while True:
                 raw = await websocket.receive_text()
+                if _is_events_message(raw):
+                    try:
+                        WsEventsMessage.model_validate_json(raw)
+                    except Exception as e:
+                        await websocket.send_json({"ok": False, "error": f"invalid_payload: {e}"})
+                        continue
+                    await websocket.send_json({"ok": False, "error": "not_implemented"})
+                    continue
                 try:
                     payload = TraceIn.model_validate_json(raw)
                 except Exception as e:

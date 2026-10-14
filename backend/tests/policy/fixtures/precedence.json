@@ -1,0 +1,63 @@
+{
+  "name": "precedence",
+  "description": "-> is right-associative (a -> (b -> c)) and and binds tighter than or. A left-associative reading would violate impl_right_assoc at seq 2; reading or before and would never violate and_over_or.",
+  "source": "policy impl_right_assoc:\n  always attr(\"a\", 1) -> attr(\"b\", 1) -> attr(\"c\", 1)\npolicy and_over_or:\n  always not (tool(\"x\") or tool(\"y\") and status(\"error\"))\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "y",
+      "attrs": {
+        "a": 1,
+        "b": 1,
+        "c": 1
+      }
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "y",
+      "attrs": {
+        "a": 1
+      }
+    },
+    {
+      "seq": 2,
+      "kind": "llm",
+      "name": "z",
+      "attrs": {
+        "b": 1
+      }
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "w",
+      "attrs": {
+        "a": 1,
+        "b": 1
+      }
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "x"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "impl_right_assoc",
+      "at_seq": 3,
+      "counterexample": [
+        3
+      ]
+    },
+    {
+      "policy": "and_over_or",
+      "at_seq": 4,
+      "counterexample": [
+        4
+      ]
+    }
+  ]
+}

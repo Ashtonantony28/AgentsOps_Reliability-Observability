@@ -1,0 +1,26 @@
+{
+  "name": "count_gt",
+  "description": "Operator >: a charge needs two prior confirmations. Seq 1 is a tool, so at most one confirmation exists whatever seq 0 was; the counterexample is {1}.",
+  "source": "policy double_confirm_charge severity high:\n  always tool(\"charge_*\") -> count(event(\"confirmation\")) > 1\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "confirmation",
+      "name": "user_confirmed"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "charge_card"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "double_confirm_charge",
+      "at_seq": 1,
+      "counterexample": [
+        1
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "single_event",
+  "description": "One-event trace; operator >= fails at seq 0, the other policy holds.",
+  "source": "policy starts_with_llm:\n  always count(event(\"llm\")) >= 1\npolicy no_errors severity info:\n  always not status(\"error\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "lookup"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "starts_with_llm",
+      "at_seq": 0,
+      "counterexample": [
+        0
+      ]
+    }
+  ]
+}

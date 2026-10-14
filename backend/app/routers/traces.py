@@ -10,6 +10,7 @@ from app.database import get_db
 from app.middleware.auth import AuthContext, authenticate_api_key, get_current_user
 from app.middleware.rate_limit import enforce_rate_limit
 from app.models import Organization, Trace, Span, Agent
+from app.schemas.policy import EventsAppendIn, EventsAppendOut, ViolationOut
 from app.schemas.trace import (
     CostBurn,
     MetricsResponse,
@@ -54,6 +55,12 @@ async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Dep
         except ValueError as e:
             rejected.append({"reason": str(e)})
     return {"accepted": accepted, "rejected": rejected}
+
+
+@router.post("/{trace_uid}/events", response_model=EventsAppendOut, status_code=202)
+async def append_events(trace_uid: str, req: EventsAppendIn, request: Request, db: AsyncSession = Depends(get_db)):
+    org, api_key = await authenticate_api_key(request, db)
+    raise HTTPException(501, "not_implemented")
 
 
 # ---- Query (JWT authed) ----
@@ -194,6 +201,12 @@ async def export_csv(
                     headers={"Content-Disposition": "attachment; filename=traces.csv"})
 
 
+@router.get("/{trace_id}/violations", response_model=List[ViolationOut])
+async def list_trace_violations(trace_id: str, ctx: AuthContext = Depends(get_current_user),
+                                db: AsyncSession = Depends(get_db)):
+    raise HTTPException(501, "not_implemented")
+
+
 @router.get("/{trace_id}", response_model=TraceDetailOut)
 async def get_trace(trace_id: str, ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     t = (await db.execute(
@@ -204,6 +217,5 @@ async def get_trace(trace_id: str, ctx: AuthContext = Depends(get_current_user),
     spans = (await db.execute(
         select(Span).where(Span.trace_id == trace_id).order_by(Span.seq, Span.started_at)
     )).scalars().all()
-    out = TraceDetailOut.model_validate(t)
-    out.spans = [SpanOut.model_validate(s) for s in spans]
-    return out
+    return TraceDetailOut(**TraceOut.model_validate(t).model_dump(),
+                          spans=[SpanOut.model_validate(s) for s in spans])

@@ -1,0 +1,32 @@
+{
+  "name": "count_eq",
+  "description": "Operator ==: exactly one plan allowed; the second plan breaks it.",
+  "source": "policy single_plan:\n  always count(event(\"llm\", \"plan\")) == 1\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 2,
+      "kind": "llm",
+      "name": "plan"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "single_plan",
+      "at_seq": 2,
+      "counterexample": [
+        0,
+        2
+      ]
+    }
+  ]
+}

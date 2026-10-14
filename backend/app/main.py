@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,6 +19,7 @@ from app.routers import (
     incidents,
     integrations,
     reports,
+    trace_policies,
     traces,
     ws,
 )
@@ -68,9 +70,10 @@ async def _http_exc(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def _val_exc(request: Request, exc: RequestValidationError):
+    details = jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
     return JSONResponse(
         status_code=422,
-        content={"error": {"code": "validation_error", "message": "invalid request", "details": exc.errors()}},
+        content={"error": {"code": "validation_error", "message": "invalid request", "details": details}},
     )
 
 
@@ -102,4 +105,5 @@ app.include_router(incidents.router)
 app.include_router(integrations.router)
 app.include_router(governance.router)
 app.include_router(reports.router)
+app.include_router(trace_policies.router)
 app.include_router(ws.router)

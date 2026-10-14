@@ -1,0 +1,40 @@
+{
+  "name": "count_by_kind",
+  "description": "count ... by kind: errors are counted per kind of the current event.",
+  "source": "policy one_error_per_kind:\n  always count(status(\"error\")) by kind < 2\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "a",
+      "status": "error"
+    },
+    {
+      "seq": 1,
+      "kind": "llm",
+      "name": "think",
+      "status": "error"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "b"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "answer",
+      "status": "error"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "one_error_per_kind",
+      "at_seq": 3,
+      "counterexample": [
+        1,
+        3
+      ]
+    }
+  ]
+}

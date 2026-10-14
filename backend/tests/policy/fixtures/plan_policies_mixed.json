@@ -1,0 +1,49 @@
+{
+  "name": "plan_policies_mixed",
+  "description": "All three plan policies: only no_exfil_after_secret is violated.",
+  "source": "tag secret_read = tool(\"vault.read\", \"read_secret*\")\ntag network     = tool(\"http_*\", \"fetch_url\", \"send_email\")\n\npolicy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n\npolicy no_exfil_after_secret severity critical:\n  always @network -> not once @secret_read\n\npolicy retry_cap severity medium:\n  always count(tool(*) and status(\"error\")) by name <= 3\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "vault.read"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 2,
+      "kind": "confirmation",
+      "name": "user_confirmed"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "delete_file"
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 5,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "no_exfil_after_secret",
+      "at_seq": 4,
+      "counterexample": [
+        0,
+        4
+      ]
+    }
+  ]
+}
