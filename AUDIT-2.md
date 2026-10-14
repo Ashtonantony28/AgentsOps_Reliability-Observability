@@ -46,7 +46,7 @@ What follows from this:
 - Celery's `task_time_limit=300` hard-kills the task for any first violation past about 650 events. The task is `acks_late` but default `task_acks_on_failure_or_timeout` acks it anyway, so the trace's batch check is lost: no batch rows, live rows never get their counterexample, and nothing records that the trace went unchecked.
 - Every API key holder can submit such traces (no event cap, A2-2). With N worker processes, N poisoned traces block every other Celery task (batch checks, `evaluate_alert_rules`, anomaly detection, evaluations) for up to 5 minutes each. Celery repro: two 800-event poison traces, then a normal 200-event trace (see **Celery repro** below).
 
-Failing test: `test_count_by_name_counterexample_meets_budget`.
+Failing test: `test_count_by_name_counterexample_meets_budget`. AUDIT-1 found the same root cause from the soundness side (A1-H2, SG-A1.2).
 
 ### A2-2 · high · The batch path has no bound on work per trace and shares one queue with alerting
 

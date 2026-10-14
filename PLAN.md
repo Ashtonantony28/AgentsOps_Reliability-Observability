@@ -182,8 +182,26 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
   - SDK: `Trace.add_event`, `trace(..., stream=True)` (each `add_event` is sent to the events endpoint, `final` on exit), `check`/`acheck` on both clients, the module and `Trace` (a trace's check carries its `trace_uid` when streaming, and follows the failure policy without calling the server while any of the trace's events are undelivered; a `seq_conflict` showing the server already stored part of a batch resyncs), `@guard` (sync and async; checks, raises `PolicyBlocked`, then records the call as an event in the active trace). Failure policy: `fail_closed=False` by default, so a failed check logs a warning and returns `allowed=True` with `error` set; `check_timeout_s=2.0`. The contract test compares the SDK's request builders and `CheckResult` with the OpenAPI schemas and drives the SDK against the app end to end. Legacy payloads are unchanged (existing SDK tests untouched; a trace with no events serialises exactly as before).
   - Open: a streamed trace sends only events, so its `output`, tokens, cost and status never reach the server (`EventsAppendIn` has no field for them). Legacy `PolicyRule` block rules (`forbid_tool`, PII, injection) are not part of the precheck. After a fatal stream rejection (403, `seq_conflict`) the SDK stops streaming that trace and the server-side trace stays open. Without `stream=True` a check has no history. Checks are rate-limited with ingest, so with the default fail-open a rate-limited org's checks allow everything. The endpoint never writes a rebuilt monitor back to Redis, so a trace whose state expired replays its spans on each check until the next append.
 
+### SG-A1.1 Live block enforcement after a recorded violation (from A1-H1)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-1
+- **Scope:** `append_events` must block every event that violates a `block` policy, not only the policy's first violation in the trace; recording stays one row per (trace, policy, version). Likely `Monitor.step` keeps reporting first violations while blocking uses `Monitor.check`-style per-event values. Snapshot format may change (stop-and-report if it touches the `Monitor` contract).
+- **Acceptance:**
+  - Both A1-H1 tests in `tests/audit/test_audit_1.py` pass with their `xfail` markers removed.
+  - For every violating fixture streamed one event per request under a `block` policy that was `log` for the first violation, each later violating event is a 403 and `/check` returns `allowed: false` exactly when the append would be a 403.
+  - Live rows unchanged: still one per (trace, policy, version), same `at_seq` as `check_trace`.
+- **Verify:** `cd backend && pytest tests/audit -q -k block && pytest tests/api/test_event_ingest.py tests/api/test_precheck.py -q`
+
+### SG-A1.2 Bound counterexample time, never at the verdict's expense (from A1-H2)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-1
+- **Scope:** `check_trace` / `check_completed_trace` record every violation even when a counterexample is slow or fails (store verdicts first, or fall back to a sufficient non-minimal counterexample); a per-counterexample time budget on every solver mode, not only strings; make `count … by name/kind` counterexamples fast enough for the budget row.
+- **Acceptance:**
+  - The three A1-H2 tests in `tests/audit/test_audit_1.py` pass with their `xfail` markers removed.
+  - A whole-ingested 1 000-event trace with the retry-cap and nested `count by` policies stores both violations within the Celery time limit, with a sufficient counterexample (property-checked as in SG3).
+  - Counterexample budget row met on a `count … by name` worst case, added to `bench_policy.py --path counterexample`.
+- **Verify:** `cd backend && pytest tests/audit -q -k "counterexample or retry_cap" && pytest tests/policy/test_counterexample.py -q && python scripts/bench_policy.py --path counterexample --assert-budget`
+
 ### SG-A2.1 Bounded counterexamples (AUDIT-2 A2-1 critical, A2-7)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Owner:** unassigned · **Status:** proposed · **Depends:** none. Same root cause as SG-A1.2 (found independently); run both in one thread.
 - **Scope:** `count … by` counterexamples are about cubic in the window (7.5 s at 200 events, 53 s at 352) and overlapping globs are 2^k. Make `minimal_counterexample` meet its budget row for those shapes, or time-box it and fall back to a sufficient (non-minimal) set, without changing the `Violation` contract.
 - **Acceptance:** `count … by name` counterexample for a 200-event window within the counterexample row (p95 ≤ 500 ms); worst case for any policy and trace ≤ 5 s with a sufficient result; 13 overlapping globs ≤ 500 ms; SG3 sufficiency/minimality property tests still pass; the bench gains a `count by` counterexample case in CI; xfail markers removed.
 - **Verify:** `cd backend && pytest tests/test_audit2.py -k "count_by_name or overlapping_globs" tests/policy/test_counterexample.py -q` · `python backend/scripts/bench_audit2.py countby 200 400` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
@@ -212,7 +230,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 
 | # | Focus | Method |
 |---|---|---|
-| A1 | Encoding soundness (no false negatives) | Differential fuzz at 100 k cases vs reference evaluator, mutation testing of `encode.py` (surviving mutants are findings), adversarial fixtures (empty trace, 1-event trace, glob edge cases, unicode names, counts at exact bounds). |
+| A1 | Encoding soundness (no false negatives); done, see `AUDIT-1.md`: 2 high → SG-A1.1, SG-A1.2 | Differential fuzz at 100 k cases vs reference evaluator, mutation testing of `encode.py` (surviving mutants are findings), adversarial fixtures (empty trace, 1-event trace, glob edge cases, unicode names, counts at exact bounds). |
 | A2 | Performance under load | Load at 2× the SG4 rate, long traces (5 000 events), 50 policies, Redis restarts mid-trace; every budget row checked. |
 | A3 | API/SDK consistency | OpenAPI vs pydantic vs TS types vs SDK models; error codes; legacy payload compatibility. |
 | A4 | Test coverage and quality | Coverage ≥ 90 % on `app/policy` and new routers, assertion density, tests that cannot fail. |
@@ -350,4 +368,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG5b done.
 - 2026-10-14: SG5a done.
 - 2026-10-14: SG6 done.
+- 2026-10-14: A1 done (`AUDIT-1.md`): no critical, 2 high (SG-A1.1, SG-A1.2), 1 medium, 2 low.
 - 2026-10-14: Audit A2 (performance) done: 1 critical, 2 high, 4 medium, 3 low in AUDIT-2.md; SG-A2.1 to SG-A2.4 proposed.
