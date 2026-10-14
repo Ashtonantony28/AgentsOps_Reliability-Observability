@@ -94,6 +94,21 @@ def test_snapshot_restore_is_transparent(ps, events, data):
     assert out == _stream(compiled, events)
 
 
+@settings(deadline=None, max_examples=500)
+@given(st.lists(vocab_policies, min_size=1, max_size=3), traces(), st.data())
+def test_failing_is_every_policy_false_at_the_event(ps, events, data):
+    """`failing` lists each policy false at the stepped event, already violated or not, across restores."""
+    compiled = _compiled(ps)
+    bad = [set(evaluate(p, events)) for p in ps]
+    cuts = set(data.draw(st.lists(st.integers(0, len(events)), max_size=3)))
+    m = Monitor(compiled)
+    for e in events:
+        if e.seq in cuts:
+            m = Monitor.restore(compiled, m.snapshot())
+        m.step(e)
+        assert m.failing == [str(i) for i, b in enumerate(bad) if e.seq in b]
+
+
 async def test_redis_round_trip_mid_trace():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     compiled = _compiled([ast.Policy("retry_cap", "medium",
@@ -113,6 +128,7 @@ def test_reports_each_policy_once():
     m = Monitor(compiled)
     got = [m.step(Event(i, "tool", "x", "success")) for i in range(3)]
     assert [len(v) for v in got] == [1, 0, 0]
+    assert m.failing == ["0"]
     assert Monitor.restore(compiled, m.snapshot()).step(Event(3, "tool", "x", "success")) == []
 
 
