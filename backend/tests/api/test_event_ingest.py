@@ -361,6 +361,28 @@ def test_ws_events_messages(app_, api_key, agent, session_maker):
             assert send(ws, [ev(2, "x")])["error"] == "trace_closed"
 
 
+def test_ws_events_see_writes_made_elsewhere(app_, api_key, agent):
+    def send(ws, uid, events, final=False):
+        ws.send_text(json.dumps({"type": "events", "trace_uid": uid, "agent_id": agent.id, "events": events,
+                                 "final": final}))
+        return ws.receive_json()
+
+    def rest(uid, events, final=False):
+        r = tc.post(f"/api/traces/{uid}/events", headers={"X-API-Key": api_key},
+                    json={"agent_id": agent.id, "events": events, "final": final})
+        assert r.status_code == 202, r.text
+
+    with TestClient(app_) as tc, tc.websocket_connect(f"/ws/ingest?api_key={api_key}") as ws:
+        assert send(ws, "w1", [ev(0, "a")])["ok"] is True
+        rest("w1", [ev(1, "b")], final=True)
+        assert send(ws, "w1", [ev(2, "c")])["error"] == "trace_closed"
+        rest("w2", [ev(0, "a")])
+        assert send(ws, "w2", [ev(5, "a")])["error"] == "seq_conflict"  # loads w2 on the socket
+        rest("w2", [ev(1, "b")], final=True)
+        assert send(ws, "w2", [ev(2, "c")])["error"] == "trace_closed"
+        assert send(ws, "w3", [ev(0, "a")], final=True)["ok"] is True  # a conflict does not break the socket
+
+
 async def test_severity_edit_mid_trace_reports_under_new_version(client, db, org, agent, api_key_headers):
     p = await _policy(db, org, NO_DROP)
     r = await _append(client, api_key_headers, agent, "u1", [ev(0, "drop_db")])

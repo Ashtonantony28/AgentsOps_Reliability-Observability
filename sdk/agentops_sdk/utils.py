@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import stat
 import tempfile
 import time
 import uuid
@@ -18,14 +19,36 @@ def gen_uid() -> str:
     return str(uuid.uuid4())
 
 
+def _private_dir(base: Path) -> bool:
+    """Creates `base` 0700, or accepts it if it is already a directory only this user can enter."""
+    try:
+        base.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(base)
+    if not stat.S_ISDIR(st.st_mode) or not hasattr(os, "getuid"):
+        return stat.S_ISDIR(st.st_mode)
+    if st.st_uid != os.getuid():
+        return False
+    if st.st_mode & 0o077:
+        os.chmod(base, 0o700)
+    return True
+
+
 def disk_buffer_path(api_key_prefix: str) -> Path:
-    base = Path(tempfile.gettempdir()) / "agentops_sdk"
-    base.mkdir(parents=True, exist_ok=True)
+    """The buffer of undelivered traces (raw input and output) in a per-user directory only this user can read;
+    one another user created is refused for a fresh private one, whose traces the next run will not find."""
+    base = Path(tempfile.gettempdir()) / f"agentops_sdk-{os.getuid() if hasattr(os, 'getuid') else 'user'}"
+    if not _private_dir(base):
+        logging.getLogger("agentops_sdk").error(
+            "agentops buffer directory %s is not this user's; buffering to a new private directory", base)
+        base = Path(tempfile.mkdtemp(prefix="agentops_sdk-", dir=base.parent))
     return base / f"buffer-{api_key_prefix[:8]}.jsonl"
 
 
 def append_to_disk(path: Path, payload: dict) -> None:
-    with open(path, "a", encoding="utf-8") as f:
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with open(fd, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, default=str) + "\n")
 
 

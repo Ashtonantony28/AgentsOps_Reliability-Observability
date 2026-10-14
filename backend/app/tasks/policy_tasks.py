@@ -36,6 +36,24 @@ async def _check(trace_id: str, counterexamples: bool) -> int:
         await engine.dispose()
 
 
+@celery.task(name="app.tasks.policy_tasks.close_idle_streams")
+def close_idle_streams() -> int:
+    return asyncio.run(_close_idle())
+
+
+async def _close_idle() -> int:
+    from app.services.trace_service import close_idle_streams as close  # imports this module
+
+    engine = create_async_engine(settings.db_url, pool_pre_ping=True)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with Session() as db:
+            return len(await close(db))
+    finally:
+        await close_redis()
+        await engine.dispose()
+
+
 async def enqueue_trace_check(trace_id: str) -> None:
     try:
         await asyncio.to_thread(check_completed_trace.delay, trace_id)

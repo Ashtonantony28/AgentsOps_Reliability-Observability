@@ -42,6 +42,10 @@ celery.conf.beat_schedule = {
         "task": "app.tasks.report_tasks.send_weekly_digest",
         "schedule": crontab(day_of_week="mon", hour=8, minute=0),
     },
+    "close-idle-streams-every-5min": {
+        "task": "app.tasks.policy_tasks.close_idle_streams",
+        "schedule": 300.0,
+    },
     "scheduled-evaluations": {
         "task": "app.tasks.evaluation_tasks.run_scheduled_evaluations",
         "schedule": 300.0,

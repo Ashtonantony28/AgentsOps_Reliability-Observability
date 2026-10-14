@@ -48,6 +48,10 @@ def events_request(agent_id: str, events: List[dict], final: bool, **fields) -> 
     return {"agent_id": agent_id, "events": events, "final": final, **fields}
 
 
+# the server answered but rejected the key, the agent or the request: a configuration error no retry fixes
+CONFIG_ERRORS = (401, 403, 404, 422)
+
+
 def failed_result(reason: str, fail_closed: bool) -> CheckResult:
     log.warning("agentops policy check failed (%s); %s", reason, "blocking" if fail_closed else "allowing")
     return CheckResult(allowed=not fail_closed, error=reason)
@@ -59,6 +63,9 @@ def check_result(outcome: Union[httpx.Response, BaseException], fail_closed: boo
         return failed_result("timeout", fail_closed)
     if isinstance(outcome, BaseException):
         return failed_result(f"{type(outcome).__name__}: {outcome}"[:200], fail_closed)
+    if outcome.status_code in CONFIG_ERRORS:
+        log.error("agentops policy check rejected (http %s: %s); blocking", outcome.status_code, outcome.text[:200])
+        return CheckResult(allowed=False, error=f"http {outcome.status_code}")
     if not outcome.is_success:
         return failed_result(f"http {outcome.status_code}", fail_closed)
     try:

@@ -94,6 +94,35 @@ def _is_events_message(raw: str) -> bool:
     return isinstance(data, dict) and data.get("type") == "events"
 
 
+async def _ingest_message(db, org_id: str, raw: str) -> dict:
+    if _is_events_message(raw):
+        try:
+            msg = WsEventsMessage.model_validate_json(raw)
+        except Exception as e:
+            return {"ok": False, "error": f"invalid_payload: {e}"}
+        try:
+            trace, rows = await append_events(db, org_id, msg.trace_uid, msg)
+        except PolicyViolation as pv:
+            return {"ok": False, "error": "policy_block", "rule": pv.rule_name, "target": pv.target}
+        except TraceConflict as tc:
+            return {"ok": False, "error": tc.code, "message": tc.message, **tc.details}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "id": trace.id, "accepted": len(msg.events),
+                "violations": [ViolationOut.model_validate(r).model_dump(mode="json") for r in rows]}
+    try:
+        payload = TraceIn.model_validate_json(raw)
+    except Exception as e:
+        return {"ok": False, "error": f"invalid_payload: {e}"}
+    try:
+        trace = await ingest_trace(db, org_id, payload)
+    except PolicyViolation as pv:
+        return {"ok": False, "error": "policy_block", "rule": pv.rule_name}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": trace.id}
+
+
 @router.websocket("/ws/ingest")
 async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=None)):
     """Streaming ingestion (API-key authed). Each message is a TraceIn JSON, or a WsEventsMessage."""
@@ -105,51 +134,19 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
     try:
         async with async_session_maker() as db:
             org = await db.get(Organization, org_id)
-            if org is None:
-                await websocket.close(code=4401)
-                return
-            limit = org.rate_limit_per_min
-            while True:
-                raw = await websocket.receive_text()
-                try:
-                    await enforce_rate_limit(f"org:{org_id}", limit)
-                except HTTPException:
-                    await websocket.send_json({"ok": False, "error": "rate_limited"})
-                    continue
-                if _is_events_message(raw):
-                    try:
-                        msg = WsEventsMessage.model_validate_json(raw)
-                    except Exception as e:
-                        await websocket.send_json({"ok": False, "error": f"invalid_payload: {e}"})
-                        continue
-                    try:
-                        trace, rows = await append_events(db, org_id, msg.trace_uid, msg)
-                        await websocket.send_json({
-                            "ok": True, "id": trace.id, "accepted": len(msg.events),
-                            "violations": [ViolationOut.model_validate(r).model_dump(mode="json") for r in rows],
-                        })
-                    except PolicyViolation as pv:
-                        await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name,
-                                                   "target": pv.target})
-                    except TraceConflict as tc:
-                        await db.rollback()
-                        await websocket.send_json({"ok": False, "error": tc.code, "message": tc.message, **tc.details})
-                    except Exception as e:
-                        await db.rollback()
-                        await websocket.send_json({"ok": False, "error": str(e)})
-                    continue
-                try:
-                    payload = TraceIn.model_validate_json(raw)
-                except Exception as e:
-                    await websocket.send_json({"ok": False, "error": f"invalid_payload: {e}"})
-                    continue
-                try:
-                    trace = await ingest_trace(db, org_id, payload)
-                    await websocket.send_json({"ok": True, "id": trace.id})
-                except PolicyViolation as pv:
-                    await websocket.send_json({"ok": False, "error": "policy_block", "rule": pv.rule_name})
-                except Exception as e:
-                    await db.rollback()
-                    await websocket.send_json({"ok": False, "error": str(e)})
+        if org is None:
+            await websocket.close(code=4401)
+            return
+        limit = org.rate_limit_per_min
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                await enforce_rate_limit(f"org:{org_id}", limit)
+            except HTTPException:
+                await websocket.send_json({"ok": False, "error": "rate_limited"})
+                continue
+            # a session per message: one kept for the socket would serve rows other writers have since changed
+            async with async_session_maker() as db:
+                await websocket.send_json(await _ingest_message(db, org_id, raw))
     except WebSocketDisconnect:
         return
