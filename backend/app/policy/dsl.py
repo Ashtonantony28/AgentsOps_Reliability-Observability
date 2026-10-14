@@ -19,7 +19,7 @@ TEMPORAL = frozenset(("once", "historically", "previously", "since", "count"))
 
 _TOKEN = re.compile(
     r"(?P<ws>[ \t\r\f\v]+)|(?P<nl>\n)|(?P<comment>\#[^\n]*)"
-    r"|(?P<num>-?[0-9]+(?:\.[0-9]*)?)|(?P<ident>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|(?P<num>-?[0-9][A-Za-z0-9_.]*)|(?P<ident>[A-Za-z_][A-Za-z0-9_]*)"
     r"|(?P<op>->|<=|>=|==|!=|[<>()=,:@*])|(?P<str>\")"
 )
 
@@ -394,4 +394,7 @@ def pretty_formula(f: Formula) -> str:
 def pretty(policies: Union[Policy, Iterable[Policy]]) -> str:
     if isinstance(policies, Policy):
         policies = [policies]
+    for p in policies:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p.name) or p.name in RESERVED or p.severity not in LEVELS:
+            raise ValueError(f"policy {p.name!r} severity {p.severity!r} has no DSL form")
     return "\n".join(f"policy {p.name} severity {p.severity}:\n  always {_fmt(p.formula, 0)}\n" for p in policies)

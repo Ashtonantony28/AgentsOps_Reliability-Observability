@@ -81,7 +81,7 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
   - `evaluate` matches the expected verdicts on every SG0 fixture.
   - Line coverage ≥ 95 % on `dsl.py` and `reference.py`.
 - **Verify:** `cd backend && pytest tests/policy/test_dsl.py tests/policy/test_reference.py -q --cov=app.policy.dsl --cov=app.policy.reference --cov-fail-under=95` (narrowed from `--cov=app/policy`, which also counted the SG2/SG3 stubs)
-- **Result:** verify passes with 100 % coverage on both files (240 tests); full backend suite 403 passed. Every fixture's verdict matches. `pretty`/`pretty_formula` live in `dsl.py`. The Hypothesis AST generator for SG2's differential test is `tests/policy/strategies.py` (`formulas()`, `policies`); it emits only atoms the DSL can express. `reference.truth(f, events)` gives per-position values. Attr equality compares Python types exactly, so a float `2.0` does not match `attr("k", 2)`. The evaluator is also cross-checked against a naive quantifier-literal oracle in `test_reference.py`.
+- **Result:** verify passes with 100 % coverage on both files (248 tests); full backend suite 411 passed. Every fixture's verdict matches. `pretty`/`pretty_formula` live in `dsl.py`. The Hypothesis AST generator for SG2's differential test is `tests/policy/strategies.py` (`formulas()`, `policies`); it emits only atoms the DSL can express. `reference.truth(f, events)` gives per-position values. Attr equality compares Python types exactly, so a float `2.0` does not match `attr("k", 2)`. The evaluator is also cross-checked against a naive quantifier-literal oracle in `test_reference.py`.
 
 ### SG2 Trace → Z3 encoding
 - **Owner:** unassigned (must not be the SG1 owner) · **Status:** proposed · **Depends:** SG0

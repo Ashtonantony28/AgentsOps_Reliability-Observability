@@ -1,7 +1,7 @@
 import operator
 import re
 from functools import lru_cache
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from app.policy.ast import (
     And, Count, Formula, Historically, Implies, Match, Not, Once, Or, Policy, Previously, Since,
@@ -33,15 +33,22 @@ def matches(m: Match, e: Event) -> bool:
     )
 
 
-def truth(f: Formula, events: Sequence[Event]) -> list[bool]:
+def truth(f: Formula, events: Sequence[Event], _memo: Optional[dict] = None) -> list[bool]:
     """Truth value of `f` at every position of `events`."""
+    memo = {} if _memo is None else _memo
+    if id(f) not in memo:  # inlined tags share nodes; keyed by identity since True == 1 in AST equality
+        memo[id(f)] = (f, _truth(f, events, lambda g: truth(g, events, memo)))
+    return memo[id(f)][1]
+
+
+def _truth(f: Formula, events: Sequence[Event], sub) -> list[bool]:
     n = len(events)
     if isinstance(f, Match):
         return [matches(f, e) for e in events]
     if isinstance(f, Not):
-        return [not a for a in truth(f.arg, events)]
+        return [not a for a in sub(f.arg)]
     if isinstance(f, (And, Or, Implies, Since)):
-        a, b = truth(f.left, events), truth(f.right, events)
+        a, b = sub(f.left), sub(f.right)
         if isinstance(f, And):
             return [x and y for x, y in zip(a, b)]
         if isinstance(f, Or):
@@ -50,16 +57,16 @@ def truth(f: Formula, events: Sequence[Event]) -> list[bool]:
             return [not x or y for x, y in zip(a, b)]
         return [_since(a, b, i) for i in range(n)]
     if isinstance(f, Once):
-        a = truth(f.arg, events)
+        a = sub(f.arg)
         return [any(a[: i + 1]) for i in range(n)]
     if isinstance(f, Historically):
-        a = truth(f.arg, events)
+        a = sub(f.arg)
         return [all(a[: i + 1]) for i in range(n)]
     if isinstance(f, Previously):
-        a = truth(f.arg, events)
+        a = sub(f.arg)
         return [i > 0 and a[i - 1] for i in range(n)]
     if isinstance(f, Count):
-        a, cmp = truth(f.pred, events), _CMP[f.op]
+        a, cmp = sub(f.pred), _CMP[f.op]
         out = []
         for i in range(n):
             key = getattr(events[i], f.by) if f.by else None

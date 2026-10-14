@@ -119,6 +119,12 @@ def test_count_by():
     assert truth(Count(Match(globs=("a",)), "==", 1, by="kind"), events) == [True, True, True, False, True]
 
 
+def test_shared_tag_nodes_are_evaluated_once():
+    src = 'tag t0 = tool("a")\n' + "".join(f"tag t{i} = @t{i-1} or not @t{i-1}\n" for i in range(1, 40))
+    p = parse(src + "policy p: always @t39")[0]
+    assert evaluate(p, trace("a", ("llm", "b"))) == []
+
+
 def test_unknown_node_raises():
     with pytest.raises(TypeError):
         truth("tool", [ev(0)])

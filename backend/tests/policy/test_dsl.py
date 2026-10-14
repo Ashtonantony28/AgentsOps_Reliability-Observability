@@ -168,6 +168,9 @@ def err(src: str) -> PolicyParseError:
     ("policy p: always count(tool(*)) <= -1", 1, 36, "expected integer bound after '<=', got '-1'"),
     ('policy p: always count(tool(*)) < "3"', 1, 35, "expected integer bound after '<'"),
     ("policy p: always count(tool(*)) < n", 1, 35, "expected integer bound after '<', got 'n'"),
+    ("policy p: always count(tool(*)) < 1e3", 1, 35, "expected integer bound after '<', got '1e3'"),
+    ("policy p: always count(tool(*)) > 3x", 1, 35, "expected integer bound after '>', got '3x'"),
+    ('policy p: always attr("k", 1e3)', 1, 28, "expected attribute value"),
     # future operators
     ("policy p: always eventually tool(*)", 1, 18, "future-time operator 'eventually' is not supported"),
     ("policy p: always next tool(*)", 1, 18, "future-time operator 'next'"),
@@ -227,6 +230,12 @@ def test_parse_error_is_value_error():
 def test_pretty_rejects_non_atoms(m):
     with pytest.raises(ValueError):
         pretty_formula(m)
+
+
+@pytest.mark.parametrize("name,severity", [("count", "low"), ("my-policy", "low"), ("1p", "low"), ("p", "urgent")])
+def test_pretty_rejects_unprintable_policies(name, severity):
+    with pytest.raises(ValueError):
+        pretty(Policy(name, severity, Match()))
 
 
 def test_pretty_rejects_non_formula():
