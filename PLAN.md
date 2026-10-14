@@ -98,15 +98,19 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
 
 ### Fixture gate
 SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch budget met. Recorded here with the commit hash before SG3/SG4 start.
+- **Met** at `10a4a3e` (SG2 merge, PR #4), on top of SG1 (`2595399`).
 
 ### SG3 Minimal counterexamples
-- **Owner:** unassigned · **Status:** proposed · **Depends:** fixture gate
+- **Owner:** SG3 thread · **Status:** done · **Depends:** fixture gate
 - **Scope:** `app/policy/counterexample.py` (`minimal_counterexample`), wired into `check_trace` output.
 - **Acceptance:**
   - Returned set is sufficient (re-checking only those events' facts still entails the violation) and minimal (dropping any one event no longer entails it), property-tested on 1 000 cases.
   - Matches hand-written expected counterexamples on all fixtures.
   - Counterexample budget row met.
 - **Verify:** `cd backend && pytest tests/policy/test_counterexample.py -q` · `python scripts/bench_policy.py --path counterexample --assert-budget`
+- **Result:** both verify commands pass locally and run in CI. All 28 expected counterexamples across the 31 fixtures match, directly and through `check_trace`. Property tests: 1 000 cases over SG2's small-vocabulary ASTs plus 500 over `count … by name/kind` with colliding names; each checks sufficiency against `reference.truth` on random completions of the unknown events, and minimality by decoding a solver model for every dropped event into concrete events that `reference.truth` confirms satisfy the policy. Counterexample p95 ≈ 75 ms for the worst case (200 events, all needed; the bench now uses that trace instead of a non-violation); batch p95 unchanged at ≈ 80 ms with counterexamples included.
+  - How it works: a `TraceEncoding` subclass replaces observed atom constants with per-event variables (kind; status and attr values as codes for each policy constant plus "anything else"; names as the set of policy globs they match), all bit-vectors, so the solver is Z3's SAT-based `QF_FD`. Event i's observed values hold under assumption `a_i`; the first unsat core is shrunk by a deletion pass. The realizable glob-match sets are computed exactly by a BFS over the product of the glob automata (cached per glob set). `count by kind/name` compares each event's group with every earlier event's (quadratic, but only the positions the violation depends on are kept, so a top-level count is linear).
+  - Limits: `count … by name` on a policy that also uses globs needs real strings (Z3 string theory, 2 s per check); if Z3 gives up, the result keeps the events it could not rule out, so it stays sufficient but may not be minimal. Nested `count by` under `once`/`historically` is quadratic in trace length.
 
 ### SG4 Checker service (batch + live)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** fixture gate
@@ -282,3 +286,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-14: SG0 in review.
 - 2026-10-14: SG0 merged (`aa2f27a`). SG1 done.
 - 2026-10-14: SG2 done. With SG1 merged, its merge meets the fixture gate.
+- 2026-10-14: SG3 done.

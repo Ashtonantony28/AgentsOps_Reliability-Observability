@@ -84,6 +84,13 @@ def synthetic_trace(n: int = TRACE_LEN, seed: int = 0) -> list[Event]:
     return events
 
 
+def counterexample_trace(n: int = TRACE_LEN) -> list[Event]:
+    """A delete at the end with no confirmation before it: every event is in the counterexample (worst case)."""
+    events = [e if e.kind != "confirmation" else Event(e.seq, "llm", "plan", e.status, {})
+              for e in synthetic_trace(n - 1)]
+    return events + [Event(n - 1, "tool", "delete_user", "success", {})]
+
+
 def real_impl() -> SimpleNamespace:
     from app.policy.checker import Monitor, check_trace, compile_policy, would_violate
     from app.policy.counterexample import minimal_counterexample
@@ -159,9 +166,11 @@ def workload(path: str, impl, compiled, events) -> Callable[[int], float]:
             impl.would_violate(compiled, prefix, candidate)
             return (clock() - t) * 1000
     elif path == "counterexample":
+        cx_events = counterexample_trace(len(events))
+
         def run(i):
             t = clock()
-            impl.minimal_counterexample(compiled[0], events, len(events) - 1)
+            impl.minimal_counterexample(compiled[0], cx_events, len(cx_events) - 1)
             return (clock() - t) * 1000
     else:
         raise ValueError(path)
