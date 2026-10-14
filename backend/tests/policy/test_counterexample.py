@@ -16,7 +16,8 @@ from app.policy.ast import And, Count, Implies, Match, Not, Once, Policy, Previo
 import app.policy.checker as checker
 from app.policy import counterexample
 from app.policy.checker import check_trace, check_verdicts, compile_policy
-from app.policy.counterexample import _Entailment, _nodes, bounded_counterexample, minimal_counterexample, name_patterns
+from app.policy.counterexample import (FactEncoding, _Entailment, _nodes, bounded_counterexample,
+                                      minimal_counterexample, name_patterns)
 from app.policy.dsl import CMPS, KINDS, parse
 from app.policy.encode import glob_regex
 from app.policy.events import Event
@@ -50,6 +51,24 @@ def decode(strings, value):
     return "".join(char.get(p, chr(0xF0000 + p % 0xFFFD)) for p in points)
 
 
+def fresh_name(globs, pattern, k, avoid):
+    """The k-th name not in `avoid` that matches exactly the globs in `pattern`, by breadth-first search over the
+    globs' automaton, pruned to the states from which such a name can still be reached."""
+    names, succ = counterexample._automaton(globs)
+    live = {s for s in names if counterexample._pattern(globs, s) == pattern}
+    while grown := {s for s in names if s not in live and live & set(succ[s])}:
+        live |= grown
+    chars = sorted({c for g in globs for c in g} - {"*", "?"}) + [chr(0xF0000 + j) for j in range(k + len(avoid) + 1)]
+    level, found = [("", next(iter(names)))], []
+    while True:
+        found += [w for w, state in level if counterexample._pattern(globs, state) == pattern and w not in avoid]
+        if len(found) > k:
+            return found[k]
+        level = [(w + c, nxt) for w, state in level for c in chars
+                 if (nxt := tuple(counterexample._step(g, ps, c) for g, ps in zip(globs, state))) in live]
+        assert level, f"the encoding gives {pattern} more names than it has"
+
+
 def witness(formula, events, known):
     """Events that keep the facts of `known` and make `formula` true at the last one, decoded from a solver model."""
     check = _Entailment(formula, events, time.monotonic() + 60)
@@ -76,9 +95,10 @@ def witness(formula, events, known):
         if enc.name_mode == "string":
             name = decode(enc.strings, values[f"ev_n{i}"]) if f"ev_n{i}" in values else ""
         elif enc.name_mode == "code":
-            names = list(enc.name_codes)
-            n = code("n", i)
-            name = names[n] if n < len(names) else f"\0fresh{n}"
+            n, names = code("n", i), {c: name for name, c in enc.name_codes.items()}
+            p, (lo, hi) = next((p, (lo, hi)) for p, (lo, hi) in enc.blocks.items() if lo <= n < hi)
+            name = names[n] if n in names else \
+                fresh_name(enc.globs, p, n - lo - sum(lo <= c < hi for c in names), set(names.values()))
         elif enc.name_mode == "pattern":
             name = name_patterns(enc.globs)[code("n", i)][1]
         else:
@@ -282,6 +302,33 @@ def test_encoding_over_budget_keeps_every_event(monkeypatch, caplog):
     monkeypatch.setattr(counterexample, "BUDGET_S", -1)
     assert bounded_counterexample(p, events, 2) == ((0, 1, 2), False)
     assert "over budget: keeping all 3 events" in caplog.text
+
+
+@pytest.mark.parametrize("f", [Count(Match(kind="tool"), "<=", 1, by="name"), Count(Match(kind="tool"), "<=", 1)])
+def test_encoding_over_cell_cap_keeps_every_event(monkeypatch, f):
+    events = [ev(0, "ab"), ev(1, "b"), ev(2, "ab")]
+    p = compile_policy("p", Policy("p", "high", f))
+    monkeypatch.setattr(counterexample, "_MAX_CELLS", 5)
+    assert bounded_counterexample(p, events, 2) == ((0, 1, 2), False)
+
+
+def test_pattern_sizes():
+    many = counterexample._MANY
+    # "a" is the only name matching "a*" and not "a?*"
+    assert counterexample.pattern_sizes(("a*", "a?*")) == {frozenset(): many, frozenset({"a*"}): 1,
+                                                           frozenset({"a*", "a?*"}): many}
+    assert counterexample.pattern_sizes(("ab", "a?")) == {frozenset(): many, frozenset({"a?"}): many,
+                                                          frozenset({"ab", "a?"}): 1}
+
+
+def test_count_by_name_over_globs_is_minimal():
+    f = Count(Match(kind="tool", globs=("fetch*",), status="error"), "<=", 20, by="name")
+    hits = set(range(9, 181, 9)) | {199}
+    events = [ev(i, "fetch_url" if i in hits else ("search", "fetch_x")[i % 2],
+                 st="error" if i in hits or i % 3 else "success") for i in range(200)]
+    assert len(hits) == 21 and FactEncoding(events, f, float("inf")).name_mode == "code"
+    assert bounded_counterexample(compile_policy("p", Policy("p", "high", f)), events, 199) == \
+        (tuple(sorted(hits)), True)
 
 
 def test_deletion_pass_over_budget_keeps_core_so_far(monkeypatch, caplog):

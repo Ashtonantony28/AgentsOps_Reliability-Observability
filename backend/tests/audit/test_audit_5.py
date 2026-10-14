@@ -66,7 +66,6 @@ def test_large_bound_count_counterexample_is_minimal():
 
 # A5-4: the per-counterexample budget is checked between steps that are themselves unbounded; the overrun is
 # measured as the SMT text handed to the solver (parsing it is not interruptible), not as wall time
-@pytest.mark.xfail(strict=True, reason="A5-4: a 300-event nested count-by builds 17 MB of SMT text to parse")
 def test_counterexample_encoding_stays_within_what_the_budget_can_parse(monkeypatch):
     from app.policy import counterexample
 
