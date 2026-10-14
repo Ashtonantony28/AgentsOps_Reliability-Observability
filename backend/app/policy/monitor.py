@@ -22,6 +22,8 @@ def _count_group(groups: dict, g: str, hit: bool) -> tuple[int, int]:
     """Bounds on the count of `g` after this event: exact for the first MAX_GROUPS values seen with a hit (event
     names are client-chosen); later values share one overflow counter, so at least this event, at most every
     overflow hit."""
+    if g.startswith("\0"):  # keeps client values clear of the markers
+        g = "\0" + g
     if g in groups:
         c = groups[g] = groups[g] + hit
         return c, c

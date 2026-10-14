@@ -56,6 +56,7 @@ async def evaluate_violation_alerts(db: AsyncSession, rows: Sequence[TracePolicy
         async with lock:
             await db.execute(select(AlertRule.id).where(AlertRule.id == rule.id).with_for_update())
             if await already_firing(db, rule):
+                await db.commit()  # releases the row lock before the next rule's
                 continue
             event = await fire_alert(db, rule, value, context={"violation_ids": [h.id for h in hits]},
                                      incident=any(h.severity == "critical" for h in hits))

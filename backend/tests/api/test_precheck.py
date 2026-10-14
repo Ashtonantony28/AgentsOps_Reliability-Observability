@@ -246,6 +246,7 @@ async def test_rebuild_after_state_loss_is_cached_until_the_next_append(client, 
     assert replayed == [2]
     await _append(client, api_key_headers, agent, "u1", [ev(2, "user_confirmed", kind="confirmation")])
     assert replayed == [2, 2]  # the append path rebuilds its own state once
+    assert await redis.keys("policy:precheck:*") == []
     for _ in range(2):
         assert (await _check(client, api_key_headers, agent, ev(3, "delete_user"), "u1")).json()["allowed"] is True
     assert replayed == [2, 2]

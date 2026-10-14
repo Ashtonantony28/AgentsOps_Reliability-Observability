@@ -203,3 +203,10 @@ def test_count_by_state_is_bounded_and_exact_below_the_bound():
     assert len(m.snapshot()) < 32 * 1024
     # past it, new names share one counter; once a count is uncertain every later event fails the policy
     assert m.failing == ["0"]
+
+
+def test_count_by_values_never_collide_with_the_overflow_markers():
+    p = ast.Policy("p", "low", ast.Count(ast.Match(), "<=", 1, by="name"))
+    m = Monitor(_compiled([p]))
+    for i, name in enumerate(["\0?", "\0", "\0\0", "a"]):
+        assert m.step(Event(i, "tool", name, "success", {})) == [] and m.failing == []

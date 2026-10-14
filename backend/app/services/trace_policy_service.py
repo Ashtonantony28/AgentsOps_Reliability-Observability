@@ -95,7 +95,8 @@ async def _replay(db: AsyncSession, trace_id: str,
                   compiled: Sequence[CompiledPolicy]) -> tuple[Monitor, list[Violation]]:
     """Rebuilds from spans. After a Redis restart every open trace needs this, so few run at once per process."""
     loop = asyncio.get_running_loop()
-    async with _rebuild_slots.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_REBUILDS)):
+    slots = _rebuild_slots.get(loop) or _rebuild_slots.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_REBUILDS))
+    async with slots:
         spans = (await db.execute(select(*_EVENT_COLUMNS).where(Span.trace_id == trace_id))).all()
         m = Monitor(compiled)
         return m, [v for e in events_from_spans(spans) for v in m.step(e)]
@@ -106,7 +107,10 @@ async def load_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[Compi
     """Monitor positioned after the stored events. Rebuilt from spans if the Redis state is missing, stale or
     for other policies; the violations found while rebuilding are returned so they can be recorded."""
     m = _restore(await get_redis().get(_state_key(trace_id)), compiled, next_seq)
-    return (m, []) if m else await _replay(db, trace_id, compiled)
+    if m:
+        return m, []
+    await get_redis().delete(_precheck_key(trace_id))  # the state this append saves supersedes it
+    return await _replay(db, trace_id, compiled)
 
 
 async def precheck_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
@@ -121,7 +125,7 @@ async def precheck_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[C
     lock = r.lock(f"lock:monitor-rebuild:{trace_id}", timeout=30, blocking_timeout=5)
     locked = await lock.acquire()
     try:
-        if locked and (m := _restore(await r.get(keys[1]), compiled, next_seq)):
+        if m := _restore(await r.get(keys[1]), compiled, next_seq):  # built while we waited
             return m
         m, _ = await _replay(db, trace_id, compiled)
         await r.set(keys[1], m.snapshot().decode(), ex=STATE_TTL_S)
