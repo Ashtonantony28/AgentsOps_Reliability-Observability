@@ -305,7 +305,7 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 ### SG-A5.4 AUDIT-5 mediums (A5-4, A5-5)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** none
 - **Scope:** the per-counterexample budget holds on every path, including encoding and SMT parsing (estimate nested `count … by` size up front and fall back at once; check the deadline in `_group_count`) (A5-4); `Trace.add_event` assigns seqs under the trace's lock (A5-5). A5-6 (RecursionError → 422) rides along.
-- **Acceptance:** `test_counterexample_budget_is_enforced`, `test_deeply_nested_policy_is_a_validation_error` and `sdk/tests/test_audit_5.py` pass unmarked; full backend and SDK suites green.
+- **Acceptance:** `test_counterexample_encoding_stays_within_what_the_budget_can_parse`, `test_deeply_nested_policy_is_a_validation_error` and `sdk/tests/test_audit_5.py` pass unmarked; full backend and SDK suites green.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_5.py -q && pytest -q` · `cd sdk && pytest -q`
 
 ## Audits (after SG5b; SG6 included if built)

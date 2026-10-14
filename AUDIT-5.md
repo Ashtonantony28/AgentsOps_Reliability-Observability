@@ -4,7 +4,7 @@ Audited at `eb7e255` (everything through PR #21 merged) by a session that wrote 
 
 **Result: 1 critical, 2 high, 2 medium, 5 low.** The critical and high findings are PLAN.md sub-goals `SG-A5.1` to `SG-A5.3`; the mediums are grouped into `SG-A5.4`.
 
-Failing tests: `backend/tests/audit/test_audit_5.py` (6) and `sdk/tests/test_audit_5.py` (1), each `xfail(strict=True)`; the fixing sub-goal removes the marker. Run them with `cd backend && pytest tests/audit/test_audit_5.py -q --runxfail` and `cd sdk && pytest tests/test_audit_5.py -q --runxfail`. Three of them cost wall time while unfixed (A5-1 10 s, A5-3 6 s, A5-2 2 s).
+Failing tests: `backend/tests/audit/test_audit_5.py` (6) and `sdk/tests/test_audit_5.py` (1), each `xfail(strict=True)`; the fixing sub-goal removes the marker. Run them with `cd backend && pytest tests/audit/test_audit_5.py -q --runxfail` and `cd sdk && pytest tests/test_audit_5.py -q --runxfail`. Two of them cost wall time while unfixed (A5-1 10 s, A5-2 2 s); none asserts on wall time.
 
 ## Summary
 
@@ -129,7 +129,7 @@ policies: retry_cap (<= 1, block), no_drop (not tool("drop_db"), block)
 
 Every result is the every-event fallback, as SG-A2.1 noted for this shape; what it did not note is that the 2 s budget overruns 8×. `CHECK_BUDGET_S` is only checked before each counterexample starts, so a trace with several such policies runs well past 30 s.
 
-- **Failing test**: `test_counterexample_budget_is_enforced` (350 events, asserts under 1.5 × `BUDGET_S`).
+- **Failing test**: `test_counterexample_encoding_stays_within_what_the_budget_can_parse`. With the budget raised so the encoding completes on any machine, a 300-event window hands the solver 17 MB of SMT text; the test caps it at 4 MB. Where the overrun lands in wall time depends on machine speed, so the test does not time it.
 - **Fix**: estimate the encoding size before building it (window² per nested `count … by`) and fall back at once past a threshold; check the deadline inside `_group_count`.
 
 ### A5-5 · medium · Concurrent `add_event` calls give duplicate seqs

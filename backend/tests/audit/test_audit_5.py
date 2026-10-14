@@ -1,9 +1,7 @@
 """AUDIT-5.md (round 2: correctness and performance) findings as failing tests; each is xfail(strict=True) until its
 sub-goal fixes it."""
-import logging
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import httpx
@@ -59,7 +57,7 @@ check_trace([c], events)
 
 
 # A5-2: counts with a bound of 16 or more are bit-vector sums, which the deletion pass cannot shrink in budget
-@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits; time is the bench's job")
+@pytest.mark.xfail(strict=True, reason="A5-2: a bound-40 count's counterexample keeps 169 events, not the 41 hits")
 def test_large_bound_count_counterexample_is_minimal():
     (p,) = parse('policy cap severity high:\n  always count(tool("fetch_url")) <= 40')
     hits = set(range(3, 200, 5)) | {199}  # 41 hits; the other events are never counted
@@ -68,21 +66,32 @@ def test_large_bound_count_counterexample_is_minimal():
     assert minimal_counterexample(compile_policy("cap", p), events, 199) == tuple(sorted(hits))
 
 
-# A5-3: the per-counterexample budget is checked between steps that are themselves unbounded
-@pytest.mark.xfail(strict=True, reason="A5-3: the 2 s counterexample budget overruns to about 6 s at 350 events")
-def test_counterexample_budget_is_enforced(caplog):
+# A5-4: the per-counterexample budget is checked between steps that are themselves unbounded; the overrun is
+# measured as the SMT text handed to the solver (parsing it is not interruptible), not as wall time
+@pytest.mark.xfail(strict=True, reason="A5-4: a 300-event nested count-by builds 17 MB of SMT text to parse")
+def test_counterexample_encoding_stays_within_what_the_budget_can_parse(monkeypatch):
     from app.policy import counterexample
+
+    class TooBig(Exception):
+        pass
+
+    def smt2(self, *extra):
+        text = to_smt2(self, *extra)
+        if len(text) > 4_000_000:
+            raise TooBig(len(text))
+        return text
+
+    to_smt2 = counterexample.FactEncoding.smt2
+    monkeypatch.setattr(counterexample.FactEncoding, "smt2", smt2)
+    monkeypatch.setattr(counterexample, "BUDGET_S", 60.0)  # so the encoding completes on any machine
     (p,) = parse('policy p severity high:\n  always not once (count(tool(*) and status("error")) by name > 3)')
-    bad = {40, 120, 260, 349}
+    bad = {33, 100, 225, 299}
     events = [Event(i, "tool", "fetch_url" if i in bad else ("search", "plan", "http_get")[i % 3],
-                    "error" if i in bad else "success", {}) for i in range(350)]
-    t = time.monotonic()
-    with caplog.at_level(logging.WARNING):
-        minimal_counterexample(compile_policy("p", p), events, 349)
-    assert time.monotonic() - t < 1.5 * counterexample.BUDGET_S
+                    "error" if i in bad else "success", {}) for i in range(300)]
+    minimal_counterexample(compile_policy("p", p), events, 299)
 
 
-# A5-5: one block on an append ends the stream; the SDK then skips the server for every later check
+# A5-3: one block on an append ends the stream; the SDK then skips the server for every later check
 NO_DROP = 'policy no_drop severity critical:\n  always not tool("drop_db")'
 RETRY_CAP = 'policy retry_cap severity medium:\n  always count(tool(*) and status("error")) by name <= 1'
 
@@ -100,7 +109,7 @@ def sdk_client(app_, api_key, agent, monkeypatch):
     return AsyncAgentOpsClient(api_key=api_key, agent_id=agent.id, base_url="http://test")
 
 
-@pytest.mark.xfail(strict=True, reason="A5-5: after a blocked append every later guard check fails open unchecked")
+@pytest.mark.xfail(strict=True, reason="A5-3: after a blocked append every later guard check fails open unchecked")
 async def test_guard_still_enforced_after_a_blocked_append(db, org, sdk_client):
     await _policy(db, org, NO_DROP)
     await _policy(db, org, RETRY_CAP)
@@ -122,7 +131,7 @@ async def test_guard_still_enforced_after_a_blocked_append(db, org, sdk_client):
         t.add_event("llm", "answer")
 
 
-@pytest.mark.xfail(strict=True, reason="A5-5: a blocked append stores no violation, and the trace never closes")
+@pytest.mark.xfail(strict=True, reason="A5-3: a blocked append stores no violation, and the trace never closes")
 async def test_blocked_append_is_surfaced(db, org, sdk_client):
     await _policy(db, org, RETRY_CAP)
     async with sdk_client.trace(stream=True) as t:
@@ -134,8 +143,8 @@ async def test_blocked_append_is_surfaced(db, org, sdk_client):
     assert (stored, [t.meta.get("stream") for t in traces]) == (1, ["final"])
 
 
-# A5-7: a deeply nested policy raises RecursionError in the parser, which the routes do not catch
-@pytest.mark.xfail(strict=True, reason="A5-7: 1000 nested 'not' is a 500, not a validation error")
+# A5-6: a deeply nested policy raises RecursionError in the parser, which the routes do not catch
+@pytest.mark.xfail(strict=True, reason="A5-6: 1000 nested 'not' is a 500, not a validation error")
 async def test_deeply_nested_policy_is_a_validation_error(client, auth_headers):
     source = "policy deep:\n  always " + "not " * 1000 + 'tool("a")'
     r = await client.post("/api/trace-policies/validate", headers=auth_headers, json={"source": source})
