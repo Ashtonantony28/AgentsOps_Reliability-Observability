@@ -324,10 +324,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd sdk && pytest -q` · `cd backend && pytest tests/api/test_sdk_contract.py -q`
 
 ### SG-A6.3 Summary report scoped to the caller's org (AUDIT-6 A6-6 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** none
+- **Owner:** thread "Reports tenant leak" · **Status:** done · **Depends:** none
 - **Scope:** `org_summary`'s `recent_evals` only lists runs whose evaluation set (or agent) belongs to the caller's org; check the other `report_service` and report-task queries for the same omission.
 - **Acceptance:** the A6-6 test passes unmarked; a test that the PDF and weekly digest builders see only the org's runs.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_6.py -k summary tests/api/test_reports_violations.py -q` (and with `TEST_DB=postgres`)
+- **Result:** `recent_evals` joins `EvaluationSet` and filters on the caller's org (A6-6 unmarked). The same omission was in `POST /api/evaluations/diff`, which read any org's runs and per-case results by id; it now 404s on a run outside the org. The PDF reuses `org_summary` and the weekly digest reads no evaluation runs; the CSV exports, `get_run`, `list_runs` and the promote eval gate were already scoped. Tests: `test_summary_lists_only_own_evaluation_runs`, `test_eval_diff_rejects_other_orgs_runs`.
 
 ### SG-A6.4 AUDIT-6 mediums without contract changes (A6-4, A6-5, A6-7, A6-10, A6-12; A6-16 rides along)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** none

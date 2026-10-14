@@ -44,7 +44,6 @@ def sdk_client(app_, api_key, agent, monkeypatch):
 
 
 # A6-6: the org summary report lists other organisations' evaluation runs
-@pytest.mark.xfail(strict=True, reason="A6-6: org_summary's recent_evals query has no org filter")
 async def test_summary_report_lists_only_own_evaluation_runs(client, db, auth_headers):
     other = Organization(name="Other", slug=f"other-{uuid.uuid4().hex[:8]}")
     db.add(other)

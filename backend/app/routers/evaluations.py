@@ -187,8 +187,11 @@ async def get_run(run_id: str, ctx: AuthContext = Depends(get_current_user), db:
 
 @router.post("/diff", response_model=EvalDiffOut)
 async def diff_runs(req: EvalDiffRequest, ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    a = (await db.execute(select(EvaluationRun).where(EvaluationRun.id == req.run_a_id))).scalar_one_or_none()
-    b = (await db.execute(select(EvaluationRun).where(EvaluationRun.id == req.run_b_id))).scalar_one_or_none()
+    own = select(EvaluationRun).join(EvaluationSet, EvaluationSet.id == EvaluationRun.set_id).where(
+        EvaluationSet.org_id == ctx.org_id
+    )
+    a = (await db.execute(own.where(EvaluationRun.id == req.run_a_id))).scalar_one_or_none()
+    b = (await db.execute(own.where(EvaluationRun.id == req.run_b_id))).scalar_one_or_none()
     if not a or not b:
         raise HTTPException(404, "run_not_found")
     res_a = (await db.execute(select(EvaluationResult).where(EvaluationResult.run_id == a.id))).scalars().all()
