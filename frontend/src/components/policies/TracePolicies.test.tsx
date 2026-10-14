@@ -17,7 +17,7 @@ const api = vi.mocked(tracePoliciesApi);
 
 const policy: TracePolicy = {
   id: "p1", org_id: "o1", name: "confirm_before_delete", severity: "high", action: "block", agent_id: null,
-  environment: "prod", enabled: true, version: 3, created_at: "", updated_at: "",
+  environment: "prod", enabled: true, version: 3, created_at: "", updated_at: "", archived_at: null,
   source: 'policy confirm_before_delete severity high:\n  always tool("delete_*") -> once event("confirmation")\n',
 };
 

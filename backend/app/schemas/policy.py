@@ -38,6 +38,7 @@ class TracePolicyOut(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+    archived_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

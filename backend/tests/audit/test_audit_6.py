@@ -1,7 +1,6 @@
 """AUDIT-6.md (API, SDK and test quality, round 2) findings as failing tests; each is xfail(strict=True) until its
 sub-goal fixes it. These run on SQLite and, in CI, on Postgres; each fails on both unless its marker says otherwise."""
 import asyncio
-import os
 import sys
 import uuid
 from pathlib import Path
@@ -23,7 +22,6 @@ from app.models import (  # noqa: E402
 from app.middleware.auth import make_access_token  # noqa: E402
 from app.policy.dsl import parse  # noqa: E402
 
-ON_POSTGRES = os.environ.get("TEST_DB") == "postgres"
 ONE_DELETE = 'policy one_delete severity high:\n  always count(tool("delete_*")) <= 1'
 NEEDS_PRIOR = 'policy needs_prior severity low:\n  always previously event("confirmation")'
 
@@ -76,8 +74,7 @@ async def test_concurrent_guarded_calls_respect_a_count_policy(db, org, sdk_clie
     assert len(ran) == 1
 
 
-# A6-8: deleting a policy deletes every violation it recorded (ON DELETE CASCADE), on Postgres only
-@pytest.mark.xfail(ON_POSTGRES, strict=True, reason="A6-8: policy delete cascades to its violation history")
+# A6-8: deleting a policy deleted every violation it recorded (ON DELETE CASCADE); it now archives the policy
 async def test_deleting_a_policy_keeps_its_violation_history(client, db, org, agent, api_key_headers, auth_headers):
     p = await _policy(db, org, NEEDS_PRIOR, action="log")
     r = await client.post("/api/traces/t1/events", headers=api_key_headers,
@@ -89,8 +86,7 @@ async def test_deleting_a_policy_keeps_its_violation_history(client, db, org, ag
     assert "needs_prior" in r.text
 
 
-# A6-9: SQLite enforces no foreign keys, so the default suite cannot see A6-8 or any other cascade
-@pytest.mark.xfail(not ON_POSTGRES, strict=True, reason="A6-9: the SQLite test engine never enables foreign keys")
+# A6-9: the SQLite test engine enforced no foreign keys, so the default suite could not see A6-8
 async def test_test_database_enforces_foreign_keys(db, org, agent):
     db.add(TracePolicyViolation(
         org_id=org.id, trace_id="no-such-trace", agent_id=agent.id, policy_id="no-such-policy", policy_name="p",

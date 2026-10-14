@@ -344,10 +344,12 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Result (A6-10 only, done early because the strict xfail started passing by chance after SG-A5.1):** `parse` rejects a formula nested over 64 deep with tags expanded (`MAX_FORMULA_DEPTH`; depth is tracked as nodes are built, and the parser's own nesting, parentheses included, is bounded by the same number), so 422 `invalid_policy` on create and update, `ok: false` on validate, and `active_policies` skips a stored policy over it as unparseable. At the bound the parser uses about 450 frames and the monitor, batch check and counterexample about 110. The A6-10 test now asserts the 422 and that policies at the bound pass `/check` and append. The rest of SG-A6.4 is still open.
 
 ### SG-A6.5 Violation history outlives its policy (AUDIT-6 A6-8 medium)
-- **Owner:** unassigned · **Status:** proposed: changes the storage contract (`policy_violations.policy_id` cascade, or a soft-deleted policy), so stop-and-report before dispatch · **Depends:** none
+- **Owner:** thread "Keep violation history" · **Status:** done · **Depends:** none
+- **Approval:** the storage-contract change was approved by Ashton on 2026-10-14 17:14Z ("Keep history" on the decision card: deleted policies are kept as archived, and their past violations stay in alerts and reports).
 - **Scope:** deleting a policy keeps its violations in the trace view, reports and alert counts (soft delete, or `policy_id` made nullable with `ON DELETE SET NULL` and `ViolationOut.policy_id` optional); the SQLite test engine enables foreign keys so both databases agree (A6-9).
 - **Acceptance:** the A6-8 and A6-9 tests pass unmarked on both databases.
 - **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api tests/audit`
+- **Result:** soft delete. `trace_policies.archived_at` (migration `0005_policy_archive`); `DELETE` sets it, and an archived policy is a 404 to `PUT`/`DELETE`, never enforced (`active_policies`, so live, batch, whole-trace ingest and `/check`), and left out of `GET /api/trace-policies` unless `?include_archived=true`. `TracePolicyOut` and the TS type gain `archived_at`. The unique `(org_id, name)` index is partial (`archived_at IS NULL`) so a deleted policy's name can be reused. Its violations stay in the trace view, `violations.csv`, the summary and the `policy_violations` alert count. The SQLite test engine turns on foreign keys (A6-9); nothing else depended on them being off. 0001-0004 are Postgres-only, so 0005 is tested both ways on Postgres (full chain) and on SQLite (from a `create_all` schema); downgrading keeps archived policies (and their violations), disabled and renamed to their ids.
 
 ## Audits (after SG5b; SG6 included if built)
 
@@ -441,7 +443,7 @@ Each policy reports at most one violation per trace (its first `at_seq`) in v1.
 
 ### Storage (migration `0002_trace_policies`)
 
-- `trace_policies`: `id, org_id, name, source, severity (info|low|medium|high|critical), action (log|alert|block), agent_id?, environment?, enabled, version, created_at, updated_at`; unique `(org_id, name)`.
+- `trace_policies`: `id, org_id, name, source, severity (info|low|medium|high|critical), action (log|alert|block), agent_id?, environment?, enabled, version, created_at, updated_at, archived_at?` (set by delete; archived policies are never enforced); unique `(org_id, name)` where `archived_at IS NULL`.
 - `policy_violations`: `id, org_id, trace_id, agent_id, policy_id, policy_version, severity, at_seq, counterexample JSON, message, mode (batch|live|precheck), detected_at`; index `(org_id, detected_at)`, unique `(trace_id, policy_id, policy_version)`.
 - `spans.seq INTEGER NULL`, backfilled from `started_at` order for existing rows.
 
@@ -450,7 +452,7 @@ Each policy reports at most one violation per trace (its first `at_seq`) in v1.
 | Method | Path | Auth | Body → Response |
 |---|---|---|---|
 | GET/POST | `/api/trace-policies` | jwt (write: admin) | `TracePolicyCreate` → `TracePolicyOut` |
-| PUT/DELETE | `/api/trace-policies/{id}` | jwt admin | bumps `version` on source change |
+| PUT/DELETE | `/api/trace-policies/{id}` | jwt admin | bumps `version` on source change; DELETE archives (violations kept); GET lists live policies unless `?include_archived=true` |
 | POST | `/api/trace-policies/validate` | jwt | `{source}` → `{ok, errors: [{line, col, message}]}` |
 | POST | `/api/trace-policies/check` | api-key | `{agent_id, trace_uid?, candidate: EventIn}` → `{allowed, violations: [ViolationOut]}` |
 | POST | `/api/traces/{trace_uid}/events` | api-key | `{agent_id, events: [EventIn], final: bool}` → `{accepted, violations}`; 409 on seq gap/dup; 403 on `block` |

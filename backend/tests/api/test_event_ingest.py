@@ -6,9 +6,10 @@ from sqlalchemy import select
 from starlette.testclient import TestClient
 
 import app.services.trace_policy_service as tps
-from app.models import AuditLog, PolicyRule, Span, Trace, TracePolicy, TracePolicyViolation
+from app.models import AlertRule, AuditLog, PolicyRule, Span, Trace, TracePolicy, TracePolicyViolation
 from app.policy.checker import Violation, check_trace, compile_policy
 from app.policy.dsl import parse, pretty
+from app.services.alert_service import compute_metric_value
 from app.tasks import policy_tasks
 from tests.policy.fixtures import load_fixtures
 
@@ -466,3 +467,32 @@ async def test_legacy_block_on_streamed_text_targets_the_trace(client, db, org, 
                           json={"agent_id": agent.id, "events": [], "final": True, "output": "a@b.co"})
     assert r.status_code == 403 and r.json()["error"]["details"]["target"] == "trace"
     assert len(await _rows(db, Span)) == 1
+
+
+async def test_archived_policy_keeps_history_and_is_not_enforced(client, db, org, agent, api_key_headers,
+                                                                  auth_headers, enqueued):
+    alert = await _policy(db, org, CONFIRM, action="alert")
+    block = await _policy(db, org, NO_DROP, action="block")
+    rule = AlertRule(org_id=org.id, name="pv", metric="policy_violations", operator=">=", threshold=1,
+                     window_minutes=15, severity="warning", context={})
+    r = await _append(client, api_key_headers, agent, "u1", [ev(0, "delete_user")], final=True)
+    assert [v["policy_id"] for v in r.json()["violations"]] == [alert.id]
+    for p in (alert, block):
+        assert (await client.delete(f"/api/trace-policies/{p.id}", headers=auth_headers)).status_code == 200
+
+    (trace,) = await _rows(db, Trace)
+    (kept,) = (await client.get(f"/api/traces/{trace.id}/violations", headers=auth_headers)).json()
+    assert (kept["policy_id"], kept["policy_name"]) == (alert.id, "confirm_before_delete")
+    assert "confirm_before_delete" in (await client.get("/api/reports/violations.csv", headers=auth_headers)).text
+    assert await compute_metric_value(db, rule) == 1
+
+    r = await _append(client, api_key_headers, agent, "u2", [ev(0, "delete_user"), ev(1, "drop_db")], final=True)
+    assert r.status_code == 202 and r.json()["violations"] == []
+    r = await client.post("/api/trace-policies/check", headers=api_key_headers,
+                          json={"agent_id": agent.id, "candidate": ev(0, "drop_db")})
+    assert r.json() == {"allowed": True, "violations": []}
+    r = await client.post("/api/traces/ingest", headers=api_key_headers,
+                          json={"agent_id": agent.id, "tool_calls": [{"name": "delete_user"}, {"name": "drop_db"}]})
+    assert r.status_code == 202 and r.json()["id"] not in enqueued  # no active policy: nothing to check
+    assert await tps.check_completed_trace(db, r.json()["id"]) == []
+    assert len(await _rows(db, TracePolicyViolation)) == 1
