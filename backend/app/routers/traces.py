@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
+from pydantic import ValidationError
 from sqlalchemy import select, func
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 import numpy as np
 
@@ -45,20 +47,28 @@ async def ingest_one(req: TraceIn, request: Request, db: AsyncSession = Depends(
 async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Depends(get_db)):
     org, api_key = await authenticate_api_key(request, db)
     await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
+    org_id = org.id  # a policy block rolls the session back and expires `org`
     accepted, rejected = [], []
-    for t in req.traces:
+    for i, raw in enumerate(req.traces):
         try:
-            tr = await ingest_trace(db, org.id, t)
+            tr = await ingest_trace(db, org_id, TraceIn.model_validate(raw))
             accepted.append({"id": tr.id, "trace_uid": tr.trace_uid})
+        except ValidationError as e:
+            errors = e.errors(include_url=False, include_context=False, include_input=False)
+            rejected.append({"index": i, "reason": "invalid_payload", "errors": errors})
         except PolicyViolation as e:
-            rejected.append({"reason": "policy_block", "rule": e.rule_name})
+            rejected.append({"index": i, "reason": "policy_block", "rule": e.rule_name})
         except ValueError as e:
-            rejected.append({"reason": str(e)})
+            rejected.append({"index": i, "reason": str(e)})
+        except DBAPIError:
+            await db.rollback()
+            rejected.append({"index": i, "reason": "storage_error"})
     return {"accepted": accepted, "rejected": rejected}
 
 
 @router.post("/{trace_uid}/events", response_model=EventsAppendOut, status_code=202)
-async def append_events(trace_uid: str, req: EventsAppendIn, request: Request, db: AsyncSession = Depends(get_db)):
+async def append_events(trace_uid: Annotated[str, Path(max_length=128)], req: EventsAppendIn, request: Request,
+                        db: AsyncSession = Depends(get_db)):
     org, api_key = await authenticate_api_key(request, db)
     await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
     try:

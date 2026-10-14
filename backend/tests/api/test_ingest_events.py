@@ -107,13 +107,6 @@ async def test_forbid_tool_rule_blocks(client, db, org, api_key_headers, agent, 
     assert len(logs) == 1
 
 
-async def test_forbid_tool_ignores_non_tool_kinds(client, db, org, api_key_headers, agent):
-    db.add(PolicyRule(org_id=org.id, name="no-drop", rule={"forbid_tool": "drop_db"}, action="block"))
-    await db.commit()
-    r = await _ingest(client, api_key_headers, agent, events=[{"seq": 0, "kind": "llm", "name": "drop_db"}])
-    assert r.status_code == 202, r.text
-
-
 async def test_ingest_publishes_to_redis(client, redis, org, api_key_headers, agent):
     ps = redis.pubsub()
     await ps.subscribe(f"traces:{org.id}")

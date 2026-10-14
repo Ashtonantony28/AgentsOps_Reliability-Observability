@@ -2,7 +2,7 @@ import json
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from redis.exceptions import LockError
 from sqlalchemy import func, select
@@ -41,35 +41,46 @@ def _naive_utc(ts: Optional[datetime]) -> Optional[datetime]:
 
 async def evaluate_policies(db: AsyncSession, org_id: str, agent: Agent, trace: TraceIn,
                             events: Optional[list[EventIn]] = None) -> Optional[str]:
+    """Raises on the first matching `block` rule; otherwise returns the first warning, if any."""
     events = event_inputs(trace) if events is None else events
     rules = (await db.execute(
         select(PolicyRule).where(PolicyRule.org_id == org_id, PolicyRule.enabled == True)  # noqa
     )).scalars().all()
+    note = None
     for r in rules:
         rule = r.rule or {}
         if rule.get("agent_id") and rule["agent_id"] != agent.id:
             continue
         if rule.get("environment") and rule["environment"] != trace.environment:
             continue
-        if rule.get("forbid_tool"):
-            tool = rule["forbid_tool"]
-            for ev in events:
-                if ev.kind == "tool" and ev.name == tool:
-                    if r.action == "block":
-                        raise PolicyViolation(f"tool '{tool}' forbidden by policy", r.name)
-                    return f"warn: tool {tool} flagged"
-        if rule.get("forbid_pii"):
-            if detect_pii(trace.input) or detect_pii(trace.output):
-                if r.action == "block":
-                    raise PolicyViolation("PII detected (blocked by policy)", r.name)
-                return "warn: pii detected"
-        if rule.get("block_on_injection"):
-            score, _ = injection_score(trace.input)
-            if score >= rule.get("injection_threshold", 0.34):
-                if r.action == "block":
-                    raise PolicyViolation("prompt injection detected", r.name)
-                return "warn: injection detected"
-    return None
+        hits = []
+        tool = rule.get("forbid_tool")
+        if tool and any(ev.name == tool for ev in events):  # every kind: `kind` is client-chosen
+            hits.append((f"tool '{tool}' forbidden by policy", f"warn: tool {tool} flagged"))
+        if rule.get("forbid_pii") and any(detect_pii(t) for t in _texts(trace, events, "input", "output")):
+            hits.append(("PII detected (blocked by policy)", "warn: pii detected"))
+        if rule.get("block_on_injection") and max(injection_score(t)[0] for t in _texts(trace, events, "input")) \
+                >= rule.get("injection_threshold", 0.34):
+            hits.append(("prompt injection detected", "warn: injection detected"))
+        if hits and r.action == "block":
+            raise PolicyViolation(hits[0][0], r.name)
+        if hits and note is None:
+            note = hits[0][1]
+    return note
+
+
+def _strings(v: Any):
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, (dict, list)):
+        for x in v.values() if isinstance(v, dict) else v:
+            yield from _strings(x)
+
+
+def _texts(trace: TraceIn, events: list[EventIn], *sides: str) -> list[str]:
+    """Trace text plus each string in the event payloads, scanned separately so matches never span fields."""
+    return [t for side in sides
+            for t in [getattr(trace, side), *(s for e in events for s in _strings(getattr(e, side)))]]
 
 
 def _events(events: list[EventIn]) -> list[Event]:
@@ -139,7 +150,7 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
         pii_flags=list(set(pii)),
         injection_score=score,
         meta=payload.metadata or {},
-        created_at=payload.timestamp or datetime.utcnow(),
+        created_at=_naive_utc(payload.timestamp) or datetime.utcnow(),
     )
     db.add(trace)
     await db.flush()

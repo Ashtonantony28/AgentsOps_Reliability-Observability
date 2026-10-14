@@ -86,7 +86,7 @@ async def seed():
                     pii_flag = ["email"] if random.random() < 0.05 else []
                     inj = round(random.random() * 0.05, 3) if random.random() < 0.97 else 0.7
                     tr = Trace(
-                        org_id=org.id, agent_id=a.id, trace_uid=str(uuid.uuid4()),
+                        id=str(uuid.uuid4()), org_id=org.id, agent_id=a.id, trace_uid=str(uuid.uuid4()),
                         session_id=f"sess-{random.randint(1, 200)}",
                         status=status,
                         input=f"User asked about {random.choice(['refund', 'login', 'features', 'pricing'])} #{random.randint(1, 999)}",
@@ -106,10 +106,10 @@ async def seed():
                     if random.random() < 0.5 and (a.allowed_tools or []):
                         tool_name = random.choice(a.allowed_tools)
                         db.add(Span(
-                            trace_id=tr.id, kind="tool", name=tool_name,
+                            trace_id=tr.id, seq=0, kind="tool", name=tool_name,
                             input={"query": "demo"}, output={"hits": random.randint(0, 5)},
                             latency_ms=random.randint(20, 400), status="success",
-                            ended_at=ts,
+                            started_at=ts, ended_at=ts,
                         ))
             await db.flush()
 

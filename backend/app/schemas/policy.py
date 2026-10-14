@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.trace import EventIn
 
@@ -100,7 +100,7 @@ class EventsAppendOut(BaseModel):
 
 class WsEventsMessage(EventsAppendIn):
     type: Literal["events"]
-    trace_uid: str
+    trace_uid: str = Field(max_length=128)
 
 
 class ViolationMessage(BaseModel):
