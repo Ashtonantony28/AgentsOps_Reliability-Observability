@@ -12,7 +12,7 @@ import z3
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from app.policy.ast import And, Count, Implies, Match, Not, Once, Policy, Previously
+from app.policy.ast import And, Count, Historically, Implies, Match, Not, Once, Policy, Previously
 import app.policy.checker as checker
 from app.policy import counterexample
 from app.policy.checker import check_trace, check_verdicts, compile_policy
@@ -319,6 +319,19 @@ def test_pattern_sizes():
                                                            frozenset({"a*", "a?*"}): many}
     assert counterexample.pattern_sizes(("ab", "a?")) == {frozenset(): many, frozenset({"a?"}): many,
                                                           frozenset({"ab", "a?"}): 1}
+
+
+@pytest.mark.parametrize("globs", [(), ("*",), ("a*",)])
+def test_free_events_may_each_take_a_fresh_name(globs):
+    # five events with one name: any two of them, as the others could each have a name of their own
+    f = Historically(Count(Match(globs=globs), "<=", 1, by="name"))
+    assert len(cx(f, [ev(i, "ax") for i in range(5)])) == 2
+
+
+def test_long_glob_pattern_sizes():
+    glob = "a" * 500 + "?"
+    assert counterexample.pattern_sizes((glob,))[frozenset({glob})] == counterexample._MANY
+    assert counterexample.pattern_sizes(("a" * 500,))[frozenset({"a" * 500})] == 1
 
 
 def test_count_by_name_over_globs_is_minimal():

@@ -87,7 +87,6 @@ def _pattern(globs: tuple[str, ...], state) -> frozenset[str]:
     return frozenset(g for g, ps in zip(globs, state) if len(g) in ps)
 
 
-@lru_cache(maxsize=256)
 def _automaton(globs: tuple[str, ...]):
     """The product of the globs' automata: each state with a shortest name reaching it, in breadth-first order,
     and its successors with how many characters lead to each; None past `_MAX_NAME_STATES` states.
@@ -142,12 +141,16 @@ def pattern_sizes(globs: tuple[str, ...]) -> dict[frozenset[str], int]:
             out[p] = _MANY
             continue
         sizes: dict = {}
-
-        def size(s):
-            if s not in sizes:
-                sizes[s] = min(_MANY, (s in ends) + sum(w * size(t) for t, w in succ[s].items() if t in live))
-            return sizes[s]
-        out[p] = size(next(iter(names)))
+        todo = [next(iter(names))]
+        while todo:  # depth-first, each state after its successors; a glob can be long, so not recursive
+            s = todo[-1]
+            later = [t for t in succ[s] if t in live and t not in sizes]
+            if later:
+                todo += later
+                continue
+            todo.pop()
+            sizes[s] = min(_MANY, (s in ends) + sum(w * sizes[t] for t, w in succ[s].items() if t in live))
+        out[p] = sizes[next(iter(names))]
     return out
 
 
