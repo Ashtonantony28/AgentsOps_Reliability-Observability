@@ -1,0 +1,38 @@
+{
+  "name": "count_lt",
+  "description": "count without by, operator <: the third llm event reaches the bound.",
+  "source": "# at most two llm calls per trace\npolicy few_llm severity low:\n  always count(event(\"llm\")) < 3\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 2,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "answer"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "few_llm",
+      "at_seq": 3,
+      "counterexample": [
+        0,
+        2,
+        3
+      ]
+    }
+  ]
+}

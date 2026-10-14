@@ -61,7 +61,7 @@ SG0 reruns these numbers on the benchmark harness and may revise the budget once
 Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` ∥ `SG4`) → (`SG5a` ∥ `SG5b`) → `SG6` → audits.
 
 ### SG0 Shared interfaces and harness
-- **Owner:** SG0 thread · **Status:** ready · **Blocks:** everything
+- **Owner:** SG0 thread · **Status:** in review · **Blocks:** everything
 - **Scope:** everything under **Interface contracts** as code with stub bodies (`NotImplementedError` / HTTP 501): `app/policy/{ast,events,checker,counterexample}.py` signatures, pydantic schemas, SQLAlchemy models + migration `0002`, TS types, DSL grammar (`docs/policy-dsl.md`, EBNF + semantics table), fixture format + ≥ 20 fixture traces with expected verdicts, test harness (SQLite async + fakeredis), `scripts/bench_policy.py`, CI workflow running backend, SDK and frontend checks.
 - **Acceptance:**
   - Migration upgrades and downgrades cleanly on Postgres (docker-compose) and the new tables exist.
@@ -70,6 +70,7 @@ Dependency order: `SG0` → (`SG1` ∥ `SG2`) → **fixture gate** → (`SG3` �
   - Existing ingest behaviour unchanged: legacy `tool_calls` payloads map to events with `seq` = list index.
   - Benchmark harness runs and prints p50/p95/p99 per path (against a trivial stub).
 - **Verify:** `cd backend && pytest -q` · `cd backend && alembic upgrade head && alembic downgrade -1 && alembic upgrade head` · `cd frontend && npx tsc --noEmit` · `python backend/scripts/bench_policy.py --dry-run`
+- **Result:** all four verify commands pass locally (164 backend tests incl. a Postgres migration test, SDK 2, tsc clean, bench dry run prints all 5 paths). 31 fixtures in `backend/tests/policy/fixtures/`, verdicts and unique minimal counterexamples cross-checked by brute force. Budget unchanged: only stubs exist, so the first real numbers come from SG2's `--assert-budget` run. Additions to the contract made while freezing it are listed under **SG0 contract notes**.
 
 ### SG1 DSL parser and reference evaluator
 - **Owner:** unassigned · **Status:** proposed · **Depends:** SG0
@@ -258,7 +259,20 @@ client.check(name: str, *, kind="tool", input=None, **attrs) -> CheckResult(allo
 await async_client.acheck(...)
 ```
 
+### SG0 contract notes
+
+Decided while turning the contract into code; frozen with the rest.
+
+- AST: `And`/`Or`/`Implies`/`Since` are binary; `Match.attrs` is a tuple of `(key, value)` pairs; `Count.by` is `None | "name" | "kind"`; `Policy.source` is excluded from equality. Tags are inlined by the parser. Full grammar and semantics in `docs/policy-dsl.md`.
+- `CompiledPolicy(policy_id, policy, artifact)`: `artifact` is the encoder's opaque slot.
+- Counterexample "unconstrained facts": kind ranges over the 5 `EventIn` kinds; name, status and attr values (including a missing key) range over any value. Attr equality is type-strict. A counterexample need not contain `at_seq` (e.g. `not previously tool("a")`).
+- `EventIn.kind` is a literal of the 5 kinds; `status` stays free text so legacy `tool_calls` still map. `TraceIn.events` seqs must be exactly `0..n-1` (422 otherwise).
+- Storage: `spans.attrs JSON NULL` added (events need their attrs back), unique index `(trace_id, seq)`. `policy_violations.policy_name` stores the name at detection time so rows map straight to `ViolationOut`. Event timestamps are stored as naive UTC. The ORM class for `policy_violations` is `TracePolicyViolation`, to avoid clashing with the existing `trace_service.PolicyViolation` exception.
+- `TracePolicyCreate` is `{source, action, agent_id?, environment?, enabled}`: `source` holds exactly one `policy` block, and `name`/`severity` come from it. `ViolationOut.id`/`trace_id` are null for precheck results.
+- Existing `forbid_tool` rules also apply to `tool`-kind events, so an `events` payload cannot bypass them.
+
 ## Log
 
 - 2026-10-13: Plan drafted from codebase read at `7766898`.
 - 2026-10-13: Plan approved by Ashton; SG0 dispatched.
+- 2026-10-14: SG0 in review.

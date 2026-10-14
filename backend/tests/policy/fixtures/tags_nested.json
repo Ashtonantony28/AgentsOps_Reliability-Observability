@@ -1,0 +1,46 @@
+{
+  "name": "tags_nested",
+  "description": "A tag built from another tag, used in a policy with previously.",
+  "source": "tag destructive = tool(\"delete_*\", \"drop_*\")\ntag guarded = @destructive and attr(\"env\", \"prod\")\n\npolicy guarded_needs_confirm severity high:\n  always @guarded -> previously event(\"confirmation\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "confirmation",
+      "name": "ok"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "drop_table",
+      "attrs": {
+        "env": "prod"
+      }
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "delete_row",
+      "attrs": {
+        "env": "dev"
+      }
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "drop_index",
+      "attrs": {
+        "env": "prod"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "policy": "guarded_needs_confirm",
+      "at_seq": 3,
+      "counterexample": [
+        2,
+        3
+      ]
+    }
+  ]
+}

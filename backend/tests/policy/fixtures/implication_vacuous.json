@@ -1,0 +1,23 @@
+{
+  "name": "implication_vacuous",
+  "description": "No delete ever happens, so the implication is vacuously true everywhere.",
+  "source": "policy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "get_user"
+    },
+    {
+      "seq": 1,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 2,
+      "kind": "retrieval",
+      "name": "kb_lookup"
+    }
+  ],
+  "expected": []
+}

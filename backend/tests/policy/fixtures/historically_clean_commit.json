@@ -1,0 +1,38 @@
+{
+  "name": "historically_clean_commit",
+  "description": "historically: a commit requires no error at any earlier or current event.",
+  "source": "policy clean_commit severity medium:\n  always tool(\"commit\") -> historically not status(\"error\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "build"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "test",
+      "status": "error"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "lint"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "commit"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "clean_commit",
+      "at_seq": 3,
+      "counterexample": [
+        1,
+        3
+      ]
+    }
+  ]
+}

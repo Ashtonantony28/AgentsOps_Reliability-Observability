@@ -1,0 +1,37 @@
+{
+  "name": "or_grounded_answer",
+  "description": "or over llm and retrieval: an answer needs some earlier llm or retrieval event.",
+  "source": "policy grounded_answer:\n  always event(\"custom\", \"answer\") -> once (event(\"llm\") or event(\"retrieval\"))\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "calc"
+    },
+    {
+      "seq": 1,
+      "kind": "custom",
+      "name": "answer"
+    },
+    {
+      "seq": 2,
+      "kind": "retrieval",
+      "name": "kb"
+    },
+    {
+      "seq": 3,
+      "kind": "custom",
+      "name": "answer"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "grounded_answer",
+      "at_seq": 1,
+      "counterexample": [
+        0,
+        1
+      ]
+    }
+  ]
+}

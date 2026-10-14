@@ -1,0 +1,50 @@
+{
+  "name": "plan_policies_all_pass",
+  "description": "All three plan policies hold on a realistic trace.",
+  "source": "tag secret_read = tool(\"vault.read\", \"read_secret*\")\ntag network     = tool(\"http_*\", \"fetch_url\", \"send_email\")\n\npolicy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n\npolicy no_exfil_after_secret severity critical:\n  always @network -> not once @secret_read\n\npolicy retry_cap severity medium:\n  always count(tool(*) and status(\"error\")) by name <= 3\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "http_get"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "http_get",
+      "status": "error"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "http_get",
+      "status": "timeout"
+    },
+    {
+      "seq": 4,
+      "kind": "confirmation",
+      "name": "user_confirmed"
+    },
+    {
+      "seq": 5,
+      "kind": "tool",
+      "name": "delete_draft"
+    },
+    {
+      "seq": 6,
+      "kind": "tool",
+      "name": "read_secret_token"
+    },
+    {
+      "seq": 7,
+      "kind": "llm",
+      "name": "answer"
+    }
+  ],
+  "expected": []
+}

@@ -1,0 +1,40 @@
+{
+  "name": "status_timeout_streak",
+  "description": "status matching across kinds: two timeouts in a row.",
+  "source": "policy no_timeout_streak:\n  always status(\"timeout\") -> not previously status(\"timeout\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "a",
+      "status": "timeout"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "b"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "c",
+      "status": "timeout"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "d",
+      "status": "timeout"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "no_timeout_streak",
+      "at_seq": 3,
+      "counterexample": [
+        2,
+        3
+      ]
+    }
+  ]
+}

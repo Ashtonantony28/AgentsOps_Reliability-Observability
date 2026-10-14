@@ -1,0 +1,55 @@
+{
+  "name": "retry_cap_at_bound",
+  "description": "Exactly three tool errors per name (at the bound) plus an llm error with the same name, which is not a tool.",
+  "source": "policy retry_cap severity medium:\n  always count(tool(*) and status(\"error\")) by name <= 3\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 5,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 6,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 7,
+      "kind": "tool",
+      "name": "fetch_url"
+    }
+  ],
+  "expected": []
+}

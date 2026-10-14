@@ -1,0 +1,28 @@
+{
+  "name": "confirm_before_delete_ok",
+  "description": "A confirmation precedes every delete, so the policy holds.",
+  "source": "policy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "get_user"
+    },
+    {
+      "seq": 1,
+      "kind": "confirmation",
+      "name": "user_confirmed"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "delete_user"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "delete_logs"
+    }
+  ],
+  "expected": []
+}

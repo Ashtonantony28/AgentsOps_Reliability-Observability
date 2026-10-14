@@ -1,0 +1,33 @@
+{
+  "name": "count_ne",
+  "description": "Operator !=: the count must never equal 2; seq 1 must be known not to be a tool.",
+  "source": "policy never_two_tools severity info:\n  always count(tool(*)) != 2\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "a"
+    },
+    {
+      "seq": 1,
+      "kind": "llm",
+      "name": "think"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "b"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "never_two_tools",
+      "at_seq": 2,
+      "counterexample": [
+        0,
+        1,
+        2
+      ]
+    }
+  ]
+}

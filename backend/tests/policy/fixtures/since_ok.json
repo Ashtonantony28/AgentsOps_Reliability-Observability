@@ -1,0 +1,38 @@
+{
+  "name": "since_ok",
+  "description": "since holds: every admin tool is inside a login/logout window.",
+  "source": "policy admin_in_session severity high:\n  always tool(\"admin_*\") -> not event(\"custom\", \"logout\") since event(\"custom\", \"login\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 1,
+      "kind": "custom",
+      "name": "login"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "admin_list"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "admin_delete"
+    },
+    {
+      "seq": 4,
+      "kind": "custom",
+      "name": "logout"
+    },
+    {
+      "seq": 5,
+      "kind": "tool",
+      "name": "search"
+    }
+  ],
+  "expected": []
+}

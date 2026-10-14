@@ -1,0 +1,28 @@
+{
+  "name": "no_exfil_ok",
+  "description": "Network call happens before the secret read; an llm event named send_email is not a tool and so not @network.",
+  "source": "tag secret_read = tool(\"vault.read\", \"read_secret*\")\ntag network     = tool(\"http_*\", \"fetch_url\", \"send_email\")\n\npolicy no_exfil_after_secret severity critical:\n  always @network -> not once @secret_read\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "fetch_url"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "read_secret_key"
+    },
+    {
+      "seq": 2,
+      "kind": "llm",
+      "name": "summarize"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "send_email"
+    }
+  ],
+  "expected": []
+}

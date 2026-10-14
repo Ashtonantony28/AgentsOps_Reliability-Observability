@@ -1,0 +1,42 @@
+{
+  "name": "attr_string_int",
+  "description": "attr with string and integer values: prod deploys need an earlier level-2 confirmation.",
+  "source": "policy prod_needs_level2 severity critical:\n  always attr(\"env\", \"prod\") -> once (event(\"confirmation\") and attr(\"approver_level\", 2))\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "confirmation",
+      "name": "approve",
+      "attrs": {
+        "approver_level": 1
+      }
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "deploy",
+      "attrs": {
+        "env": "staging"
+      }
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "deploy",
+      "attrs": {
+        "env": "prod"
+      }
+    }
+  ],
+  "expected": [
+    {
+      "policy": "prod_needs_level2",
+      "at_seq": 2,
+      "counterexample": [
+        0,
+        1,
+        2
+      ]
+    }
+  ]
+}

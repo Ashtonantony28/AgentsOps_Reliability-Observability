@@ -1,0 +1,7 @@
+{
+  "name": "empty_trace",
+  "description": "An empty trace violates nothing, even policies that would fail at seq 0.",
+  "source": "policy starts_with_llm:\n  always count(event(\"llm\")) >= 1\npolicy plan_before_deploy:\n  always tool(\"deploy*\") -> previously event(\"llm\", \"plan*\")\npolicy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n",
+  "events": [],
+  "expected": []
+}

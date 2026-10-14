@@ -2,10 +2,12 @@ export type Span = {
   id: string;
   trace_id: string;
   parent_span_id: string | null;
+  seq?: number | null;
   kind: string;
   name: string;
   input: Record<string, any>;
   output: Record<string, any>;
+  attrs?: Record<string, any> | null;
   latency_ms: number;
   status: string;
   started_at: string;

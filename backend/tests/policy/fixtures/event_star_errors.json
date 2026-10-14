@@ -1,0 +1,38 @@
+{
+  "name": "event_star_errors",
+  "description": "event(*) matches every event.",
+  "source": "policy no_errors:\n  always event(*) -> not status(\"error\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 1,
+      "kind": "retrieval",
+      "name": "kb"
+    },
+    {
+      "seq": 2,
+      "kind": "custom",
+      "name": "note",
+      "status": "error"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "x",
+      "status": "error"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "no_errors",
+      "at_seq": 2,
+      "counterexample": [
+        2
+      ]
+    }
+  ]
+}

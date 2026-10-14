@@ -1,0 +1,39 @@
+{
+  "name": "confirm_before_delete_violation",
+  "description": "Plan example 1. A delete with no earlier confirmation: every earlier event must be known not to be a confirmation.",
+  "source": "policy confirm_before_delete severity high:\n  always tool(\"delete_*\") -> once event(\"confirmation\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "search_users"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "get_user"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "delete_user"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "confirm_before_delete",
+      "at_seq": 3,
+      "counterexample": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  ]
+}

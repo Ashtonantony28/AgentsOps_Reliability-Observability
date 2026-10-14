@@ -1,0 +1,43 @@
+{
+  "name": "unicode_names",
+  "description": "Unicode event names; ? matches exactly one code point.",
+  "source": "policy no_loeschen:\n  always not tool(\"löschen_*\")\npolicy no_cafe severity low:\n  always not event(\"llm\", \"caf?\")\npolicy no_rocket:\n  always not event(\"custom\", \"?launch\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "suche"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "löschen_datei"
+    },
+    {
+      "seq": 2,
+      "kind": "llm",
+      "name": "café"
+    },
+    {
+      "seq": 3,
+      "kind": "custom",
+      "name": "🚀🚀launch"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "no_loeschen",
+      "at_seq": 1,
+      "counterexample": [
+        1
+      ]
+    },
+    {
+      "policy": "no_cafe",
+      "at_seq": 2,
+      "counterexample": [
+        2
+      ]
+    }
+  ]
+}

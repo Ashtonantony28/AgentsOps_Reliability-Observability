@@ -6,6 +6,7 @@ import StatusBadge from "@/components/common/StatusBadge";
 import Loading from "@/components/common/Loading";
 import EmptyState from "@/components/common/EmptyState";
 import { errorMessage } from "@/api/client";
+import type { Agent } from "@/types/agent";
 
 export default function Agents() {
   const qc = useQueryClient();
@@ -16,7 +17,7 @@ export default function Agents() {
     description: "",
     model_provider: "anthropic",
     model_name: "claude-opus-4-7",
-    environment: "dev",
+    environment: "dev" as Agent["environment"],
     eval_threshold: 0.8,
   });
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +79,7 @@ export default function Agents() {
           <select
             className="bg-ink-950 border border-ink-700 rounded px-2 py-1"
             value={form.environment}
-            onChange={(e) => setForm({ ...form, environment: e.target.value })}
+            onChange={(e) => setForm({ ...form, environment: e.target.value as Agent["environment"] })}
           >
             <option value="dev">dev</option>
             <option value="staging">staging</option>

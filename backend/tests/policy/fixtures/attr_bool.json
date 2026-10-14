@@ -1,0 +1,41 @@
+{
+  "name": "attr_bool",
+  "description": "attr with boolean values; a missing key does not match.",
+  "source": "policy pii_redacted severity high:\n  always attr(\"pii\", true) -> attr(\"redacted\", true)\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "retrieval",
+      "name": "doc",
+      "attrs": {
+        "pii": true,
+        "redacted": true
+      }
+    },
+    {
+      "seq": 1,
+      "kind": "retrieval",
+      "name": "doc",
+      "attrs": {
+        "pii": false
+      }
+    },
+    {
+      "seq": 2,
+      "kind": "retrieval",
+      "name": "doc2",
+      "attrs": {
+        "pii": true
+      }
+    }
+  ],
+  "expected": [
+    {
+      "policy": "pii_redacted",
+      "at_seq": 2,
+      "counterexample": [
+        2
+      ]
+    }
+  ]
+}

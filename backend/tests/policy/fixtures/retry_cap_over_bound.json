@@ -1,0 +1,54 @@
+{
+  "name": "retry_cap_over_bound",
+  "description": "Plan example 3. fetch_url errors a fourth time (one over the bound); search errors are counted separately by name.",
+  "source": "policy retry_cap severity medium:\n  always count(tool(*) and status(\"error\")) by name <= 3\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "search",
+      "status": "error"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "search"
+    },
+    {
+      "seq": 5,
+      "kind": "tool",
+      "name": "fetch_url",
+      "status": "error"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "retry_cap",
+      "at_seq": 5,
+      "counterexample": [
+        0,
+        1,
+        3,
+        5
+      ]
+    }
+  ]
+}

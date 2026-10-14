@@ -1,0 +1,37 @@
+{
+  "name": "previously_mid_trace",
+  "description": "previously looks exactly one event back: the deploy at seq 3 follows a test, not a plan.",
+  "source": "policy plan_before_deploy:\n  always tool(\"deploy*\") -> previously event(\"llm\", \"plan*\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "planning"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "deploy_a"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "test"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "deploy_b"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "plan_before_deploy",
+      "at_seq": 3,
+      "counterexample": [
+        2,
+        3
+      ]
+    }
+  ]
+}

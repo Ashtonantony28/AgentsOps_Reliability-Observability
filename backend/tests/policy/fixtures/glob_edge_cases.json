@@ -1,0 +1,53 @@
+{
+  "name": "glob_edge_cases",
+  "description": "Glob edges: ? needs exactly one char, * matches empty, matching is case-sensitive.",
+  "source": "policy q_glob:\n  always not tool(\"get_?\")\npolicy star_empty:\n  always not tool(\"drop*\")\npolicy case_sensitive:\n  always not tool(\"DELETE*\")\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "tool",
+      "name": "get_"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "get_ab"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "Get_a"
+    },
+    {
+      "seq": 3,
+      "kind": "tool",
+      "name": "delete_x"
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "drop"
+    },
+    {
+      "seq": 5,
+      "kind": "tool",
+      "name": "get_a"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "q_glob",
+      "at_seq": 5,
+      "counterexample": [
+        5
+      ]
+    },
+    {
+      "policy": "star_empty",
+      "at_seq": 4,
+      "counterexample": [
+        4
+      ]
+    }
+  ]
+}

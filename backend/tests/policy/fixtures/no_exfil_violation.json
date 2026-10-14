@@ -1,0 +1,42 @@
+{
+  "name": "no_exfil_violation",
+  "description": "Plan example 2. One secret read at seq 1, a network call at seq 4.",
+  "source": "tag secret_read = tool(\"vault.read\", \"read_secret*\")\ntag network     = tool(\"http_*\", \"fetch_url\", \"send_email\")\n\npolicy no_exfil_after_secret severity critical:\n  always @network -> not once @secret_read\n",
+  "events": [
+    {
+      "seq": 0,
+      "kind": "llm",
+      "name": "plan"
+    },
+    {
+      "seq": 1,
+      "kind": "tool",
+      "name": "vault.read"
+    },
+    {
+      "seq": 2,
+      "kind": "tool",
+      "name": "summarize"
+    },
+    {
+      "seq": 3,
+      "kind": "llm",
+      "name": "draft"
+    },
+    {
+      "seq": 4,
+      "kind": "tool",
+      "name": "http_post"
+    }
+  ],
+  "expected": [
+    {
+      "policy": "no_exfil_after_secret",
+      "at_seq": 4,
+      "counterexample": [
+        1,
+        4
+      ]
+    }
+  ]
+}
