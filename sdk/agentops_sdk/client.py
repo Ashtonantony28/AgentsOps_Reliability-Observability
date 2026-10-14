@@ -73,8 +73,13 @@ class AgentOpsClient(PrecheckMixin):
         self._queue.put(payload)
 
     def flush(self) -> None:
+        up = True
         for batch in batches(self._drain(), self.batch_size):
-            self._post(batch)
+            if up:
+                up = self._post(batch)
+            else:  # the server is down: don't wait out a timeout per batch, at exit above all
+                for it in batch:
+                    append_to_disk(self._disk, it)
 
     def close(self) -> None:
         if self._stop.is_set():
@@ -96,7 +101,8 @@ class AgentOpsClient(PrecheckMixin):
         while not self._stop.wait(self.flush_interval_s):
             self.flush()
 
-    def _post(self, items: list[dict]) -> None:
+    def _post(self, items: list[dict]) -> bool:
+        """Sends one bulk request; False when the server could not be reached."""
         headers = {"X-API-Key": self.api_key}
         try:
             with httpx.Client(timeout=10.0) as c:
@@ -106,12 +112,14 @@ class AgentOpsClient(PrecheckMixin):
                     log.warning("agentops ingest failed: %s %s", r.status_code, r.text[:200])
                     for it in items:
                         append_to_disk(self._disk, it)
-                else:
-                    buffer_rejected(self._disk, items, r)
+                    return True
+                buffer_rejected(self._disk, items, r)
+                return True
         except Exception as e:
             log.warning("agentops ingest exception, buffering to disk: %s", e)
             for it in items:
                 append_to_disk(self._disk, it)
+            return False
 
 
 # ---- Module-level singleton convenience API ----

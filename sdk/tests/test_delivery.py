@@ -3,7 +3,7 @@ import asyncio
 import time
 import uuid
 
-import pytest
+import httpx
 
 from agentops_sdk.utils import MAX_REQUEST_EVENTS, batches, drain_disk
 
@@ -64,6 +64,18 @@ def test_close_buffers_what_it_cannot_send(make_client, server):
     assert len(drain_disk(c._disk)) == 1
     c.close()  # idempotent
     assert len(server.bodies("bulk")) == 2
+
+
+def test_unreachable_server_is_tried_once_per_flush(make_client, make_async_client, server):
+    c, ac = make_client(batch_size=2), make_async_client(batch_size=2)
+    server.queue("bulk", httpx.ConnectError("down"), httpx.ConnectError("down"))
+    for _ in range(5):
+        c.enqueue(_payload())
+        ac.enqueue(_payload())
+    c.flush()
+    asyncio.run(ac.flush())
+    assert len(server.bodies("bulk")) == 2
+    assert len(drain_disk(c._disk)) == len(drain_disk(ac._disk)) == 5
 
 
 def test_flusher_thread_sends_the_whole_queue(make_client, server):
