@@ -85,8 +85,9 @@ class Trace:
         if self.tool_calls:
             raise ValueError("a trace holds either events or tool_calls, not both")
         latency_ms = attrs.pop("latency_ms", 0)
-        self.events.append(event_dict(len(self.events), kind, name, status, input, output, attrs,
-                                      latency_ms=latency_ms, timestamp=datetime.now(timezone.utc).isoformat()))
+        with self._lock:  # the seq is the event's index, so taking it and appending are one step
+            self.events.append(event_dict(len(self.events), kind, name, status, input, output, attrs,
+                                          latency_ms=latency_ms, timestamp=datetime.now(timezone.utc).isoformat()))
         if not self._streaming():
             return
         if not self._client.is_async:

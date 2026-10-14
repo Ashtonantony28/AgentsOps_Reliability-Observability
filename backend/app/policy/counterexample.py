@@ -43,6 +43,11 @@ def _bv(value: int, width: int) -> str:
 BUDGET_S = 2.0
 # beyond this many glob automaton states (overlapping globs can reach 2^k) names are strings instead
 _MAX_NAME_STATES = 512
+# an unmentioned character stands for this many, and this many names with one pattern are as good as unbounded
+_MANY = 1 << 20
+# past this many count cells (window x bound terms) in all, the encoding gives up at once: building and parsing
+# it would overrun the budget; `count ... by` cells, quadratic in the window, are much slower to solve and count 3
+_MAX_CELLS = 100_000
 _SYMBOL = re.compile(r"[a-z_]+\d+")
 # counts of window x (bound + 1) up to this are unary; bit-vector adders above, whose unsat cores are near the window
 _UNARY_CELLS = 50_000
@@ -78,28 +83,75 @@ def _step(glob: str, positions: frozenset[int], c: str) -> frozenset[int]:
     return _closure(glob, {p + (glob[p] != "*") for p in positions if p < len(glob) and glob[p] in ("*", "?", c)})
 
 
-@lru_cache(maxsize=256)
-def name_patterns(globs: tuple[str, ...]) -> tuple[tuple[frozenset[str], str], ...] | None:
-    """Every subset of `globs` that is exactly the set some name matches, each with a shortest such name.
+def _pattern(globs: tuple[str, ...], state) -> frozenset[str]:
+    return frozenset(g for g, ps in zip(globs, state) if len(g) in ps)
 
-    Breadth-first search over the product of the globs' automata, None past `_MAX_NAME_STATES` states.
-    Characters no glob mentions all behave alike, so one of them stands for the rest.
-    """
+
+def _automaton(globs: tuple[str, ...]):
+    """The product of the globs' automata: each state with a shortest name reaching it, in breadth-first order,
+    and its successors with how many characters lead to each; None past `_MAX_NAME_STATES` states.
+    Characters no glob mentions all behave alike, so one of them stands for the rest."""
     chars = sorted({c for g in globs for c in g} - {"*", "?"})
     other = next(chr(0xE000 + i) for i in range(len(chars) + 1) if chr(0xE000 + i) not in chars)
     start = tuple(_closure(g, {0}) for g in globs)
-    names, todo, out = {start: ""}, deque([start]), {}
+    names, succ, todo = {start: ""}, {}, deque([start])
     while todo:
         state = todo.popleft()
-        out.setdefault(frozenset(g for g, ps in zip(globs, state) if len(g) in ps), names[state])
+        succ[state] = edges = {}
         for c in chars + [other]:
             nxt = tuple(_step(g, ps, c) for g, ps in zip(globs, state))
+            edges[nxt] = edges.get(nxt, 0) + (_MANY if c == other else 1)
             if nxt not in names:
                 if len(names) == _MAX_NAME_STATES:
                     return None
                 names[nxt] = names[state] + c
                 todo.append(nxt)
+    return names, succ
+
+
+@lru_cache(maxsize=256)
+def name_patterns(globs: tuple[str, ...]) -> tuple[tuple[frozenset[str], str], ...] | None:
+    """Every subset of `globs` that is exactly the set some name matches, each with a shortest such name."""
+    auto = _automaton(globs)
+    if auto is None:
+        return None
+    out = {}
+    for state, name in auto[0].items():
+        out.setdefault(_pattern(globs, state), name)
     return tuple(out.items())
+
+
+@lru_cache(maxsize=256)
+def pattern_sizes(globs: tuple[str, ...]) -> dict[frozenset[str], int]:
+    """How many names have each pattern of `name_patterns` (which must not be None), up to `_MANY`."""
+    names, succ = _automaton(globs)
+    reach = {}
+    for s in succ:
+        seen, todo = set(), list(succ[s])
+        while todo:
+            if (t := todo.pop()) not in seen:
+                seen.add(t)
+                todo.extend(succ[t])
+        reach[s] = seen
+    out = {}
+    for p, _ in name_patterns(globs):
+        ends = {s for s in succ if _pattern(globs, s) == p}
+        live = {s for s in succ if s in ends or reach[s] & ends}
+        if any(s in reach[s] for s in live):  # a cycle on the way pumps out names without end
+            out[p] = _MANY
+            continue
+        sizes: dict = {}
+        todo = [next(iter(names))]
+        while todo:  # depth-first, each state after its successors; a glob can be long, so not recursive
+            s = todo[-1]
+            later = [t for t in succ[s] if t in live and t not in sizes]
+            if later:
+                todo += later
+                continue
+            todo.pop()
+            sizes[s] = min(_MANY, (s in ends) + sum(w * sizes[t] for t, w in succ[s].items() if t in live))
+        out[p] = sizes[next(iter(names))]
+    return out
 
 
 class FactEncoding(TraceEncoding):
@@ -109,14 +161,15 @@ class FactEncoding(TraceEncoding):
     over every possible event (any of the 5 kinds, any name, status and attrs), so entailment is exact.
     Statuses and attr values are only compared with policy constants, so each is a code: one per constant,
     plus one for anything else (for attrs, also a missing key). A name is, depending on what the policy asks
-    of it, the set of policy globs it matches, an identity code (for `count by name`), or a string
-    if both, or if the globs overlap too much to enumerate.
+    of it, the set of policy globs it matches, an identity code (for `count by name`) with the codes of
+    the names matching each such set in one block, or a string if the globs overlap too much to enumerate.
     """
 
-    def __init__(self, events: Sequence[Event], formula: ast.Formula):
+    def __init__(self, events: Sequence[Event], formula: ast.Formula, deadline: float):
         super().__init__(events)
         self._vars: set[str] = set()
         self._lazy: dict[str, Any] = {}
+        self._cells, self._deadline = 0, deadline
         nodes = list(_nodes(formula))
         ms = [m for m in nodes if isinstance(m, ast.Match)]
         self.statuses = list(dict.fromkeys(m.status for m in ms if m.status is not None))
@@ -126,9 +179,9 @@ class FactEncoding(TraceEncoding):
                 self.attrs.setdefault(k, {}).setdefault(_typed(v), v)
         self.globs = tuple(dict.fromkeys(g for m in ms for g in m.globs))
         by_name = any(isinstance(c, ast.Count) and c.by == "name" for c in nodes)
-        patterns = name_patterns(self.globs) if self.globs and not by_name else None
-        self.name_mode = ("code" if by_name and not self.globs else "pattern" if patterns
-                          else "string" if self.globs else None)
+        patterns = name_patterns(self.globs) if self.globs else ((frozenset(), ""),)
+        self.name_mode = (("code" if by_name else "pattern" if self.globs else None) if patterns
+                          else "string")
         # every code is a bit-vector, so that apart from string names the problem is solved by bit-blasting
         # kinds outside the 5 only come from stored spans; an unconstrained event may take those too
         self.kinds = list(dict.fromkeys([*KINDS, *(e.kind for e in events), *(m.kind for m in ms if m.kind)]))
@@ -137,12 +190,22 @@ class FactEncoding(TraceEncoding):
         if self.name_mode == "string":
             self.strings = _Strings({c for e in events for c in e.name} | {c for g in self.globs for c in g})
         elif self.name_mode == "code":
-            # codes past the observed names are fresh names, enough for every event to have its own
-            self.name_codes = {n: i for i, n in enumerate(dict.fromkeys(e.name for e in events))}
-            self.widths["n"] = _width(len(self.name_codes) + len(self.events))
+            # per pattern, the observed names and then fresh ones, enough for every event to have its own
+            sizes = pattern_sizes(self.globs) if self.globs else {frozenset(): _MANY}
+            observed: dict[frozenset[str], list[str]] = {}
+            for n in dict.fromkeys(e.name for e in events):
+                observed.setdefault(self._hits(n), []).append(n)
+            self.name_codes, self.blocks, code = {}, {}, 0
+            for p, _ in patterns:
+                names = observed.get(p, [])
+                self.name_codes.update((n, code + k) for k, n in enumerate(names))
+                self.blocks[p] = (code, code := code + min(sizes[p], len(names) + len(self.events)))
         elif self.name_mode == "pattern":
-            self.patterns = [p for p, _ in patterns]
-            self.widths["n"] = _width(len(self.patterns) - 1)
+            self.blocks = {p: (k, k + 1) for k, (p, _) in enumerate(patterns)}
+        if self.name_mode in ("code", "pattern"):
+            self.name_count = max(hi for _, hi in self.blocks.values())
+            self.widths["n"] = _width(self.name_count - 1)
+            self._ranges: dict[tuple[str, ...], list[list[int]]] = {}
 
         self.assumptions = []
         for i, e in enumerate(self.events):
@@ -151,23 +214,21 @@ class FactEncoding(TraceEncoding):
             self._in_range(self._var("k", i), len(self.kinds) - 1, i)
             if self.name_mode:
                 observed.append(f"(= {self._var('n', i)} {self._observed_name(e.name)})")
-            if self.name_mode == "pattern":
-                self._in_range(self._var("n", i), len(self.patterns) - 1, i)
+            if self.name_mode in ("code", "pattern"):
+                self._in_range(self._var("n", i), self.name_count - 1, i)
             for prefix, consts, actual in self._coded(e):
                 code = next((c for c, v in enumerate(consts) if actual(v)), len(consts))
                 observed.append(f"(= {self._var(prefix, i)} {self._code(prefix, code)})")
                 self._in_range(self._var(prefix, i), len(consts), i)
             self.facts[i].append(f"(=> {self.assumptions[i]} (and {' '.join(observed)}))")
 
-    def cone(self, goal: str, deadline: float) -> list[str]:
+    def cone(self, goal: str) -> list[str]:
         """The definitions `goal` depends on, building lazy ones on the way; the rest only slow the solver down."""
         body: dict[str, str] = {}
         seen, todo, indexed = set(), [goal], 0
         while todo:
             for name in _SYMBOL.findall(todo.pop()):
                 if name in self._lazy:
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("counterexample encoding over budget")
                     self.defs.append(f"(= {name} {self._lazy.pop(name)()})")
                 if indexed < len(self.defs):
                     body.update((d[3:d.index(" ", 3)], d) for d in self.defs[indexed:])
@@ -189,8 +250,10 @@ class FactEncoding(TraceEncoding):
             return self.strings.lit(name)
         if self.name_mode == "code":
             return self._code("n", self.name_codes[name])
-        hit = frozenset(g for g in self.globs if glob_regex(g).fullmatch(name))
-        return self._code("n", self.patterns.index(hit))
+        return self._code("n", self.blocks[self._hits(name)][0])
+
+    def _hits(self, name: str) -> frozenset[str]:
+        return frozenset(g for g in self.globs if glob_regex(g).fullmatch(name))
 
     def _coded(self, e: Event):
         if self.statuses:
@@ -210,9 +273,23 @@ class FactEncoding(TraceEncoding):
         n = self._var("n", i)
         if self.name_mode == "string":
             return f"(or {' '.join(f'(str.in_re {n} {self.strings.regex(g)})' for g in globs)})"
-        wanted = set(globs)
-        hits = [f"(= {n} {self._code('n', c)})" for c, p in enumerate(self.patterns) if p & wanted]
-        return "false" if not hits else "true" if len(hits) == len(self.patterns) else f"(or {' '.join(hits)})"
+        if globs not in self._ranges:  # the codes matching any of `globs`, adjacent blocks merged
+            self._ranges[globs] = ranges = []
+            for p, (lo, hi) in self.blocks.items():
+                if p & set(globs):
+                    if ranges and ranges[-1][1] == lo:
+                        ranges[-1][1] = hi
+                    else:
+                        ranges.append([lo, hi])
+        terms = []
+        for lo, hi in self._ranges[globs]:
+            if lo + 1 == hi:
+                terms.append(f"(= {n} {self._code('n', lo)})")
+                continue
+            ends = ([f"(bvuge {n} {self._code('n', lo)})"] if lo else []) + \
+                ([f"(bvult {n} {self._code('n', hi)})"] if hi < self.name_count else [])
+            terms.append("true" if not ends else ends[0] if len(ends) == 1 else f"(and {' '.join(ends)})")
+        return "false" if not terms else terms[0] if len(terms) == 1 else f"(or {' '.join(terms)})"
 
     def _atom(self, m: ast.Match, i: int) -> str:
         terms = []
@@ -245,6 +322,7 @@ class FactEncoding(TraceEncoding):
             for i, q in enumerate(out):
                 self._lazy[q] = lambda i=i: self._group_count(f, xs, i, bound)
             return out
+        self._charge(len(xs) * (bound + 2 if _unary(bound, len(xs)) else 2))
         out, c = [], None
         for x in xs:
             c = self._add(c, x, bound, len(xs))
@@ -253,6 +331,7 @@ class FactEncoding(TraceEncoding):
 
     def _group_count(self, f: ast.Count, xs: list[str], i: int, bound: int) -> str:
         # the group of event i depends on its facts, so every earlier event is compared with it
+        self._charge(3 * (i + 1) * (bound + 2 if _unary(bound, i + 1) else 2))
         v = "n" if f.by == "name" else "k"
         c = None
         for j in range(i):
@@ -261,9 +340,14 @@ class FactEncoding(TraceEncoding):
                 c = self._add(c, same if xs[j] == "true" else self.define("b", f"(and {xs[j]} {same})"), bound, i + 1)
         return self._compare(f.op, bound, self._add(c, xs[i], bound, i + 1), i + 1)
 
+    def _charge(self, cells: int) -> None:
+        self._cells += cells
+        if self._cells > _MAX_CELLS or time.monotonic() > self._deadline:
+            raise TimeoutError("counterexample encoding over budget")
+
     def _add(self, c: list[str] | str | None, t: str, bound: int, n: int) -> list[str] | str:
         """The count `c` (None for zero) after one more event, counted when `t` holds."""
-        if (bound + 1) * n > _UNARY_CELLS:
+        if not _unary(bound, n):
             w = _width(max(n, bound))
             return self.define("c", f"(bvadd {c or _bv(0, w)} (ite {t} {_bv(1, w)} {_bv(0, w)}))", f"(_ BitVec {w})")
         ge = c or ["false"] * (bound + 1)  # ge[k]: the count is at least k + 1
@@ -287,6 +371,10 @@ class FactEncoding(TraceEncoding):
                 "==": f"(and {reached} {_neg(above)})", "!=": f"(or {_neg(reached)} {above})"}[op]
 
 
+def _unary(bound: int, n: int) -> bool:
+    return (bound + 1) * n <= _UNARY_CELLS
+
+
 def _neg(term: str) -> str:
     return {"true": "false", "false": "true"}.get(term, f"(not {term})")
 
@@ -295,12 +383,12 @@ class _Entailment:
     """Solver for "`formula` is true at the last event", to be checked under a subset of the event assumptions."""
 
     def __init__(self, formula: ast.Formula, events: Sequence[Event], deadline: float):
-        self.encoding = enc = FactEncoding(events, formula)
+        self.encoding = enc = FactEncoding(events, formula, deadline)
         self.ctx = z3.Context()  # the global context is not thread-safe
         self.deadline = deadline
         self.solver = z3.Solver(ctx=self.ctx) if enc.name_mode == "string" else z3.SolverFor("QF_FD", ctx=self.ctx)
         goal = enc.values(formula)[-1]
-        enc.defs = enc.cone(goal, deadline)
+        enc.defs = enc.cone(goal)
         self.solver.from_string(enc.smt2(goal))
         self.lits = [z3.Bool(name, self.ctx) for name in enc.assumptions]
         self.index = {lit.get_id(): i for i, lit in enumerate(self.lits)}

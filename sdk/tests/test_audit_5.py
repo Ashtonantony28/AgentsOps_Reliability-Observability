@@ -2,13 +2,10 @@
 import sys
 import threading
 
-import pytest
-
 from agentops_sdk.trace import Trace
 
 
-# A5-6: add_event reads len(events) for the seq and appends later, with no lock between
-@pytest.mark.xfail(strict=True, reason="A5-6: concurrent add_event calls give duplicate and out-of-order seqs")
+# A5-5: add_event reads len(events) for the seq and appends later, with no lock between
 def test_concurrent_add_event_keeps_seqs_contiguous():
     old = sys.getswitchinterval()
     sys.setswitchinterval(1e-6)
