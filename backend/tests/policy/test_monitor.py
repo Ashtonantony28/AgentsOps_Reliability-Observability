@@ -94,7 +94,6 @@ def test_snapshot_restore_is_transparent(ps, events, data):
     assert out == _stream(compiled, events)
 
 
-
 @settings(deadline=None, max_examples=500)
 @given(st.lists(vocab_policies, min_size=1, max_size=3), traces(), st.data())
 def test_failing_is_every_policy_false_at_the_event(ps, events, data):
@@ -108,6 +107,7 @@ def test_failing_is_every_policy_false_at_the_event(ps, events, data):
             m = Monitor.restore(compiled, m.snapshot())
         m.step(e)
         assert m.failing == [str(i) for i, b in enumerate(bad) if e.seq in b]
+
 
 async def test_redis_round_trip_mid_trace():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)

@@ -105,8 +105,8 @@ async def _block(db: AsyncSession, org_id: str, agent_id: str, pv: PolicyViolati
     await db.commit()
 
 
-def _trace_policy_block(v) -> PolicyViolation:
-    return PolicyViolation(f"trace policy '{v.policy_name}' violated at seq {v.at_seq}", v.policy_name)
+def _trace_policy_block(name: str, seq: int) -> PolicyViolation:
+    return PolicyViolation(f"trace policy '{name}' violated at seq {seq}", name)
 
 
 async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace:
@@ -123,7 +123,7 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
         policies = await tps.active_policies(db, org_id, agent.id, payload.environment)
         blocked = tps.blocking_violations(policies, _events(events))
         if blocked:
-            raise _trace_policy_block(blocked[0])
+            raise _trace_policy_block(blocked[0].policy_name, blocked[0].at_seq)
     except PolicyViolation as pv:
         await _block(db, org_id, agent.id, pv)
         raise
@@ -234,7 +234,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                 found += monitor.step(e)
                 blocked = [blocking[pid] for pid in monitor.failing if pid in blocking]
                 if blocked:
-                    raise PolicyViolation(f"trace policy '{blocked[0]}' violated at seq {e.seq}", blocked[0])
+                    raise _trace_policy_block(blocked[0], e.seq)
         except PolicyViolation as pv:
             await _block(db, org_id, agent.id, pv, trace_uid=trace_uid)
             raise
