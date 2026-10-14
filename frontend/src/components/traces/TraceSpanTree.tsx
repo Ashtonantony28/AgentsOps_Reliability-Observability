@@ -1,33 +1,64 @@
 import { useState } from "react";
+import clsx from "clsx";
 import { Span } from "@/types/trace";
 import { ChevronRight, ChevronDown } from "lucide-react";
 import StatusBadge from "@/components/common/StatusBadge";
 
-export default function TraceSpanTree({ spans }: { spans: Span[] }) {
+// same numbering as the backend's events_from_spans: if any span lacks seq, all are numbered by start order
+export function spanSeqs(spans: Span[]): Map<string, number> {
+  if (spans.every((s) => s.seq != null)) return new Map(spans.map((s) => [s.id, s.seq!]));
+  const ordered = [...spans].sort((a, b) =>
+    (a.started_at || "").localeCompare(b.started_at || "") || a.id.localeCompare(b.id));
+  return new Map(ordered.map((s, i) => [s.id, i]));
+}
+
+type Props = {
+  spans: Span[];
+  counterexample?: number[];
+  atSeq?: number | null;
+};
+
+export default function TraceSpanTree({ spans, counterexample = [], atSeq = null }: Props) {
   if (!spans?.length) {
     return <div className="text-ink-400 text-sm">No spans recorded.</div>;
   }
+  const cx = new Set(counterexample);
+  const seqs = spanSeqs(spans);
   return (
     <div className="space-y-1">
-      {spans.map((s) => (
-        <SpanNode key={s.id} span={s} />
-      ))}
+      {spans.map((s) => {
+        const seq = seqs.get(s.id)!;
+        return <SpanNode key={s.id} span={s} seq={seq} inCounterexample={cx.has(seq)} violatedHere={seq === atSeq} />;
+      })}
     </div>
   );
 }
 
-function SpanNode({ span }: { span: Span }) {
+type NodeProps = { span: Span; seq: number; inCounterexample: boolean; violatedHere: boolean };
+
+function SpanNode({ span, seq, inCounterexample, violatedHere }: NodeProps) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="border border-ink-800 rounded">
+    <div
+      data-seq={seq}
+      data-counterexample={inCounterexample || undefined}
+      className={clsx(
+        "border rounded",
+        violatedHere ? "border-rose-500/70" : inCounterexample ? "border-amber-500/60" : "border-ink-800",
+        inCounterexample && "bg-amber-500/5"
+      )}
+    >
       <button
         className="w-full flex items-center gap-2 text-left px-3 py-2 hover:bg-ink-900"
         onClick={() => setOpen((x) => !x)}
       >
         {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        <span className="text-xs text-ink-500 tabular-nums">#{seq}</span>
         <span className="text-xs text-ink-400">{span.kind}</span>
         <span className="font-medium">{span.name}</span>
         <span className="text-xs text-ink-400">{span.latency_ms} ms</span>
+        {inCounterexample && <span className="text-[10px] uppercase text-amber-300">counterexample</span>}
+        {violatedHere && <span className="text-[10px] uppercase text-rose-300">violated here</span>}
         <StatusBadge status={span.status} className="ml-auto" />
       </button>
       {open && (

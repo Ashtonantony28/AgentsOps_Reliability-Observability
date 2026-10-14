@@ -20,6 +20,9 @@ const TONES: Record<string, string> = {
   critical: "bg-rose-500/15 text-rose-300 border-rose-700/30",
   firing: "bg-rose-500/15 text-rose-300 border-rose-700/30",
   open: "bg-rose-500/15 text-rose-300 border-rose-700/30",
+  high: "bg-orange-500/15 text-orange-300 border-orange-700/30",
+  medium: "bg-amber-500/15 text-amber-300 border-amber-700/30",
+  low: "bg-sky-500/15 text-sky-300 border-sky-700/30",
   prod: "bg-violet-500/15 text-violet-300 border-violet-700/30",
   dev: "bg-sky-500/15 text-sky-300 border-sky-700/30",
 };

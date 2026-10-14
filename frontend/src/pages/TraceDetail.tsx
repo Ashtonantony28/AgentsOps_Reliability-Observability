@@ -1,13 +1,46 @@
-import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { tracesApi } from "@/api/traces";
+import { tracePoliciesApi } from "@/api/tracePolicies";
+import { useWsStore } from "@/stores/wsStore";
+import { Violation } from "@/types/policy";
+import ViolationsPanel, { counterexamplePending, violationKey } from "@/components/traces/ViolationsPanel";
 import StatusBadge from "@/components/common/StatusBadge";
 import TraceSpanTree from "@/components/traces/TraceSpanTree";
 import Loading from "@/components/common/Loading";
 
+const POLL_FOR_MS = 10 * 60 * 1000;
+
+// a live row stays pending until the batch check fills in its counterexample; stop polling eventually
+// since a computed counterexample can also be empty
+export const recentlyPending = (v: Violation) =>
+  counterexamplePending(v) && Date.now() - new Date(v.detected_at).getTime() < POLL_FOR_MS;
+
 export default function TraceDetail() {
   const { id } = useParams<{ id: string }>();
+  const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ["trace", id], queryFn: () => tracesApi.get(id!) });
+  const violations = useQuery({
+    queryKey: ["trace-violations", id],
+    queryFn: () => tracePoliciesApi.traceViolations(id!),
+    retry: false,
+    refetchInterval: (q) => (q.state.data?.some(recentlyPending) ? 5000 : false),
+  });
+  const lastViolation = useWsStore((s) => s.lastViolation);
+  const seen = useRef(lastViolation);
+  useEffect(() => {
+    if (lastViolation !== seen.current && lastViolation?.trace_id === id) {
+      qc.invalidateQueries({ queryKey: ["trace-violations", id] });
+      qc.invalidateQueries({ queryKey: ["trace", id] });
+    }
+    seen.current = lastViolation;
+  }, [lastViolation, id, qc]);
+  const location = useLocation();
+  const [selectedKey, setSelectedKey] = useState<string | null>(location.state?.violation ?? null);
+  const selected =
+    violations.data?.find((v) => violationKey(v) === selectedKey) ?? violations.data?.[0] ?? null;
+
   if (isLoading) return <Loading />;
   if (!data) return <div className="text-sm text-rose-300">Trace not found.</div>;
   return (
@@ -37,8 +70,21 @@ export default function TraceDetail() {
       </div>
 
       <div className="bg-ink-900 border border-ink-800 rounded p-4">
+        <div className="text-sm text-ink-300 mb-2">Policy violations</div>
+        {violations.isLoading ? <Loading /> : violations.isError ? (
+          <div className="text-sm text-ink-400">Violations unavailable.</div>
+        ) : (
+          <ViolationsPanel
+            violations={violations.data || []}
+            selected={selected}
+            onSelect={(v) => setSelectedKey(violationKey(v))}
+          />
+        )}
+      </div>
+
+      <div className="bg-ink-900 border border-ink-800 rounded p-4">
         <div className="text-sm text-ink-300 mb-2">Spans / tool calls</div>
-        <TraceSpanTree spans={data.spans || []} />
+        <TraceSpanTree spans={data.spans || []} counterexample={selected?.counterexample} atSeq={selected?.at_seq} />
       </div>
 
       <div className="bg-ink-900 border border-ink-800 rounded p-4">
