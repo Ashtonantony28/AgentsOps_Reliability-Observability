@@ -41,14 +41,18 @@ def _bv(value: int, width: int) -> str:
 
 # every counterexample gets this budget; once it runs out, the events not yet ruled out are kept
 BUDGET_S = 2.0
-# beyond this many glob automaton states (overlapping globs can reach 2^k) names are strings instead
+# beyond this many glob automaton states (overlapping globs can reach 2^k), or glob steps to build them (about a
+# microsecond each: states x globs x distinct characters), names are strings instead
 _MAX_NAME_STATES = 512
+_MAX_NAME_STEPS = 50_000
 # an unmentioned character stands for this many, and this many names with one pattern are as good as unbounded
 _MANY = 1 << 20
 # past this many cells (window x distinct atoms, plus window x bound terms per count) in all, the encoding gives up
 # at once: building and parsing it would overrun the budget; `count ... by` cells, quadratic in the window, are much
 # slower to solve and count 3
 _MAX_CELLS = 100_000
+# a string-mode atom costs a cell per this many characters of its regexes
+_REGEX_CHARS = 50
 _SYMBOL = re.compile(r"[a-z_]+\d+")
 # counts of window x (bound + 1) up to this are unary; bit-vector adders above, whose unsat cores are near the window
 _UNARY_CELLS = 50_000
@@ -90,13 +94,15 @@ def _pattern(globs: tuple[str, ...], state) -> frozenset[str]:
 
 def _automaton(globs: tuple[str, ...]):
     """The product of the globs' automata: each state with a shortest name reaching it, in breadth-first order,
-    and its successors with how many characters lead to each; None past `_MAX_NAME_STATES` states.
-    Characters no glob mentions all behave alike, so one of them stands for the rest."""
+    and its successors with how many characters lead to each; None past `_MAX_NAME_STATES` states or
+    `_MAX_NAME_STEPS` steps. Characters no glob mentions all behave alike, so one of them stands for the rest."""
     chars = sorted({c for g in globs for c in g} - {"*", "?"})
     other = next(chr(0xE000 + i) for i in range(len(chars) + 1) if chr(0xE000 + i) not in chars)
     start = tuple(_closure(g, {0}) for g in globs)
     names, succ, todo = {start: ""}, {}, deque([start])
     while todo:
+        if (len(succ) + 1) * (len(chars) + 1) * len(globs) > _MAX_NAME_STEPS:
+            return None
         state = todo.popleft()
         succ[state] = edges = {}
         for c in chars + [other]:
@@ -191,6 +197,7 @@ class FactEncoding(TraceEncoding):
         self.widths.update({f"v{j}_": _width(len(c)) for j, c in enumerate(self.attrs.values())})
         if self.name_mode == "string":
             self.strings = _Strings({c for e in events for c in e.name} | {c for g in self.globs for c in g})
+            self._regexes: dict[tuple[str, ...], list[str]] = {}
         elif self.name_mode == "code":
             # per pattern, the observed names and then fresh ones, enough for every event to have its own
             sizes = pattern_sizes(self.globs) if self.globs else {frozenset(): _MANY}
@@ -274,7 +281,11 @@ class FactEncoding(TraceEncoding):
     def _name_in(self, globs: tuple[str, ...], i: int) -> str:
         n = self._var("n", i)
         if self.name_mode == "string":
-            return f"(or {' '.join(f'(str.in_re {n} {self.strings.regex(g)})' for g in globs)})"
+            regexes = self._regexes.get(globs)
+            if regexes is None:
+                regexes = self._regexes[globs] = [self.strings.regex(g) for g in globs]
+            self._charge(sum(map(len, regexes)) // _REGEX_CHARS)  # repeated per event
+            return f"(or {' '.join(f'(str.in_re {n} {r})' for r in regexes)})"
         if globs not in self._ranges:  # the codes matching any of `globs`, adjacent blocks merged
             self._ranges[globs] = ranges = []
             for p, (lo, hi) in self.blocks.items():

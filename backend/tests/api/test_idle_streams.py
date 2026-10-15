@@ -118,6 +118,37 @@ async def test_batch_waits_for_an_append_in_progress(client, db, org, agent, api
     assert len(await task) == 0 and (await _rows(db, TracePolicyViolation))[0].counterexample_status == "minimal"
 
 
+# SG-A9.2 (A9-5): a lock wait that times out with Redis up stores nothing; the task retries
+async def test_batch_stores_nothing_when_the_trace_stays_busy(client, db, org, agent, api_key_headers, redis, enqueued,
+                                                              monkeypatch):
+    monkeypatch.setattr(tps, "BATCH_LOCK_WAIT_S", 0.2)
+    await _policy(db, org, NO_DROP)
+    await _append(client, api_key_headers, agent, "p", [ev(0, "drop_db")])
+    t = await _trace(db, "p")
+    assert await close_idle_streams(db, now=_later()) == [t.id]
+    lock = redis.lock(f"lock:trace-events:{org.id}:p", timeout=60)
+    assert await lock.acquire()
+    with pytest.raises(tps.TraceBusy):
+        await tps.check_completed_trace(db, t.id)
+    (row,) = await _rows(db, TracePolicyViolation)
+    assert row.counterexample_status == "pending"
+    await lock.release()
+    assert await tps.check_completed_trace(db, t.id) == []
+    assert (await _rows(db, TracePolicyViolation))[0].counterexample_status == "minimal"
+
+
+def test_busy_trace_task_is_retried(monkeypatch):
+    async def busy(trace_id, counterexamples):
+        raise tps.TraceBusy(trace_id)
+
+    retried = []
+    monkeypatch.setattr(policy_tasks, "_check", busy)
+    monkeypatch.setattr(policy_tasks.check_completed_trace, "retry", lambda **kw: retried.append(kw) or RuntimeError())
+    with pytest.raises(RuntimeError):
+        policy_tasks.check_completed_trace.run("t1")
+    assert retried[0]["countdown"] == 60 and isinstance(retried[0]["exc"], tps.TraceBusy)
+
+
 # PR #35 gap: after a Redis loss (or for traces opened before tracking began) the sweep re-tracks open traces from
 # their last stored event
 async def test_sweep_retracks_open_traces_after_redis_loss(client, db, agent, api_key_headers, redis, enqueued):

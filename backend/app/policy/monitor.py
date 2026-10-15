@@ -5,6 +5,8 @@ Same recurrences as the linear Z3 encoding, evaluated on concrete values so a li
 import hashlib
 import operator
 import threading
+from array import array
+from itertools import repeat
 from typing import Any, Callable
 
 from app.policy import ast
@@ -15,7 +17,7 @@ _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.n
         ">": operator.gt}
 _INIT = {"Previously": False, "Once": False, "Historically": True, "Since": False}
 MAX_GROUPS = 1000  # per `count ... by` node
-MAX_MONITOR_GROUPS = 10_000  # over all of a monitor's nodes, so its snapshot stays a few hundred KB
+MAX_MONITOR_GROUPS = 10_000  # split evenly over a monitor's nodes, so its snapshot stays a few hundred KB
 MAX_KEY_CHARS = 32  # longer values are kept as a digest
 _OVERFLOW, _UNSURE = "\0", "\0?"
 
@@ -26,17 +28,15 @@ def _group_key(g: str) -> str:
     return "\0" + g if g.startswith("\0") else g  # keeps client values clear of the markers and digests
 
 
-def _count_group(groups: dict, g: str, hit: bool, max_groups: float, room: list[float] | None) -> tuple[int, int]:
-    """Bounds on the count of `g` after this event: exact for the first MAX_GROUPS values seen with a hit (event
-    names are client-chosen) while `room[0]`, the slots left in the monitor, lasts; later values share one
-    overflow counter, so at least this event, at most every overflow hit."""
+def _count_group(groups: dict, g: str, hit: bool, max_groups: float) -> tuple[int, int]:
+    """Bounds on the count of `g` after this event: exact for the first `max_groups` values seen with a hit
+    (event names are client-chosen); later values share one overflow counter, so at least this event, at most
+    every overflow hit."""
     g = _group_key(g)
     if g in groups:
         c = groups[g] = groups[g] + hit
         return c, c
-    if hit and len(groups) < max_groups and (room is None or room[0] > 0):
-        if room is not None:
-            room[0] -= 1
+    if hit and len(groups) < max_groups:
         groups[g] = 1
         return 1, 1
     hi = groups.get(_OVERFLOW, 0) + hit
@@ -85,19 +85,17 @@ class Plan:
             globs = self._globs[k] = compile_globs(f.globs)
         return matches(f, e, globs)
 
-    def initial(self) -> list:
-        return [({} if f.by else 0) if op == "Count" else _INIT.get(op) for op, f, _ in self.nodes]
-
-    def groups(self, state: list) -> int:
-        """Values counted exactly in `state`, the overflow markers aside."""
-        return sum(len(state[k]) - (_OVERFLOW in state[k]) - (_UNSURE in state[k]) for k in self.count_by)
+    def initial(self, batch: bool = False) -> list:
+        """`batch`: state for `step` with `ids`, never stored."""
+        return [((array("i") if batch else {}) if f.by else 0) if op == "Count" else _INIT.get(op)
+                for op, f, _ in self.nodes]
 
     def step(self, state: list, e: Event, max_groups: float | None = None, memo: dict | None = None,
-             room: list[float] | None = None) -> bool:
-        """Advances `state` in place by event `e`; returns the formula's value at `e`. `max_groups=math.inf`
-        counts every group exactly, for a batch check whose state is never stored. `memo` keeps attr-free atoms'
-        values by (node, kind, name, status) across steps, for replays where names repeat. `room` holds the
-        group slots left, shared by the plans of one monitor."""
+             ids: dict | None = None) -> bool:
+        """Advances `state` in place by event `e`; returns the formula's value at `e`. `max_groups` bounds the
+        values each `count ... by` node counts exactly. With `ids` (a value -> index map shared by one trace's
+        plans) and a `batch` state, every value is counted exactly in an array. `memo` keeps attr-free atoms'
+        values by (node, kind, name, status) across steps, for replays where names repeat."""
         v: list[bool] = [False] * len(self.nodes)
         max_groups = MAX_GROUPS if max_groups is None else max_groups
         for k, (op, f, kids) in enumerate(self.nodes):
@@ -129,10 +127,17 @@ class Plan:
                 if f.by is None:
                     state[k] += v[kids[0]]
                     v[k] = cmp(state[k], f.bound)
+                elif ids is not None:
+                    counts, g = state[k], ids.setdefault(getattr(e, f.by), len(ids))
+                    if v[kids[0]]:
+                        if g >= len(counts):
+                            counts.extend(repeat(0, g + 1 - len(counts)))
+                        counts[g] += 1
+                    v[k] = cmp(counts[g] if g < len(counts) else 0, f.bound)
                 else:
-                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]], max_groups, room)
+                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]], max_groups)
                     v[k] = cmp(hi, f.bound)
                     if lo != hi and len({v[k], cmp(lo, f.bound), cmp(min(max(f.bound, lo), hi), f.bound)}) > 1:
                         state[k][_UNSURE] = 1
         # once a count is uncertain the policy is false at every later event: never a missed violation
-        return v[self.root] and not any(_UNSURE in state[k] for k in self.count_by)
+        return v[self.root] and (ids is not None or not any(_UNSURE in state[k] for k in self.count_by))

@@ -32,6 +32,7 @@ MAX_REQUEST_WORK = 2_000_000
 WORK_SLICE = 200_000  # work one thread does at a time; longer jobs go in slices through _pool
 _pool = ThreadPoolExecutor(2, thread_name_prefix="policy-work")  # so long jobs can't starve the short ones
 PREFIX_TTL_S = 3600
+BATCH_LOCK_WAIT_S = 10
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
 MAX_ORG_POLICY_NODES = 4_000  # `Plan.cost` summed: nodes, and glob lists or long globs on top
 
@@ -240,9 +241,13 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     return m
 
 
+class TraceBusy(Exception):
+    """An append held the trace for `BATCH_LOCK_WAIT_S`; its batch check stored nothing and is to be retried."""
+
+
 async def check_completed_trace(db: AsyncSession, trace_id: str,
                                 counterexamples: bool = True) -> list[TracePolicyViolation]:
-    """Batch check of a completed trace; re-running it stores nothing new."""
+    """Batch check of a completed trace; re-running it stores nothing new. Raises TraceBusy."""
     trace = await db.get(Trace, trace_id, populate_existing=True)
     if trace is None or (stream := (trace.meta or {}).get("stream")) == "open":
         return []
@@ -251,12 +256,16 @@ async def check_completed_trace(db: AsyncSession, trace_id: str,
     check = check_trace if counterexamples else check_verdicts
     violations = check([c for _, c in policies], events_from_spans(spans))
     # under the append lock, so an idle trace can't be reopened between this re-read and the commit
-    lock = get_redis().lock(f"lock:trace-events:{trace.org_id}:{trace.trace_uid}", timeout=60, blocking_timeout=10)
+    lock = get_redis().lock(f"lock:trace-events:{trace.org_id}:{trace.trace_uid}", timeout=60,
+                            blocking_timeout=BATCH_LOCK_WAIT_S)
     try:
         locked = await lock.acquire()
     except Exception:  # the verdicts are still stored without Redis, at the risk the lock guards against
         log.exception("could not lock trace %s for its batch check", trace_id)
         locked = False
+    else:
+        if not locked:
+            raise TraceBusy(trace_id)
     try:
         return await _store_batch(db, trace, stream, policies, violations)
     finally:
