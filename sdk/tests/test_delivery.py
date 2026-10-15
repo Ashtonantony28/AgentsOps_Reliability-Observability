@@ -154,3 +154,32 @@ def test_overlapping_pushes_do_not_resend_settled_events(make_async_client, serv
 
     assert asyncio.run(run()) == 2
     assert sorted(len(b["events"]) for b in server.bodies("events") if b["events"]) == [1, 2]
+
+
+def test_traces_refused_for_policy_work_are_resent_in_a_new_request(client, server):
+    """SG-A10.2: the server refuses the traces past its bound on a request's policy work, always taking the first."""
+    server.queue("bulk", (202, {"accepted": [{}], "rejected": [{"index": 1, "reason": "policy_work_too_large"},
+                                                               {"index": 2, "reason": "policy_work_too_large"}]}),
+                 (202, {"accepted": [{}], "rejected": [{"index": 1, "reason": "policy_work_too_large"}]}))
+    ids = []
+    for _ in range(3):
+        with client.trace() as t:
+            t.add_event("tool", "a")
+        ids.append(t.trace_id)
+    client.flush()
+    assert [[x["trace_id"] for x in b["traces"]] for b in server.bodies("bulk")] == [ids, ids[1:], ids[2:]]
+    assert drain_disk(client._disk) == []
+
+
+def test_async_request_all_refused_for_policy_work_is_buffered(aclient, server):
+    server.queue("bulk", (202, {"accepted": [], "rejected": [{"index": 0, "reason": "policy_work_too_large"}]}))
+
+    async def run():
+        async with aclient.trace() as t:
+            t.add_event("tool", "a")
+        await aclient.flush()
+        return t
+
+    t = asyncio.run(run())
+    assert len(server.bodies("bulk")) == 1
+    assert [p["trace_id"] for p in drain_disk(aclient._disk)] == [t.trace_id]

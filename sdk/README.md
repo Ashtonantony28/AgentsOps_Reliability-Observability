@@ -76,7 +76,9 @@ next push). A `409 seq_conflict` whose `expected_seq` shows the server already s
 lost after commit) resyncs and sends the rest. While any added event is not on the server, a check does not
 call the server and follows the failure policy below (`error="trace events not delivered"`). A `403 policy_block`
 refuses the event a `block` policy forbids: it is dropped from `t.events`, later events are renumbered, and
-streaming goes on (a refused batch of several events is resent one event at a time to find it). Any other
+streaming goes on (a refused batch of several events is resent one event at a time to find it). A `413
+policy_work_too_large` (too much policy work for one append) resends the batch in appends of the `max_events` it
+names. Any other
 rejection (`409 seq_conflict`, `413 trace_too_long`, `422`, ...) drops that batch, logs a warning and stops
 streaming that trace; later checks still go to the server, which judges them on the events it holds followed
 by the ones it lacks (sent as the check's `prefix`; a trace at the event cap is checked too), and with
@@ -107,7 +109,8 @@ agentops.init(api_key="aop_...", agent_id="agent-uuid", fail_closed=True, check_
 - Local disk buffer if the API is unreachable; auto-replay on next start. It holds raw trace input and output,
   so it lives in `<tempdir>/agentops_sdk-<uid>/` (mode 0700, files 0600); a directory there that is not the
   user's own is refused for a fresh private one
-- Bulk ingestion uses `/api/traces/ingest/bulk` for efficiency
+- Bulk ingestion uses `/api/traces/ingest/bulk` for efficiency; traces it refuses as more policy work than was left to
+  that request are sent again at once in a new one
 
 ## Install
 

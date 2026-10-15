@@ -95,7 +95,7 @@ async def test_check_does_not_stall_the_event_loop(client, db, org, agent, api_k
     took = time.perf_counter() - t
     done.set()
     await beat
-    assert r.status_code in (200, 413, 422)
+    assert r.status_code == 200
     assert stall < max(0.5, took / 4), (stall, took)  # relative: a busy runner slows the whole request (A10-8)
 
 

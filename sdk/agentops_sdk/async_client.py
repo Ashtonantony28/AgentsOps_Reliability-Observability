@@ -120,10 +120,10 @@ class AsyncAgentOpsClient(PrecheckMixin):
                     for it in items:
                         append_to_disk(self._disk, it)
                     return True
-                buffer_rejected(self._disk, items, r)
-                return True
+                again = buffer_rejected(self._disk, items, r)
         except Exception as e:
             log.warning("ingest exception, buffering: %s", e)
             for it in items:
                 append_to_disk(self._disk, it)
             return False
+        return await self._post(again) if again else True

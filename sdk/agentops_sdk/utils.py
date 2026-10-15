@@ -52,22 +52,32 @@ def append_to_disk(path: Path, payload: dict) -> None:
         f.write(json.dumps(payload, default=str) + "\n")
 
 
-def buffer_rejected(path: Path, items: list[dict], response) -> None:
-    """Re-buffers the traces a 202 bulk response rejected with `storage_error` and logs the other rejections."""
+def buffer_rejected(path: Path, items: list[dict], response) -> list[dict]:
+    """Re-buffers the traces a 202 bulk response rejected with `storage_error` and logs the other rejections.
+    Returns those to send again now: refused as more policy work than was left to the request (the server takes the
+    first trace of a request), unless that was all of them."""
     try:
         body = response.json()
     except ValueError:
-        return
+        return []
     rejected = body.get("rejected") if isinstance(body, dict) else None
+    again = []
     for r in rejected if isinstance(rejected, list) else []:
         i = r.get("index") if isinstance(r, dict) else None
         if not isinstance(i, int) or not 0 <= i < len(items):
             continue
         if r.get("reason") == "storage_error":
             append_to_disk(path, items[i])
+        elif r.get("reason") == "policy_work_too_large":
+            again.append(items[i])
         else:
             logging.getLogger("agentops_sdk").warning(
                 "agentops dropped trace %s: %s", items[i].get("trace_id"), r.get("reason"))
+    if len(again) < len(items):
+        return again
+    for it in again:
+        append_to_disk(path, it)
+    return []
 
 
 def _event_count(payload: dict) -> int:

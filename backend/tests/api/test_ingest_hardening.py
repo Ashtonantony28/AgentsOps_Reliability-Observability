@@ -215,10 +215,10 @@ async def test_bulk_storage_error_rejects_only_that_trace(client, db, agent, api
     import app.routers.traces as traces_router
     real = traces_router.ingest_trace
 
-    async def flaky(db_, org_id, t):
+    async def flaky(db_, org_id, t, room):
         if t.trace_id == "bad":
             raise DBAPIError("INSERT", {}, Exception("integer out of range"))
-        return await real(db_, org_id, t)
+        return await real(db_, org_id, t, room)
     monkeypatch.setattr(traces_router, "ingest_trace", flaky)
     r = await client.post("/api/traces/ingest/bulk", headers=api_key_headers, json={"traces": [
         {"agent_id": agent.id, "trace_id": "bad"}, {"agent_id": agent.id, "trace_id": "ok"}]})
