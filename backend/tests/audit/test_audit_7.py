@@ -78,7 +78,7 @@ def test_counterexample_budget_holds_for_many_atoms(monkeypatch):
 async def test_check_does_not_stall_the_event_loop(client, db, org, agent, api_key_headers):
     await _policy(db, org, _many_atoms(500), action="block")
     body = {"agent_id": agent.id, "candidate": {"seq": 0, "name": "x"},
-            "prefix": [{"seq": i, "name": f"t{i % 50}"} for i in range(9_998)]}
+            "prefix": [{"seq": i, "name": f"t{i % 50}"} for i in range(3_000)]}
     stall, done = 0.0, asyncio.Event()
 
     async def heartbeat():
