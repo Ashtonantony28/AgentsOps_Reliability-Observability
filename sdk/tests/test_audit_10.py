@@ -1,14 +1,11 @@
 """AUDIT-10.md SDK findings as failing tests; each is xfail(strict=True) until its sub-goal fixes it."""
 import asyncio
 
-import pytest
-
 from agentops_sdk import guard
 
 
 # A10-3: background pushes stop short of a running guarded call's event, so while one guarded call runs (an approval,
 # a long tool call) nothing added after it is streamed, by any task: no live violations or alerts until it ends
-@pytest.mark.xfail(strict=True, reason="A10-3: a running guarded call holds back the rest of the stream")
 def test_events_after_a_running_guarded_call_are_streamed(aclient, server):
     gate = asyncio.Event()
 
@@ -37,7 +34,6 @@ def test_events_after_a_running_guarded_call_are_streamed(aclient, server):
 
 # A10-4: async guarded calls serialise on _guard_alock and sync ones on _guard_lock; a sync guarded call run in a
 # thread (asyncio.to_thread, an executor) and an async one in the same trace are checked against the same history
-@pytest.mark.xfail(strict=True, reason="A10-4: sync and async guarded calls of one trace are not checked in turn")
 def test_sync_and_async_guarded_calls_are_checked_in_turn(aclient, server):
     server.delay = 0.05  # the async check is on the wire while the sync one is made
 

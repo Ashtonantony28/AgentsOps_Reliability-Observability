@@ -427,10 +427,12 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_10.py tests/api` · `cd sdk && pytest -q`
 
 ### SG-A10.3 AUDIT-10 mediums (A10-3, A10-4)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-10
+- **Owner:** thread SG-A10.3 · **Status:** done · **Depends:** AUDIT-10
 - **Scope:** a running guarded call does not hold back events other tasks add after it (A10-3); sync and async guarded calls of one trace are checked in turn (A10-4). SDK only.
 - **Acceptance:** both tests in `sdk/tests/test_audit_10.py` pass unmarked; `tests/test_guard.py` (A8-3 cases) unchanged; `python backend/scripts/mutants_audit10.py probe` kills every row.
 - **Verify:** `cd sdk && pytest -q` · `cd backend && pytest -q tests/audit/test_audit_8.py`
+- **Contract change (approved by this thread, 2026-10-15, under the Rules line on sound contract changes):** with `stream=True`, a background push holds back a running guarded call's event only while no later event follows it; once one is added, by any task, the push sends the running event too (`success`, latency 0, the cost SG-A8.2 accepted for a check), so the rest of the stream is never held. An append that updates an earlier event's outcome was not taken: a policy may read `status`, and live verdicts are already given. Sync and async guarded calls of one trace share one `threading.Lock` (async tasks still queue on an `asyncio.Lock` first, then poll the shared lock without blocking the loop); a sync guarded call on the loop's own thread while an async one of that loop holds the lock goes ahead unheld, since waiting would deadlock the loop. A `/check` 413 blocks only with code `policy_work_too_large`; any other 413 (a proxy's body limit) follows `fail_closed` (A10-5).
+- **Result:** verify passes; both `sdk/tests/test_audit_10.py` tests unmarked, A8-3 cases in `test_guard.py` unchanged. New tests in `test_guard.py`: a running call's outcome survives a background push (both clients), a call sent while it runs keeps the outcome it was sent with, a sync guard on the loop thread does not hang. `mutants_audit10.py`: the six SDK A10-7 survivors are now `probe` rows, plus probes for the shared lock, the loop-thread exception and the 413 code; every SDK row of `mutants_audit4/6/8/10.py` killed. A10-6: the stale rows of `mutants_audit4.py` (A4-1), `mutants_audit6.py` (A6-16) and `mutants_audit8.py` (`CONFIG_ERRORS`, guard lock, `_end`, `traces.py` 409) rewritten to the current code.
 
 ## Audits (after SG5b; SG6 included if built)
 
@@ -601,3 +603,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: SG-A7.4 done (A7-5/A8-2: an append reopens an idle-closed trace; the sweep re-tracks open traces after a Redis loss).
 - 2026-10-15: Audit A9 (round 4, checker correctness, performance and security) done: 1 critical, 0 high, 3 medium, 1 low in AUDIT-9.md; SG-A9.1 and SG-A9.2 proposed. Round-3 fixes hold.
 - 2026-10-15: Audit A10 (round 4, API/SDK and tests) done: 0 critical, 2 high, 2 medium, 4 low in AUDIT-10.md (one more low is AUDIT-9's A9-5); SG-A10.1 to SG-A10.3 proposed.
+- 2026-10-15: SG-A10.3 done (A10-3: a running guarded call no longer holds back later events; A10-4: one guard lock for sync and async calls; lows A10-5 proxy 413, A10-6 stale mutant rows fixed).

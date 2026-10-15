@@ -22,8 +22,8 @@ SDK_TESTS = ["tests"]
 # (finding, file, exact text, replacement, test dir, pytest args)
 MUTANTS = [
     ("A4-1", "backend/app/services/trace_policy_service.py",
-     "                s.counterexample = with_cx[s.policy_id]\n    await db.commit()",
-     "                s.counterexample = with_cx[s.policy_id]", "backend", BACKEND_TESTS),
+     '            row.counterexample_status = "none"\n    await db.commit()',
+     '            row.counterexample_status = "none"', "backend", BACKEND_TESTS),
     ("A4-2", "sdk/agentops_sdk/trace.py", "return self._undelivered() or await self._require_client()._apost_check(",
      "return await self._require_client()._apost_check(", "sdk", SDK_TESTS),
     ("A4-2", "sdk/agentops_sdk/async_client.py", "self.fail_closed = fail_closed", "self.fail_closed = True",

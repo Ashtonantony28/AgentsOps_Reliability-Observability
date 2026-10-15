@@ -54,9 +54,11 @@ Or guard a function (sync or async). The check runs first and raises `agentops.P
 `.result`) instead of calling the function; inside an active trace the call is then recorded with
 `add_event` when it starts, its status (`success` / `error`) and latency set when it ends. Guarded calls in one
 trace are checked one at a time, each after the ones started before it are recorded, so two started together
-(`asyncio.gather`, threads) cannot both pass a check meant to admit one; the calls themselves run concurrently, and
-a guarded call may start or await others. With `stream=True`, pushes wait for a running call's outcome, but an event
-a later check (or the trace's exit) sends while its call still runs keeps `success` and latency 0. Function arguments are never sent.
+(`asyncio.gather`, threads, a sync tool in `asyncio.to_thread` beside an async one) cannot both pass a check meant
+to admit one; the calls themselves run concurrently, and a guarded call may start or await others. A sync guarded
+call made on the event loop's own thread while an async one awaits its check is not held for it (waiting would
+block the loop). With `stream=True`, a running call's event waits for its outcome only while no later event follows
+it: once another event is added (by any task) or a check runs, it is sent at once and keeps `success` and latency 0. Function arguments are never sent.
 
 ```python
 @agentops.guard                              # or @agentops.guard(name="refund", kind="tool", tier="gold")
@@ -87,8 +89,9 @@ push for an hour and batch-checks it, so later pushes to it are `409 trace_close
 
 **Failure policy.** A check that cannot complete (network error, timeout, 5xx, 429, malformed reply) logs a
 warning and returns `CheckResult(allowed=not fail_closed, violations=[], error="<reason>")`. The default is
-fail-open; pass `fail_closed=True` to `init()` / the client to block instead. A 401, 403, 404 or 422 (revoked
-or wrong API key, unknown `agent_id`, rejected request) is a configuration error, not an outage: it is logged at
+fail-open; pass `fail_closed=True` to `init()` / the client to block instead. A 401, 403, 404, 422 or
+`413 policy_work_too_large` (revoked or wrong API key, unknown `agent_id`, rejected request, too much policy work;
+a proxy's 413 is an outage) is a configuration error, not an outage: it is logged at
 ERROR and never allows, whatever `fail_closed` says. `check_timeout_s` (default 2.0)
 bounds each check.
 

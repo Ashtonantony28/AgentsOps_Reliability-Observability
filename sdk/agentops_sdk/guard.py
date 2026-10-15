@@ -5,6 +5,7 @@ import contextlib
 import functools
 import inspect
 import logging
+import threading
 from typing import Callable, Optional
 
 from agentops_sdk import client as _client
@@ -15,6 +16,21 @@ from agentops_sdk.utils import now_ms
 log = logging.getLogger("agentops_sdk")
 
 
+@contextlib.contextmanager
+def _lock(t):
+    # a sync guarded call on the thread of a loop whose async guarded call holds the lock can't wait for it without
+    # blocking that loop, so it goes ahead
+    if t is None or t._guard_owner == threading.get_ident():
+        yield
+        return
+    with t._guard_lock:
+        t._guard_owner = threading.get_ident()
+        try:
+            yield
+        finally:
+            t._guard_owner = None
+
+
 @contextlib.asynccontextmanager
 async def _alock(t):
     if t is None:
@@ -22,8 +38,17 @@ async def _alock(t):
         return
     if t._guard_alock is None:
         t._guard_alock = asyncio.Lock()
-    async with t._guard_alock:
-        yield
+    async with t._guard_alock:  # the trace's tasks queue here, then share the lock with sync calls in threads
+        delay = 0.0005
+        while not t._guard_lock.acquire(blocking=False):
+            await asyncio.sleep(delay)
+            delay = min(2 * delay, 0.01)
+        t._guard_owner = threading.get_ident()
+        try:
+            yield
+        finally:
+            t._guard_owner = None
+            t._guard_lock.release()
 
 
 def guard(fn: Optional[Callable] = None, *, name: Optional[str] = None, kind: str = "tool", **attrs):
@@ -31,8 +56,8 @@ def guard(fn: Optional[Callable] = None, *, name: Optional[str] = None, kind: st
 
     Inside an active trace the call is checked against that trace and recorded with add_event when it starts, its
     status and latency set when it ends unless the event was sent meanwhile; checking and recording hold a per-trace
-    lock, so each check sees the calls started before it. Otherwise it is checked through the client from init().
-    Function arguments are never sent.
+    lock shared by sync and async calls, so each check sees the calls started before it. Otherwise it is checked
+    through the client from init(). Function arguments are never sent.
     """
     def wrap(f: Callable) -> Callable:
         ev_name = name or f.__name__
@@ -70,7 +95,7 @@ def guard(fn: Optional[Callable] = None, *, name: Optional[str] = None, kind: st
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
             t = current_trace()
-            with t._guard_lock if t is not None else contextlib.nullcontext():
+            with _lock(t):
                 result = (t.check if t else _client.check)(ev_name, kind=kind, **attrs)
                 if not result.allowed:
                     raise PolicyBlocked(result)
