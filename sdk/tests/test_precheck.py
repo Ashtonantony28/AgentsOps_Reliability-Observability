@@ -130,8 +130,9 @@ def test_unstreamed_trace_check_sends_its_events_as_prefix(client, server):
     assert server.bodies("events") == []
 
 
-def test_unstreamed_tool_call_trace_check_sends_them_as_prefix(client, server):
-    with client.trace() as t:
+@pytest.mark.parametrize("stream", [False, True])  # A8-6: tool calls are never streamed
+def test_tool_call_trace_check_sends_them_as_prefix(client, server, stream):
+    with client.trace(stream=stream) as t:
         t.add_tool_call("a", input={"q": 1}, status="error")
         t.check("b")
     body = server.bodies("check")[0]
