@@ -75,7 +75,6 @@ def test_counterexample_budget_holds_for_many_atoms(monkeypatch):
 
 # A7-3: /check (and the append and whole-trace ingest paths) step the monitor on the event loop, with no bound on
 # policy size x events per request, so one request stalls every other request on that worker
-@pytest.mark.xfail(strict=True, reason="A7-3: monitor steps run on the event loop with no per-request bound")
 async def test_check_does_not_stall_the_event_loop(client, db, org, agent, api_key_headers):
     await _policy(db, org, _many_atoms(500), action="block")
     body = {"agent_id": agent.id, "candidate": {"seq": 0, "name": "x"},
@@ -100,7 +99,6 @@ async def test_check_does_not_stall_the_event_loop(client, db, org, agent, api_k
 
 # A7-4: a `count ... by name` node keeps up to 1 000 names of up to 255 characters each, per node, in every
 # trace's Redis snapshot; a 13 KB policy with 300 such nodes makes it 73 MB
-@pytest.mark.xfail(strict=True, reason="A7-4: count-by-name state is bounded in names, not bytes or nodes")
 def test_monitor_snapshot_size_is_bounded():
     source = "policy wide severity high:\n  always " + _balanced(
         [f'count(not tool("z{i}")) by name < 99' for i in range(300)], "and")

@@ -10,9 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.middleware.auth import AuthContext, authenticate_api_key, get_current_user, require_role
 from app.middleware.rate_limit import enforce_rate_limit
-from app.models import Agent, AuditLog, TracePolicy
+from app.models import Agent, AuditLog, Organization, TracePolicy
 from app.policy.ast import Policy
 from app.policy.dsl import PolicyParseError, parse
+from app.policy.monitor import plan_for
 from app.schemas.policy import (
     PolicyCheckIn,
     PolicyCheckOut,
@@ -23,6 +24,7 @@ from app.schemas.policy import (
     TracePolicyOut,
     TracePolicyUpdate,
 )
+from app.services import trace_policy_service as tps
 from app.services.trace_service import TraceConflict, precheck
 
 router = APIRouter(prefix="/api/trace-policies", tags=["trace-policies"])
@@ -56,6 +58,31 @@ async def _check_name_free(db: AsyncSession, org_id: str, name: str, exclude_id:
         q = q.where(TracePolicy.id != exclude_id)
     if (await db.execute(q)).first():
         raise _name_taken(name)
+
+
+async def _check_org_limits(db: AsyncSession, org_id: str, parsed: Policy, exclude_id: str | None = None) -> None:
+    """At most MAX_ORG_POLICIES non-archived policies and MAX_ORG_POLICY_NODES monitor nodes in all, so the work
+    of a span rebuild or a batch check is bounded per trace."""
+    await db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
+    q = select(TracePolicy.id, TracePolicy.source).where(TracePolicy.org_id == org_id,
+                                                         TracePolicy.archived_at.is_(None))
+    if exclude_id:
+        q = q.where(TracePolicy.id != exclude_id)
+    rows = (await db.execute(q)).all()
+    if len(rows) >= tps.MAX_ORG_POLICIES:
+        raise HTTPException(422, detail={"error": "policy_limit", "max_policies": tps.MAX_ORG_POLICIES,
+                                         "message": f"an org has at most {tps.MAX_ORG_POLICIES} policies"})
+    nodes = len(plan_for(parsed).nodes)
+    for pid, source in rows:
+        try:
+            nodes += len(plan_for(tps._compile(pid, source).policy).nodes)
+        except (PolicyParseError, ValueError):
+            pass
+    if nodes > tps.MAX_ORG_POLICY_NODES:
+        raise HTTPException(422, detail={
+            "error": "policy_limit", "nodes": nodes, "max_nodes": tps.MAX_ORG_POLICY_NODES,
+            "message": f"this org's policies would have {nodes} formula nodes in all; at most "
+                       f"{tps.MAX_ORG_POLICY_NODES} are allowed"})
 
 
 async def _check_agent(db: AsyncSession, org_id: str, agent_id: str | None) -> None:
@@ -111,6 +138,7 @@ async def create_trace_policy(
     parsed = _parse_or_422(req.source)
     await _check_agent(db, ctx.org_id, req.agent_id)
     await _check_name_free(db, ctx.org_id, parsed.name)
+    await _check_org_limits(db, ctx.org_id, parsed)
     p = TracePolicy(
         org_id=ctx.org_id, name=parsed.name, source=req.source, severity=parsed.severity,
         action=req.action, agent_id=req.agent_id, environment=req.environment, enabled=req.enabled, version=1,
@@ -162,6 +190,7 @@ async def update_trace_policy(
         parsed = _parse_or_422(source)
         if parsed.name != p.name:
             await _check_name_free(db, ctx.org_id, parsed.name, exclude_id=p.id)
+        await _check_org_limits(db, ctx.org_id, parsed, exclude_id=p.id)
         changes.update(source=source, name=parsed.name, severity=parsed.severity, version=p.version + 1)
     if "agent_id" in fields:
         await _check_agent(db, ctx.org_id, fields["agent_id"])

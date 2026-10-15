@@ -53,7 +53,7 @@ def test_check_fail_open(client, server, caplog, reply, reason):
     assert "policy check failed" in caplog.text
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 422])
+@pytest.mark.parametrize("status", [401, 403, 404, 413, 422])
 def test_check_config_errors_block_both_clients(client, aclient, server, caplog, status):
     for c in (client, aclient):
         server.queue("check", (status, {"error": {"code": "http_error", "message": "invalid_api_key"}}))

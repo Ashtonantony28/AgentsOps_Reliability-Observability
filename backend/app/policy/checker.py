@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from app.policy import monitor
 from app.policy.ast import Policy
 from app.policy.counterexample import bounded_counterexample
 from app.policy.events import Event
@@ -12,6 +13,7 @@ from app.policy.monitor import plan_for
 
 log = logging.getLogger(__name__)
 
+_MEMO_MAX = 100_000
 CHECK_BUDGET_S = 30.0  # for all of one trace's counterexamples, each also bounded by counterexample.BUDGET_S
 
 
@@ -59,12 +61,19 @@ def first_violations(policies: Sequence[CompiledPolicy], events: Sequence[Event]
     todo = list(range(len(plans)))
     for e in events:
         for i in todo:
+            if len(memos[i]) > _MEMO_MAX:  # names that never repeat would make it atoms x events
+                memos[i].clear()
             if not plans[i].step(states[i], e, math.inf, memos[i]):
                 out[i] = e.seq
         todo = [i for i in todo if out[i] is None]
         if not todo:
             break
     return out
+
+
+def work(policies: Sequence[CompiledPolicy], events: int) -> int:
+    """Monitor work for stepping `events` events: policy nodes x events, about half a microsecond each."""
+    return events * sum(len(plan_for(p.policy).nodes) for p in policies)
 
 
 def _check(policies: Sequence[CompiledPolicy], events: Sequence[Event], deadline: float | None) -> list[Violation]:
@@ -94,6 +103,8 @@ class Monitor:
         self.policies = list(policies)
         self._plans = [plan_for(p.policy) for p in self.policies]
         self._states = [plan.initial() for plan in self._plans]
+        self._counting = any(plan.count_by for plan in self._plans)
+        self._groups = 0  # values counted exactly, over all plans; the overflow markers aside
         self._done = [False] * len(self.policies)
         self.failing: list[str] = []  # ids of the policies false at the last stepped event, violated before or not
         self.next_seq = 0
@@ -103,27 +114,34 @@ class Monitor:
             raise ValueError(f"expected seq {self.next_seq}, got {event.seq}")
         self.next_seq += 1
         out, self.failing = [], []
+        room = self._room()
         for i, (p, plan) in enumerate(zip(self.policies, self._plans)):
-            if plan.step(self._states[i], event):
+            if plan.step(self._states[i], event, room=room):
                 continue
             self.failing.append(p.policy_id)
             if not self._done[i]:
                 self._done[i] = True
                 out.append(Violation(p.policy_id, p.policy.name, p.policy.severity, event.seq, (),
                                      f"{p.policy.name} violated at seq {event.seq}"))
+        if room is not None:
+            self._groups = monitor.MAX_MONITOR_GROUPS - room[0]
         return out
 
     def check(self, event: Event) -> list[Violation]:
         """Policies false at `event` as the next event, whether or not violated before; the state is unchanged."""
         if event.seq != self.next_seq:
             raise ValueError(f"expected seq {self.next_seq}, got {event.seq}")
+        room = self._room()
         return [Violation(p.policy_id, p.policy.name, p.policy.severity, event.seq, (),
                           f"{p.policy.name} would be violated at seq {event.seq}")
                 for p, plan, state in zip(self.policies, self._plans, self._states)
-                if not plan.step([dict(x) if isinstance(x, dict) else x for x in state], event)]
+                if not plan.step([dict(x) if isinstance(x, dict) else x for x in state], event, room=room)]
+
+    def _room(self) -> list[float] | None:
+        return [monitor.MAX_MONITOR_GROUPS - self._groups] if self._counting else None
 
     def snapshot(self) -> bytes:
-        return json.dumps({"v": 1, "n": self.next_seq, "p": [
+        return json.dumps({"v": 2, "n": self.next_seq, "p": [
             [p.policy_id, plan.digest, done, state]
             for p, plan, done, state in zip(self.policies, self._plans, self._done, self._states)
         ]}, separators=(",", ":")).encode()
@@ -135,12 +153,13 @@ class Monitor:
         try:
             data = json.loads(blob)
             rows, m.next_seq = data["p"], data["n"]
-            if data["v"] != 1 or len(rows) != len(m.policies):
+            if data["v"] != 2 or len(rows) != len(m.policies):
                 raise ValueError
             for i, (p, plan, (pid, digest, done, state)) in enumerate(zip(m.policies, m._plans, rows)):
                 if pid != p.policy_id or digest != plan.digest or len(state) != len(plan.nodes):
                     raise ValueError
                 m._done[i], m._states[i] = done, state
+            m._groups = sum(plan.groups(s) for plan, s in zip(m._plans, m._states))
         except (ValueError, KeyError, TypeError) as e:
             raise ValueError("snapshot does not match these policies") from e
         return m

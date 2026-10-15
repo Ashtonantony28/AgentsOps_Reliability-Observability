@@ -38,6 +38,8 @@ async def ingest_one(req: TraceIn, request: Request, db: AsyncSession = Depends(
         trace = await ingest_trace(db, org.id, req)
     except PolicyViolation as e:
         raise HTTPException(403, detail={"error": "policy_block", "rule": e.rule_name, "message": str(e)})
+    except TraceConflict as e:
+        raise HTTPException(e.status, detail={"error": e.code, "message": e.message, **e.details})
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
     return {"id": trace.id, "trace_uid": trace.trace_uid}
@@ -58,6 +60,8 @@ async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Dep
             rejected.append({"index": i, "reason": "invalid_payload", "errors": errors})
         except PolicyViolation as e:
             rejected.append({"index": i, "reason": "policy_block", "rule": e.rule_name})
+        except TraceConflict as e:
+            rejected.append({"index": i, "reason": e.code, **e.details})
         except ValueError as e:
             rejected.append({"index": i, "reason": str(e)})
         except DBAPIError:
