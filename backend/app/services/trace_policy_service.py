@@ -166,8 +166,26 @@ async def check_completed_trace(db: AsyncSession, trace_id: str,
     spans = (await db.execute(select(Span).where(Span.trace_id == trace_id))).scalars().all()
     check = check_trace if counterexamples else check_verdicts
     violations = check([c for _, c in policies], events_from_spans(spans))
-    await db.refresh(trace)
-    if (trace.meta or {}).get("stream") != stream:  # an idle trace reopened meanwhile; its next close checks it
+    # under the append lock, so an idle trace can't be reopened between this re-read and the commit
+    lock = get_redis().lock(f"lock:trace-events:{trace.org_id}:{trace.trace_uid}", timeout=60, blocking_timeout=10)
+    try:
+        locked = await lock.acquire()
+    except Exception:  # the verdicts are still stored without Redis, at the risk the lock guards against
+        log.exception("could not lock trace %s for its batch check", trace_id)
+        locked = False
+    try:
+        return await _store_batch(db, trace, stream, policies, violations)
+    finally:
+        if locked:
+            with suppress(LockError):
+                await lock.release()
+
+
+async def _store_batch(db: AsyncSession, trace: Trace, stream: str | None, policies: Active,
+                       violations: list[Violation]) -> list[TracePolicyViolation]:
+    trace_id = trace.id
+    trace = await db.get(Trace, trace_id, populate_existing=True)
+    if trace is None or (trace.meta or {}).get("stream") != stream:  # reopened meanwhile; its next close checks it
         return []
     rows = await record_violations(db, trace, policies, violations, "batch")
     # live rows are stored before their counterexample: fill in those the batch found at the same event; the rest

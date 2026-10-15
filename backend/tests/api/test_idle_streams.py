@@ -1,13 +1,15 @@
 """SG-A6.4 (A6-12): a streamed trace with no append for STREAM_IDLE_S is closed and batch-checked; SG-A7.4 (A7-5):
 a later append reopens it."""
+import asyncio
 import time
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import update
 
 import app.services.trace_policy_service as tps
 from app.celery_app import celery
-from app.models import Trace, TracePolicyViolation
+from app.models import Span, Trace, TracePolicyViolation
 from app.services import trace_service
 from app.services.trace_service import OPEN_STREAMS_KEY, SEEDED_KEY, STREAM_IDLE_S, close_idle_streams
 from app.tasks import policy_tasks
@@ -102,13 +104,35 @@ async def test_batch_of_a_trace_reopened_meanwhile_stores_nothing(client, db, or
     assert row.counterexample_status == "pending"  # left for the next close
 
 
-# PR #35 gap: after a Redis loss (or for traces opened before tracking began) the sweep re-tracks open traces
+async def test_batch_waits_for_an_append_in_progress(client, db, org, agent, api_key_headers, redis, enqueued):
+    await _policy(db, org, NO_DROP)
+    await _append(client, api_key_headers, agent, "p", [ev(0, "drop_db")])
+    t = await _trace(db, "p")
+    assert await close_idle_streams(db, now=_later()) == [t.id]
+    lock = redis.lock(f"lock:trace-events:{org.id}:p", timeout=60)
+    assert await lock.acquire()
+    task = asyncio.create_task(tps.check_completed_trace(db, t.id))
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    await lock.release()
+    assert len(await task) == 0 and (await _rows(db, TracePolicyViolation))[0].counterexample_status == "minimal"
+
+
+# PR #35 gap: after a Redis loss (or for traces opened before tracking began) the sweep re-tracks open traces from
+# their last stored event
 async def test_sweep_retracks_open_traces_after_redis_loss(client, db, agent, api_key_headers, redis, enqueued):
     await _append(client, api_key_headers, agent, "o", [ev(0, "search")])
     await _append(client, api_key_headers, agent, "f", [ev(0, "search")], final=True)
-    o = await _trace(db, "o")
+    await _append(client, api_key_headers, agent, "old", [ev(0, "search")])
+    o, old = await _trace(db, "o"), await _trace(db, "old")
+    old.created_at = datetime.utcnow() - timedelta(days=2)
+    last = old.created_at + timedelta(seconds=5)
+    await db.execute(update(Span).where(Span.trace_id == old.id).values(started_at=last))
+    await db.commit()
     await redis.flushall()
-    assert await close_idle_streams(db) == []  # a full window from the re-tracking
+
+    assert await close_idle_streams(db) == [old.id]
+    assert abs((await _trace(db, "old")).latency_ms - 5000) <= 1
     assert await redis.zrange(OPEN_STREAMS_KEY, 0, -1) == [o.id] and await redis.get(SEEDED_KEY)
     await redis.delete(OPEN_STREAMS_KEY)
     assert await close_idle_streams(db, now=_later()) == []  # seeded once until the next loss
