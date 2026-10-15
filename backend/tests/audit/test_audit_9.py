@@ -10,6 +10,7 @@ from app.policy.checker import Monitor, check_verdicts, compile_policy, first_vi
 from app.policy.dsl import parse
 from app.policy.events import Event
 from app.policy.reference import evaluate
+from app.services import trace_policy_service as tps
 from tests.api.test_event_ingest import ev
 from tests.api.test_trace_policies import _create
 
@@ -30,9 +31,10 @@ STARS = 'policy stars severity high:\n  always not tool("' + "*" * 19_900 + 'z")
 
 
 # A9-1: `checker.work` counts monitor nodes, not globs, so the 413 policy_work_too_large bound of SG-A7.3 does not see
-# a glob list or a long glob; three 19.6 KB policies make each event cost 200+ ms (the glob cache thrashes)
-@pytest.mark.xfail(strict=True, reason="A9-1")
-async def test_check_work_bound_sees_globs(client, db, org, agent, auth_headers, api_key_headers):
+# a glob list or a long glob; three 19.6 KB policies make each event cost 200+ ms (the glob cache thrashes).
+# SG-A9.1 also charges globs against the org cap, which refuses the second such policy; lifted here to test /check
+async def test_check_work_bound_sees_globs(client, db, org, agent, auth_headers, api_key_headers, monkeypatch):
+    monkeypatch.setattr(tps, "MAX_ORG_POLICY_NODES", 100_000)
     for j in range(3):
         await _create(client, auth_headers, _many_globs(j), action="block")
     body = {"agent_id": agent.id, "candidate": ev(0, "x"), "prefix": [ev(i, "y" * 255) for i in range(20)]}
@@ -43,7 +45,6 @@ async def test_check_work_bound_sees_globs(client, db, org, agent, auth_headers,
     assert r.status_code == 413 or took < 0.5, took
 
 
-@pytest.mark.xfail(strict=True, reason="A9-1")
 @pytest.mark.parametrize("sources, events", [
     ([_many_globs(j) for j in range(3)], 20),
     ([STARS], 300),
@@ -57,7 +58,6 @@ def test_work_estimate_bounds_monitor_time(sources, events):
     assert time.perf_counter() - t < max(0.2, work(ps, events) * US_PER_WORK)
 
 
-@pytest.mark.xfail(strict=True, reason="A9-1")
 def test_batch_work_sees_globs():
     ps = [_compiled(_many_globs(j), str(j)) for j in range(3)]
     events = [Event(i, "tool", f"n{i}", "success", {}) for i in range(20)]

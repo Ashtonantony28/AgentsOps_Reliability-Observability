@@ -1,7 +1,7 @@
 """Linear state-carrying Z3 encoding of past-time policies over one trace (PLAN.md, design decision 2)."""
 import re
 from functools import lru_cache
-from typing import Any, Hashable, Sequence
+from typing import Any, Callable, Hashable, Sequence
 
 import z3
 
@@ -13,37 +13,86 @@ _INLINE_MAX = 40
 
 
 # matching is deliberately not shared with reference.py: the reference evaluator is an independent oracle
-@lru_cache(maxsize=4096)
-def _glob_parts(glob: str) -> tuple[tuple[re.Pattern, int], ...]:
-    return tuple((re.compile("".join("." if c == "?" else re.escape(c) for c in part), re.S), len(part))
-                 for part in glob.split("*"))
+def _part(part: str) -> str | re.Pattern:
+    return re.compile("".join("." if c == "?" else re.escape(c) for c in part), re.S) if "?" in part else part
+
+
+def compile_glob(glob: str) -> Callable[[str], bool]:
+    """Star-free parts are fixed-length; the middle ones are found leftmost-first, so nothing re-splits (no
+    backtracking; at worst len(name) x len(glob)). Empty middle parts (from `**`) match anywhere and are dropped."""
+    first, *rest = glob.split("*")
+    if not rest:
+        if "?" not in first:
+            return lambda name: name == first
+        whole = _part(first)
+        return lambda name: whole.fullmatch(name) is not None
+    head, n0 = _part(first), len(first)
+    tail, n1 = _part(rest[-1]), len(rest[-1])
+    mid = [(_part(p), len(p)) for p in rest[:-1] if p]
+
+    def match(name: str) -> bool:
+        if not (name.startswith(head) if isinstance(head, str) else head.match(name)):
+            return False
+        pos = n0
+        for p, n in mid:
+            if isinstance(p, str):
+                i = name.find(p, pos)
+                if i < 0:
+                    return False
+                pos = i + n
+            else:
+                m = p.search(name, pos)
+                if m is None:
+                    return False
+                pos = m.end()
+        end = len(name) - n1
+        return end >= pos and (name.endswith(tail) if isinstance(tail, str) else tail.match(name, end) is not None)
+    return match
+
+
+def glob_cost(glob: str) -> int:
+    """Work units (`checker.work`) of matching one name: one, two per part searched for between stars (a scan of
+    the name), and one per character of a part with `?` (a regex that may try each character at each position)."""
+    first, *rest = glob.split("*")
+    parts = [first, *rest]
+    return 1 + 2 * sum(1 for p in rest[:-1] if p) + sum(len(p) for p in parts if "?" in p)
+
+
+_glob_match = lru_cache(maxsize=4096)(compile_glob)
 
 
 def glob_match(glob: str, name: str) -> bool:
-    """Star-free parts are fixed-length; the middle ones are found leftmost-first, so nothing re-splits
-    (no backtracking; at worst len(name) x len(glob))."""
-    (first, n), *rest = _glob_parts(glob)
-    if not rest:
-        return first.fullmatch(name) is not None
-    if first.match(name) is None:
-        return False
-    pos = n
-    for part, _ in rest[:-1]:
-        m = part.search(name, pos)
-        if m is None:
-            return False
-        pos = m.end()
-    last, n = rest[-1]
-    return len(name) - n >= pos and last.fullmatch(name, len(name) - n) is not None
+    return _glob_match(glob)(name)
 
 
 def attr_equal(actual: Any, expected: Any) -> bool:
     return type(actual) is type(expected) and actual == expected
 
 
-def matches(m: ast.Match, e: Event) -> bool:
+def compile_globs(globs: Sequence[str]) -> Callable[[str], bool]:
+    """Any of `globs`; plain names, `prefix*` and `*suffix` globs are one set lookup or one C call per name."""
+    exact, heads, tails, rest = set(), [], [], []
+    for g in dict.fromkeys(globs):
+        if "?" in g or g.count("*") > 1:
+            rest.append(compile_glob(g))
+        elif "*" not in g:
+            exact.add(g)
+        elif g.endswith("*"):
+            heads.append(g[:-1])
+        elif g.startswith("*"):
+            tails.append(g[1:])
+        else:
+            rest.append(compile_glob(g))
+    heads_t, tails_t = tuple(heads), tuple(tails)
+    return lambda name: (name in exact or name.startswith(heads_t) or name.endswith(tails_t)
+                         or any(g(name) for g in rest))
+
+
+def matches(m: ast.Match, e: Event, name_ok: Callable[[str], bool] | None = None) -> bool:
+    """`name_ok`: `compile_globs(m.globs)`, for a plan that outlives the shared glob cache."""
     return ((m.kind is None or e.kind == m.kind)
-            and (not m.globs or any(glob_match(g, e.name) for g in m.globs))
+            and (not m.globs or (name_ok(e.name) if name_ok is not None
+                                 else any(glob_match(g, e.name) for g in m.globs)))
             and (m.status is None or e.status == m.status)
             and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
 
