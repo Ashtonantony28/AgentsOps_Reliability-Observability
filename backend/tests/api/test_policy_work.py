@@ -1,6 +1,6 @@
 """SG-A7.3, SG-A10.1/A10-2: policy work runs off the event loop, long jobs in slices; an append's and a request's
 uploads' work is bounded (413 / rejected policy_work_too_large), a check always answered; an org's policies are
-bounded in number and size (422 policy_limit)."""
+bounded in number and size (422 policy_limit). SG-A11.1: pool slices and rebuilds are taken in turn by org."""
 import asyncio
 import time
 
@@ -168,3 +168,62 @@ async def test_glob_lists_count_toward_work_and_the_org_cap(client, db, org, age
     r = await _append(client, api_key_headers, agent, "g", [ev(i, "t") for i in range(833)])
     assert _err(r, 413, "policy_work_too_large")["details"]["work"] == 833 * 2_401
     assert (await _append(client, api_key_headers, agent, "g", [ev(i, "t") for i in range(832)])).status_code == 202
+
+
+async def _acquire(slots, org_id, order):
+    async with slots(org_id):
+        order.append(org_id)
+        await asyncio.sleep(0)
+
+
+async def test_fair_slots_take_orgs_in_turn():
+    slots, order = tps.FairSlots(1), []
+    async with slots("held"):
+        tasks = [asyncio.create_task(_acquire(slots, o, order)) for o in "AAAB"]
+        await asyncio.sleep(0)
+    await asyncio.gather(*tasks)
+    assert order == ["A", "B", "A", "A"]
+
+
+async def test_fair_slots_survive_cancelled_waiters():
+    slots, order = tps.FairSlots(1), []
+    async with slots("held"):
+        gone = asyncio.create_task(_acquire(slots, "A", order))
+        waiting = asyncio.create_task(_acquire(slots, "B", order))
+        await asyncio.sleep(0)
+        gone.cancel()
+    await waiting
+    async with slots("held"):  # handed a slot as it is cancelled: the slot comes back
+        handed = asyncio.create_task(_acquire(slots, "A", order))
+        await asyncio.sleep(0)
+    handed.cancel()
+    await asyncio.gather(handed, return_exceptions=True)
+    await asyncio.wait_for(_acquire(slots, "C", order), 1)
+    assert order == ["B", "C"]
+
+
+async def test_rebuild_slots_are_taken_in_turn_by_org(client, db, org, agent, api_key_headers, redis):
+    """A11-1: the rebuild slots one org fills free up for another org's rebuild before its own next one."""
+    await _policy(db, org, BIG)
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "t")])
+    await redis.flushdb()
+    rebuilds, release = tps._fair()[1], asyncio.Event()
+
+    async def hog():
+        async with rebuilds("hog"):
+            await release.wait()
+
+    held = [asyncio.create_task(hog()) for _ in range(tps.MAX_CONCURRENT_REBUILDS + 3)]
+    await asyncio.sleep(0)
+    check = asyncio.create_task(client.post("/api/trace-policies/check", headers=api_key_headers, json={
+        "agent_id": agent.id, "trace_uid": "u1", "candidate": ev(1, "x")}))
+    while not rebuilds._waiting.get(org.id):
+        await asyncio.sleep(0.005)
+    queued = [o for o, q in rebuilds._waiting.items() for _ in q]
+    assert queued == ["hog"] * 3 + [org.id]
+    for t in held[:2]:  # two of the hog's slots free up: one goes to the hog, the next to the other org
+        t.cancel()
+    r = await asyncio.wait_for(check, 5)  # first come first served, the hog's three would go first
+    assert r.status_code == 200 and len(rebuilds._waiting["hog"]) == 1  # the other org's slot went back to the hog
+    release.set()
+    await asyncio.gather(*held, return_exceptions=True)
