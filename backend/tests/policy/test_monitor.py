@@ -8,7 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from app.policy import ast, monitor
-from app.policy.checker import Monitor, Violation, check_trace, compile_policy
+from app.policy.checker import Monitor, Violation, check_trace, check_verdicts, compile_policy
 from app.policy.dsl import parse
 from app.policy.events import Event
 from app.policy.reference import evaluate
@@ -201,6 +201,15 @@ def test_past_the_group_bound_an_undecided_count_fails_the_policy():
     with patch.object(monitor, "MAX_GROUPS", 0):
         m = Monitor(_compiled([p]))
         assert [(m.step(e), list(m.failing))[1] for e in events] == [[], ["0"]]
+
+
+def test_batch_counts_every_group_exactly():
+    p = ast.Policy("p", "high", ast.Implies(ast.Match(kind="tool", globs=("b",)),
+                                            ast.Count(ast.Match(), ">=", 2, by="name")))
+    events = [Event(0, "tool", "a", "success", {}), Event(1, "tool", "b", "success", {})]
+    with patch.object(monitor, "MAX_GROUPS", 0):
+        assert [v.at_seq for v in check_verdicts(_compiled([p]), events)] == evaluate(p, events)[:1] == [1]
+        assert check_verdicts(_compiled([p]), events + [Event(2, "tool", "b", "success", {})])[0].at_seq == 1
 
 
 def test_count_by_state_is_bounded_and_exact_below_the_bound():
