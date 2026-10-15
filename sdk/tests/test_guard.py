@@ -275,11 +275,10 @@ def test_guarded_call_outcome_is_set_when_it_ends(aclient, server, stream):
 
     t = asyncio.run(main())
     got = [(e["status"], e["latency_ms"] >= 15) for e in t.events]
-    if stream:  # the second gathered check sent the first's event, and the first's end push the second's
-        assert got == [("error", True), ("success", False), ("success", False)]
-        assert [e["status"] for b in server.bodies("events") for e in b["events"]] == ["error", "success", "success"]
-    else:
-        assert got == [("error", True), ("success", True), ("error", True)]
+    # streamed, the second gathered check sent the first's event while it ran; the second's waited for its outcome
+    assert got == [("error", True), ("success", not stream), ("error", True)]
+    if stream:
+        assert [e["status"] for b in server.bodies("events") for e in b["events"]] == ["error", "success", "error"]
 
 
 def test_sync_guarded_calls_in_threads_overlap_and_check_in_turn(client, server):

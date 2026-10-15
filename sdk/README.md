@@ -55,8 +55,8 @@ Or guard a function (sync or async). The check runs first and raises `agentops.P
 `add_event` when it starts, its status (`success` / `error`) and latency set when it ends. Guarded calls in one
 trace are checked one at a time, each after the ones started before it are recorded, so two started together
 (`asyncio.gather`, threads) cannot both pass a check meant to admit one; the calls themselves run concurrently, and
-a guarded call may start or await others. With `stream=True`, an event sent while its call still runs (by another
-check or push) keeps `success` and latency 0. Function arguments are never sent.
+a guarded call may start or await others. With `stream=True`, pushes wait for a running call's outcome, but an event
+a later check (or the trace's exit) sends while its call still runs keeps `success` and latency 0. Function arguments are never sent.
 
 ```python
 @agentops.guard                              # or @agentops.guard(name="refund", kind="tool", tier="gold")

@@ -41,7 +41,8 @@ def guard(fn: Optional[Callable] = None, *, name: Optional[str] = None, kind: st
             if t is not None and t.tool_calls:
                 log.warning("agentops guard: trace %s uses add_tool_call; %s not recorded", t.trace_id, ev_name)
             elif t is not None:
-                return t._add(kind, ev_name, attrs=attrs)  # pushed when the call ends or by the next check
+                a = dict(attrs)
+                return t._add(kind, ev_name, "success", a.pop("input", None), a.pop("output", None), a, running=True)
             return None
 
         def _end(t, ev: Optional[dict], start: int, status: str) -> None:

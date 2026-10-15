@@ -58,6 +58,8 @@ class Trace:
     _alock: Any = field(default=None, init=False, repr=False, compare=False)
     _guard_lock: Any = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
     _guard_alock: Any = field(default=None, init=False, repr=False, compare=False)
+    _running: list = field(default_factory=list, init=False, repr=False, compare=False)  # guarded calls' events
+    _sending: list = field(default_factory=list, init=False, repr=False, compare=False)
     _tasks: set = field(default_factory=set, init=False, repr=False, compare=False)
     _token: Any = field(default=None, init=False, repr=False, compare=False)
 
@@ -90,7 +92,7 @@ class Trace:
         self._schedule_push()
 
     def _add(self, kind: str, name: str, status: str = "success", input: Optional[dict] = None,
-             output: Optional[dict] = None, attrs: Optional[dict] = None) -> dict:
+             output: Optional[dict] = None, attrs: Optional[dict] = None, running: bool = False) -> dict:
         attrs = dict(attrs or {})
         latency_ms = attrs.pop("latency_ms", 0)
         ev = event_dict(0, kind, name, status, input, output, attrs, latency_ms=latency_ms,
@@ -98,23 +100,29 @@ class Trace:
         with self._lock:  # the seq is the event's index, so taking it and appending are one step
             ev["seq"] = len(self.events)
             self.events.append(ev)
+            if running:
+                self._running.append(ev)
         return ev
 
     def _end(self, ev: dict, status: str, latency_ms: int) -> None:
-        """Sets the outcome of a call recorded when it started, unless its event was sent meanwhile."""
+        """Sets the outcome of a call recorded when it started, unless a check or the trace's exit sent its event
+        meanwhile; until then, pushes stop short of it."""
         with self._lock:
-            if any(e is ev for e in self.events[self._sent:]):
+            self._running = [e for e in self._running if e is not ev]
+            pending = _has(self.events[self._sent:], ev) and not _has(self._sending, ev)
+            if pending:
                 ev.update(status=status, latency_ms=int(latency_ms))
-        self._schedule_push()
+        if pending:
+            self._schedule_push()
 
     def _schedule_push(self) -> None:
         if not self._streaming():
             return
         if not self._client.is_async:
-            self._push()
+            self._push(hold=True)
             return
         try:
-            task = asyncio.get_running_loop().create_task(self._apush())
+            task = asyncio.get_running_loop().create_task(self._apush(hold=True))
         except RuntimeError:
             return  # no loop: pushed by the next acheck or on exit
         self._tasks.add(task)
@@ -158,11 +166,13 @@ class Trace:
     def _streaming(self) -> bool:
         return self.stream and self._client is not None
 
-    def _batch(self, final: bool) -> Optional[tuple]:
+    def _batch(self, final: bool, hold: bool = False) -> Optional[tuple]:
         if self._dead:
             return None
         start = self._sent
         pending = self.events[start:start + 1] if start < self._split else self.events[start:]
+        if hold:  # a background push leaves running guarded calls' events for their outcome
+            pending = pending[:next((i for i, e in enumerate(pending) if _has(self._running, e)), len(pending))]
         if not pending and not final:
             return None
         final = final and start + len(pending) == len(self.events)
@@ -212,22 +222,28 @@ class Trace:
         log.warning("agentops stopped streaming trace %s; dropped %d events", self.trace_id, n)
         return False
 
-    def _push(self, final: bool = False) -> None:
+    def _push(self, final: bool = False, hold: bool = False) -> None:
         with self._lock:
             for _ in range(2 * (len(self.events) - self._sent) + 2):
-                batch = self._batch(final)
+                batch = self._batch(final, hold)
                 if batch is None or not self._settle(self._client._send_events(self.trace_id, batch[2]),
                                                      *batch[:2], final):
                     return
 
-    async def _apush(self, final: bool = False) -> None:
+    async def _apush(self, final: bool = False, hold: bool = False) -> None:
         if self._alock is None:
             self._alock = asyncio.Lock()
         async with self._alock:
             for _ in range(2 * (len(self.events) - self._sent) + 2):
-                batch = self._batch(final)
-                if batch is None or not self._settle(await self._client._asend_events(self.trace_id, batch[2]),
-                                                     *batch[:2], final):
+                batch = self._batch(final, hold)
+                if batch is None:
+                    return
+                self._sending = batch[1]  # an outcome set while they are on the way would not reach the server
+                try:
+                    outcome = await self._client._asend_events(self.trace_id, batch[2])
+                finally:
+                    self._sending = []
+                if not self._settle(outcome, *batch[:2], final):
                     return
 
     def mark_error(self, message: str):
@@ -299,6 +315,10 @@ class Trace:
         elif self._client is not None:
             await self._client.aenqueue(self.to_payload())
         return False
+
+
+def _has(events: List[dict], ev: dict) -> bool:
+    return any(e is ev for e in events)
 
 
 def _bare(events: List[dict]) -> List[dict]:
