@@ -388,6 +388,9 @@ async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limi
             await db.refresh(trace)
             if (trace.meta or {}).get("stream") == "open":
                 trace.meta = {**trace.meta, "stream": "idle"}
+                trace.status = "timeout"  # an outcome comes only with the final append, which never arrived
+                started = trace.created_at.replace(tzinfo=timezone.utc).timestamp()
+                trace.latency_ms = max(0, int((score - started) * 1000))  # to its last append
                 await db.commit()
                 closed.append(trace_id)
             await r.zrem(OPEN_STREAMS_KEY, trace_id)

@@ -1,6 +1,6 @@
 """AUDIT-8 mutation probe of the round-2 fixes (PRs #24-#35), replayed like AUDIT-4's:
-python backend/scripts/mutants_audit8.py [probe | A8-8]. The "probe" rows were killed when AUDIT-8 ran; the A8-8 rows
-survived (AUDIT-8.md A8-8)."""
+python backend/scripts/mutants_audit8.py [probe | A8-8]. The "probe" rows were killed when AUDIT-8 ran (SG-A8.2 added
+its own); the A8-8 rows survived it (AUDIT-8.md A8-8) and are killed since SG-A8.2."""
 import sys
 
 import mutants_audit4 as m
@@ -22,6 +22,14 @@ m.MUTANTS = [
      "len(out) >= size or n + k >= max_events", *S),
     ("probe", "sdk/agentops_sdk/guard.py", "with t._guard_lock if t is not None else contextlib.nullcontext():",
      "with contextlib.nullcontext():", *S),
+    ("probe", "sdk/agentops_sdk/guard.py", "                async with _alock(t):", "                async with _alock(None):",
+     *S),
+    ("probe", "sdk/agentops_sdk/trace.py", "            if any(e is ev for e in self.events[self._sent:]):",
+     "            if True:", *S),
+    ("probe", "sdk/agentops_sdk/trace.py", "if self._streaming() and not self.tool_calls:", "if self._streaming():",
+     *S),
+    ("probe", "backend/app/routers/ws.py", "if key is None or key.revoked_at:", "if key is None:", *B),
+    ("probe", TS, '                trace.status = "timeout"', "                pass", *B),
     ("probe", "sdk/agentops_sdk/trace.py", "(not self._dead or self._client.fail_closed)", "not self._dead", *S),
     ("probe", "sdk/agentops_sdk/precheck.py",
      'return "fatal" if (err.get("details") or {}).get("target") == "trace" else "refused"',

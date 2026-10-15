@@ -132,6 +132,7 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
     if not org_id:
         await websocket.close(code=4401)
         return
+    key_hash = hash_api_key(api_key)
     await websocket.accept()
     try:
         async with async_session_maker() as db:
@@ -142,13 +143,18 @@ async def ws_ingest(websocket: WebSocket, api_key: str | None = Query(default=No
         limit = org.rate_limit_per_min
         while True:
             raw = await websocket.receive_text()
-            try:
-                await enforce_rate_limit(f"org:{org_id}", limit)
-            except HTTPException:
-                await websocket.send_json({"ok": False, "error": "rate_limited"})
-                continue
             # a session per message: one kept for the socket would serve rows other writers have since changed
             async with async_session_maker() as db:
+                key = (await db.execute(select(ApiKey.revoked_at).where(ApiKey.key_hash == key_hash))).first()
+                if key is None or key.revoked_at:  # revoked or deleted since connect
+                    await websocket.send_json({"ok": False, "error": "unauthorized"})
+                    await websocket.close(code=4401)
+                    return
+                try:
+                    await enforce_rate_limit(f"org:{org_id}", limit)
+                except HTTPException:
+                    await websocket.send_json({"ok": False, "error": "rate_limited"})
+                    continue
                 await websocket.send_json(await _ingest_message(db, org_id, raw))
     except WebSocketDisconnect:
         return

@@ -88,7 +88,6 @@ async def test_events_after_an_idle_pause_are_stored(db, org, sdk_client):
 
 
 # A8-3: guarded calls started inside a guarded call inherit its "held" context and skip the per-trace lock
-@pytest.mark.xfail(strict=True, reason="A8-3: concurrent guarded calls nested in a guarded call share one check")
 async def test_concurrent_guarded_calls_inside_a_guarded_call(db, org, sdk_client):
     await _policy(db, org, ONE_DELETE)
     ran = []
@@ -109,7 +108,6 @@ async def test_concurrent_guarded_calls_inside_a_guarded_call(db, org, sdk_clien
 
 
 # A8-3: a guarded call waiting on a task that makes its own guarded call never finishes
-@pytest.mark.xfail(strict=True, reason="A8-3: a guarded call that awaits another task's guarded call deadlocks")
 async def test_guarded_call_awaiting_a_worker_finishes(db, org, sdk_client):
     jobs = asyncio.Queue()
 
@@ -138,7 +136,6 @@ async def test_guarded_call_awaiting_a_worker_finishes(db, org, sdk_client):
 
 
 # A8-4: /ws/ingest checks the API key once, at connect; a revoked key keeps writing on an open socket
-@pytest.mark.xfail(strict=True, reason="A8-4: an open /ws/ingest socket outlives its API key's revocation")
 def test_ws_ingest_stops_after_the_key_is_revoked(app_, api_key, agent, session_maker):
     def send(ws, seq):
         ws.send_text(json.dumps({"type": "events", "trace_uid": "w1", "agent_id": agent.id,
@@ -175,7 +172,6 @@ async def test_check_answers_a_trace_at_the_event_cap(client, agent, api_key_hea
 
 
 # A8-6: a streamed trace's tool calls (add_tool_call) are never streamed, and its checks send no prefix either
-@pytest.mark.xfail(strict=True, reason="A8-6: checks of a streamed trace ignore its add_tool_call history")
 async def test_streamed_trace_checks_see_its_tool_calls(db, org, sdk_client):
     await _policy(db, org, NO_EXFIL)
     async with sdk_client.trace() as plain:
