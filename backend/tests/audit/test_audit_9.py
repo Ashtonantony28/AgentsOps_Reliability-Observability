@@ -68,7 +68,6 @@ def test_batch_work_sees_globs():
 
 # A9-2: the glob product automaton (`_automaton`, `name_patterns`) and per-glob atom terms are built before the
 # counterexample deadline is checked or charged; one event, one glob, 3.7 s against a 0.2 s budget
-@pytest.mark.xfail(strict=True, reason="A9-2")
 @pytest.mark.parametrize("source, events", [
     ('policy u severity high:\n  always not tool("' + "".join(chr(0x4E00 + i) for i in range(4000)) + '*")',
      [Event(0, "tool", "".join(chr(0x4E00 + i) for i in range(4000)), "success", {})]),
@@ -88,7 +87,6 @@ def test_counterexample_budget_holds_for_globs(monkeypatch, source, events):
 # A9-3: SG-A7.3's per-monitor bound on exact `count ... by` values is shared by every policy of the monitor, so
 # broad count policies use up the slots and a narrow blocking policy becomes uncertain, hence false from then on:
 # a legitimate call is blocked, and so is every later one in the trace
-@pytest.mark.xfail(strict=True, reason="A9-3")
 def test_one_policys_groups_do_not_make_another_false():
     broad = [_compiled(f"policy names{i} severity low:\n  always count(tool(*)) by name <= 50", f"b{i}")
              for i in range(20)]
@@ -104,7 +102,6 @@ def test_one_policys_groups_do_not_make_another_false():
 
 # A9-4: the batch evaluator keeps an exact count per `count ... by` node per distinct value, each value a fresh digest
 # string per node; at the org cap (about 2 000 such nodes) a 10 000-event trace needs about 2 GB
-@pytest.mark.xfail(strict=True, reason="A9-4")
 def test_batch_count_by_memory_is_bounded():
     body = " and ".join(f"count(tool(*)) by name < {i + 2}" for i in range(50))
     p = _compiled(f"policy c severity low:\n  always {body}")

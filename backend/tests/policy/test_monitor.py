@@ -265,13 +265,15 @@ def test_long_values_are_counted_exactly_by_digest():
     assert a not in m.snapshot().decode()
 
 
-def test_group_slots_are_shared_by_the_whole_monitor():
-    ps = [ast.Policy(str(i), "low", ast.Count(ast.Match(), "<=", 5, by="name")) for i in range(3)]
-    m = Monitor(_compiled(ps))
-    with patch.object(monitor, "MAX_MONITOR_GROUPS", 4):
-        m.step(Event(0, "tool", "a", "success", {}))
-        m.step(Event(1, "tool", "b", "success", {}))
-    assert [row[3][1] for row in json.loads(m.snapshot())["p"]] == [{"a": 1, "b": 1}] + [{"a": 1, "\0": 1}] * 2
+def test_group_slots_are_split_over_the_monitors_nodes():
+    """SG-A9.2 (A9-3): each node gets its share of the monitor bound, used up by its own values only."""
+    ps = [ast.Policy(str(i), "low", ast.Count(ast.Match(), "<=", 5, by="name")) for i in range(2)]
+    ps.append(ast.Policy("2", "low", ast.Count(ast.Match(globs=("d*",)), "<=", 5, by="name")))
+    with patch.object(monitor, "MAX_MONITOR_GROUPS", 6):
+        m = Monitor(_compiled(ps))
+    for i, name in enumerate(["a", "b", "c", "d"]):
+        m.step(Event(i, "tool", name, "success", {}))
+    assert [row[3][1] for row in json.loads(m.snapshot())["p"]] == [{"a": 1, "b": 1, "\0": 2}] * 2 + [{"d": 1}]
 
 
 def test_a_v1_snapshot_is_rebuilt():
