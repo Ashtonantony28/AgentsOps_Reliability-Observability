@@ -1,7 +1,5 @@
-"""AUDIT-12.md SDK findings as failing tests; each is xfail(strict=True) until its sub-goal fixes it."""
+"""AUDIT-12.md SDK findings as tests; each was xfail(strict=True) until its sub-goal fixed it."""
 import asyncio
-
-import pytest
 
 from agentops_sdk import guard
 
@@ -12,7 +10,6 @@ async def _two(tool):
 
 # A12-2: the async guard's per-trace asyncio.Lock is created on first use and binds to the loop it first waits in, so a
 # sync agent that runs its async tools with asyncio.run per step gets RuntimeError from the second step's guarded calls
-@pytest.mark.xfail(strict=True, reason="A12-2: a trace's async guard lock is bound to the first event loop")
 def test_guarded_calls_of_one_trace_in_two_event_loops(client, server):
     server.delay = 0.01  # the two calls of a step contend for the lock
 
