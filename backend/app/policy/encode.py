@@ -1,7 +1,7 @@
 """Linear state-carrying Z3 encoding of past-time policies over one trace (PLAN.md, design decision 2)."""
 import re
 from functools import lru_cache
-from typing import Any, Hashable, Sequence
+from typing import Any, Callable, Hashable, Sequence
 
 import z3
 
@@ -13,28 +13,55 @@ _INLINE_MAX = 40
 
 
 # matching is deliberately not shared with reference.py: the reference evaluator is an independent oracle
-@lru_cache(maxsize=4096)
-def _glob_parts(glob: str) -> tuple[tuple[re.Pattern, int], ...]:
-    return tuple((re.compile("".join("." if c == "?" else re.escape(c) for c in part), re.S), len(part))
-                 for part in glob.split("*"))
+def _part(part: str) -> str | re.Pattern:
+    return re.compile("".join("." if c == "?" else re.escape(c) for c in part), re.S) if "?" in part else part
+
+
+def compile_glob(glob: str) -> Callable[[str], bool]:
+    """Star-free parts are fixed-length; the middle ones are found leftmost-first, so nothing re-splits (no
+    backtracking; at worst len(name) x len(glob)). Empty middle parts (from `**`) match anywhere and are dropped."""
+    first, *rest = glob.split("*")
+    if not rest:
+        if "?" not in first:
+            return first.__eq__
+        whole = _part(first)
+        return lambda name: whole.fullmatch(name) is not None
+    head, n0 = _part(first), len(first)
+    tail, n1 = _part(rest[-1]), len(rest[-1])
+    mid = [(_part(p), len(p)) for p in rest[:-1] if p]
+
+    def match(name: str) -> bool:
+        if not (name.startswith(head) if isinstance(head, str) else head.match(name)):
+            return False
+        pos = n0
+        for p, n in mid:
+            if isinstance(p, str):
+                i = name.find(p, pos)
+                if i < 0:
+                    return False
+                pos = i + n
+            else:
+                m = p.search(name, pos)
+                if m is None:
+                    return False
+                pos = m.end()
+        end = len(name) - n1
+        return end >= pos and (name.endswith(tail) if isinstance(tail, str) else tail.match(name, end) is not None)
+    return match
+
+
+def glob_cost(glob: str) -> int:
+    """Work units (`checker.work`) of matching one name: one, two per `*` between parts, and one per character of
+    a part with `?` (a regex that may try each of its characters at each position of the name)."""
+    parts = [p for p in glob.split("*") if p]
+    return 1 + 2 * max(len(parts) - 1, 0) + sum(len(p) for p in parts if "?" in p)
+
+
+_glob_match = lru_cache(maxsize=4096)(compile_glob)
 
 
 def glob_match(glob: str, name: str) -> bool:
-    """Star-free parts are fixed-length; the middle ones are found leftmost-first, so nothing re-splits
-    (no backtracking; at worst len(name) x len(glob))."""
-    (first, n), *rest = _glob_parts(glob)
-    if not rest:
-        return first.fullmatch(name) is not None
-    if first.match(name) is None:
-        return False
-    pos = n
-    for part, _ in rest[:-1]:
-        m = part.search(name, pos)
-        if m is None:
-            return False
-        pos = m.end()
-    last, n = rest[-1]
-    return len(name) - n >= pos and last.fullmatch(name, len(name) - n) is not None
+    return _glob_match(glob)(name)
 
 
 def attr_equal(actual: Any, expected: Any) -> bool:
@@ -46,6 +73,15 @@ def matches(m: ast.Match, e: Event) -> bool:
             and (not m.globs or any(glob_match(g, e.name) for g in m.globs))
             and (m.status is None or e.status == m.status)
             and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
+
+
+def compile_match(m: ast.Match) -> Callable[[Event], bool]:
+    """`matches(m, .)` with its globs compiled once, for a plan that outlives any shared glob cache."""
+    globs = tuple(map(compile_glob, dict.fromkeys(m.globs)))
+    return lambda e: ((m.kind is None or e.kind == m.kind)
+                      and (not globs or any(g(e.name) for g in globs))
+                      and (m.status is None or e.status == m.status)
+                      and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
 
 
 def _match_key(m: ast.Match) -> Hashable:

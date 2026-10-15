@@ -8,7 +8,7 @@ import threading
 from typing import Any
 
 from app.policy import ast
-from app.policy.encode import Dag, matches
+from app.policy.encode import Dag, compile_match, glob_cost
 from app.policy.events import Event
 
 _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">=": operator.ge,
@@ -73,6 +73,10 @@ class Plan:
             (type(f).__name__, f if isinstance(f, (ast.Match, ast.Count)) else None, kids)
             for f, kids in zip(dag.nodes, dag.kids)]
         self.count_by = [k for k, (op, f, _) in enumerate(self.nodes) if op == "Count" and f.by]
+        self.match = {k: compile_match(f) for k, (op, f, _) in enumerate(self.nodes) if op == "Match"}
+        # `checker.work` units per event: one per node, which covers a Match's first simple glob
+        self.cost = len(self.nodes) + sum(max(sum(map(glob_cost, f.globs)) - 1, 0)
+                                          for op, f, _ in self.nodes if op == "Match")
         self.digest = hashlib.sha256(repr((policy.name, policy.severity, list(dag.keys))).encode()).hexdigest()[:16]
 
     def initial(self) -> list:
@@ -93,11 +97,11 @@ class Plan:
         for k, (op, f, kids) in enumerate(self.nodes):
             if op == "Match":
                 if memo is None or f.attrs:
-                    v[k] = matches(f, e)
+                    v[k] = self.match[k](e)
                 else:
                     key = (k, e.kind, e.name, e.status)
                     hit = memo.get(key)
-                    v[k] = memo[key] = matches(f, e) if hit is None else hit
+                    v[k] = memo[key] = self.match[k](e) if hit is None else hit
             elif op == "Not":
                 v[k] = not v[kids[0]]
             elif op == "And":

@@ -61,8 +61,8 @@ async def _check_name_free(db: AsyncSession, org_id: str, name: str, exclude_id:
 
 
 async def _check_org_limits(db: AsyncSession, org_id: str, parsed: Policy, exclude_id: str | None = None) -> None:
-    """At most MAX_ORG_POLICIES non-archived policies and MAX_ORG_POLICY_NODES monitor nodes in all, so the work
-    of a span rebuild or a batch check is bounded per trace."""
+    """At most MAX_ORG_POLICIES non-archived policies and MAX_ORG_POLICY_NODES units of per-event work in all
+    (monitor nodes and glob costs, `Plan.cost`), so the work of a span rebuild or a batch check is bounded per trace."""
     await db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
     q = select(TracePolicy.id, TracePolicy.source).where(TracePolicy.org_id == org_id,
                                                          TracePolicy.archived_at.is_(None))
@@ -72,16 +72,16 @@ async def _check_org_limits(db: AsyncSession, org_id: str, parsed: Policy, exclu
     if len(rows) >= tps.MAX_ORG_POLICIES:
         raise HTTPException(422, detail={"error": "policy_limit", "max_policies": tps.MAX_ORG_POLICIES,
                                          "message": f"an org has at most {tps.MAX_ORG_POLICIES} policies"})
-    nodes = len(plan_for(parsed).nodes)
+    nodes = plan_for(parsed).cost
     for pid, source in rows:
         try:
-            nodes += len(plan_for(tps._compile(pid, source).policy).nodes)
+            nodes += plan_for(tps._compile(pid, source).policy).cost
         except (PolicyParseError, ValueError):
             pass
     if nodes > tps.MAX_ORG_POLICY_NODES:
         raise HTTPException(422, detail={
             "error": "policy_limit", "nodes": nodes, "max_nodes": tps.MAX_ORG_POLICY_NODES,
-            "message": f"this org's policies would have {nodes} formula nodes in all; at most "
+            "message": f"this org's policies would have {nodes} formula nodes and glob costs in all; at most "
                        f"{tps.MAX_ORG_POLICY_NODES} are allowed"})
 
 

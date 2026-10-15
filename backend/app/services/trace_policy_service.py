@@ -20,10 +20,11 @@ from app.redis import get_redis
 
 log = logging.getLogger(__name__)
 STATE_TTL_S = 24 * 3600
-# policy nodes x events one request may step (about a second); /check, appends and uploads past it get a 413
+# `checker.work` (events x policy nodes and glob costs) one request may do, about a second; /check, appends and
+# uploads past it get a 413
 MAX_REQUEST_WORK = 2_000_000
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
-MAX_ORG_POLICY_NODES = 4_000
+MAX_ORG_POLICY_NODES = 4_000  # `Plan.cost` summed: nodes, and glob lists or long globs on top
 
 Active = list[tuple[TracePolicy, CompiledPolicy]]
 

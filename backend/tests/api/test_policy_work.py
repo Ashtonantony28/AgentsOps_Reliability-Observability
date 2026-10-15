@@ -10,6 +10,7 @@ from app.services import trace_policy_service as tps
 from tests.api.test_event_ingest import _append, _policy, ev
 from tests.api.test_trace_policies import SRC_A, SRC_B, URL, _create, _err
 from tests.audit.test_audit_7 import _many_atoms
+from tests.audit.test_audit_9 import _many_globs
 
 BIG = _many_atoms(500)  # 1 001 nodes: 2 000 events is over MAX_REQUEST_WORK
 
@@ -88,3 +89,17 @@ async def test_org_policy_nodes_are_bounded(client, auth_headers, monkeypatch):
          422, "policy_limit")
     assert (await client.put(f"{URL}/{a['id']}", json={"source": 'policy alpha:\n  always tool(*)'},
                              headers=auth_headers)).status_code == 200
+
+
+async def test_glob_lists_count_toward_work_and_the_org_cap(client, db, org, agent, auth_headers, api_key_headers):
+    """SG-A9.1 (A9-1): a 2 400-glob atom is 2 401 units, not 2 nodes: a second one is over the org cap, and a
+    request over MAX_REQUEST_WORK / 2 401 events gets a 413."""
+    await _create(client, auth_headers, _many_globs(0), action="block")
+    body = _err(await client.post(URL, json={"source": _many_globs(1)}, headers=auth_headers), 422, "policy_limit")
+    assert (body["details"]["nodes"], body["details"]["max_nodes"]) == (4_802, tps.MAX_ORG_POLICY_NODES)
+    r = await client.post("/api/trace-policies/check", headers=api_key_headers, json={
+        "agent_id": agent.id, "candidate": ev(0, "x"), "prefix": [ev(i, "t") for i in range(832)]})
+    assert _err(r, 413, "policy_work_too_large")["details"]["work"] == 833 * 2_401
+    r = await client.post("/api/trace-policies/check", headers=api_key_headers, json={
+        "agent_id": agent.id, "candidate": ev(0, "x"), "prefix": [ev(i, "t") for i in range(831)]})
+    assert r.status_code == 200 and r.json()["allowed"]
