@@ -110,7 +110,6 @@ def test_monitor_snapshot_size_is_bounded():
 
 # A7-5: the idle sweeper closes a trace whose agent is only paused (a human approval, a long tool call); the next
 # append is a 409 trace_closed, so the SDK stops streaming and the rest of the trace is never stored or counted
-@pytest.mark.xfail(strict=True, reason="A7-5: an idle-closed trace refuses every later append")
 async def test_append_after_an_idle_close_is_accepted(client, db, org, agent, api_key_headers, redis, enqueued):
     assert (await _append(client, api_key_headers, agent, "paused", [ev(0, "search")])).status_code == 202
     (trace_id,) = await redis.zrange(OPEN_STREAMS_KEY, 0, -1)

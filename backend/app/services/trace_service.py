@@ -25,6 +25,7 @@ from app.tasks.policy_tasks import enqueue_trace_check
 log = logging.getLogger(__name__)
 
 OPEN_STREAMS_KEY = "streams:open"  # sorted set: open streamed trace id -> time of its last append
+SEEDED_KEY = "streams:seeded"  # absent after a Redis loss: the sweep re-tracks the open traces Postgres holds
 STREAM_IDLE_S = 3600  # a streamed trace with no append for this long is closed and batch-checked
 
 
@@ -280,7 +281,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
             select(Trace).where(Trace.org_id == org_id, Trace.trace_uid == trace_uid)
             .order_by(Trace.created_at.desc()).limit(1)
         )).scalar_one_or_none()
-        if trace is not None and (trace.meta or {}).get("stream") != "open":
+        if trace is not None and (trace.meta or {}).get("stream") not in ("open", "idle"):
             raise TraceConflict("trace_closed", "trace is complete; no more events can be appended")
         if trace is not None and trace.agent_id != agent.id:
             raise TraceConflict("agent_mismatch", "trace belongs to another agent")
@@ -304,6 +305,8 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                           agent_version=req.agent_version or agent.current_version, meta={"stream": "open"})
             db.add(trace)
             await db.flush()
+        else:
+            _reopen(trace)  # kept only by the commits below; a legacy rule's block rolls it back
 
         refused = None
         try:
@@ -356,6 +359,12 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
     return trace, rows
 
 
+def _reopen(trace: Trace) -> None:
+    """An append to a trace the idle sweep closed reopens it; its next close runs the batch check again."""
+    if (trace.meta or {}).get("stream") == "idle":
+        trace.meta = {**trace.meta, "stream": "open"}
+
+
 async def _track_stream(trace_id: str, open_: bool) -> None:
     """Under the trace's append lock, so the idle sweep never closes a trace mid-append."""
     try:
@@ -367,10 +376,28 @@ async def _track_stream(trace_id: str, open_: bool) -> None:
         log.exception("could not track streamed trace %s", trace_id)
 
 
+async def _retrack_open_streams(db: AsyncSession, chunk: int = 1000) -> None:
+    """Tracks the traces Postgres holds as open (after a Redis loss, or opened before tracking began) from their last
+    stored event, so the sweep closes them as if Redis had never lost them; a later append reopens them."""
+    r, now = get_redis(), time.time()
+    rows = (await db.execute(
+        select(Trace.id, func.coalesce(func.max(Span.started_at), Trace.created_at))
+        .outerjoin(Span, Span.trace_id == Trace.id)
+        .where(Trace.meta["stream"].as_string() == "open").group_by(Trace.id, Trace.created_at)
+    )).all()
+    for i in range(0, len(rows), chunk):
+        await r.zadd(OPEN_STREAMS_KEY, {tid: min(now, last.replace(tzinfo=timezone.utc).timestamp())
+                                        for tid, last in rows[i:i + chunk]}, nx=True)
+    await r.set(SEEDED_KEY, 1)
+
+
 async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limit: int = 1000) -> list[str]:
-    """Closes streamed traces with no append for STREAM_IDLE_S (`meta.stream = "idle"`) and queues their batch
-    check; a trace an append holds is left for the next sweep. Returns the closed trace ids."""
+    """Closes streamed traces with no append for STREAM_IDLE_S (`meta.stream = "idle"`, reopened by a later
+    append) and queues their batch check; a trace an append holds is left for the next sweep. Returns the closed
+    trace ids."""
     r = get_redis()
+    if not await r.exists(SEEDED_KEY):
+        await _retrack_open_streams(db)
     cutoff = (time.time() if now is None else now) - STREAM_IDLE_S
     closed = []
     for trace_id in await r.zrangebyscore(OPEN_STREAMS_KEY, "-inf", cutoff, start=0, num=limit):

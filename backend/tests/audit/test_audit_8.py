@@ -42,7 +42,8 @@ def _after_idle() -> float:
     return time.time() + STREAM_IDLE_S + 1
 
 
-# A8-1: once a stream stops, checks are judged on the server's events only; the SDK's undelivered ones are ignored
+# A8-1: checks after an idle close see the later events (since SG-A7.4 the append reopens the trace, so the stream
+# never stops; the event cap test covers a stopped stream)
 async def test_check_after_idle_close_sees_undelivered_events(db, org, sdk_client):
     await _policy(db, org, NO_EXFIL)
     async with sdk_client.trace(stream=True) as t:
@@ -52,7 +53,7 @@ async def test_check_after_idle_close_sees_undelivered_events(db, org, sdk_clien
         t.add_event("tool", "read_secret")
         await t._apush()
         result = await t.acheck("http_post")
-    assert t._dead and result.error is None  # control: the server answered the check
+    assert not t._dead and t._sent == 2 and result.error is None  # control: the server stored and answered
     assert not result.allowed
 
 
@@ -70,7 +71,6 @@ async def test_check_at_the_event_cap_does_not_allow(db, org, sdk_client, monkey
 
 
 # A8-2: the idle sweep closes a trace that is only slow; its later events and outcome are dropped
-@pytest.mark.xfail(strict=True, reason="A8-2: events and outcome sent after an hour's pause are lost")
 async def test_events_after_an_idle_pause_are_stored(db, org, sdk_client):
     async with sdk_client.trace(stream=True, input="hi") as t:
         t.add_event("tool", "search")
