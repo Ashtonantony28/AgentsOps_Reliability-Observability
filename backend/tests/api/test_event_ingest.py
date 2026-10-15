@@ -324,12 +324,12 @@ async def test_batch_check_commits_rows_and_counterexamples(client, db, session_
         (False, "live", [1], "minimal"), (True, "batch", [0, 1], "minimal")]
 
 
-async def test_enqueue_failure_does_not_raise(monkeypatch, caplog):
-    def boom(trace_id):
+async def test_enqueue_failure_does_not_raise(redis, monkeypatch, caplog):
+    def boom(*args):
         raise ConnectionError("broker down")
 
     monkeypatch.setattr(policy_tasks.check_completed_trace, "delay", boom)
-    await policy_tasks.enqueue_trace_check("t1")
+    await policy_tasks.enqueue_trace_check("t1", "o1")
     assert "t1" in caplog.text
 
 

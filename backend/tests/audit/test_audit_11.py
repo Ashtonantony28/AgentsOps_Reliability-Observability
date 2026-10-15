@@ -10,7 +10,8 @@ from httpx import ASGITransport, AsyncClient
 from app.middleware.auth import hash_api_key
 from app.models import Agent, ApiKey, Organization
 from app.policy.checker import work
-from app.services import trace_policy_service as tps
+from app.services import trace_policy_service as tps, trace_service
+from app.tasks import policy_tasks
 from tests.api.test_event_ingest import _policy, ev
 from tests.audit.test_audit_7 import _many_atoms
 
@@ -31,8 +32,7 @@ async def _other_org(db):
 
 # A11-1: policy work past WORK_SLICE runs in slices on one two-thread FIFO pool per process, shared by every org, and
 # nothing bounds how many such jobs one org has in flight (`/check` has no work bound since SG-A10.1; the rate limit
-# is 600 requests a minute). Another org's long check, append or rebuild then waits behind a slice of each.
-@pytest.mark.xfail(strict=True, reason="A11-1")
+# is 600 requests a minute). Another org's long check, append or rebuild then waited behind a slice of each.
 async def test_one_orgs_policy_work_does_not_queue_another_orgs(client, db, org, agent, api_key_headers,
                                                                 monkeypatch):
     monkeypatch.setattr(tps, "WORK_SLICE", 20_000)
@@ -41,7 +41,7 @@ async def test_one_orgs_policy_work_does_not_queue_another_orgs(client, db, org,
     await _policy(db, other, _many_atoms(50))
     slices: list[str] = []
     real = tps._step_inputs
-    monkeypatch.setattr(tps, "_step_inputs", lambda m, es: slices.extend(es[:1] and [es[0].name[0]]) or real(m, es))
+    monkeypatch.setattr(tps, "_step_inputs", lambda m, es: slices.extend(es[:1] and [es[0].name[:3]]) or real(m, es))
 
     async def check(headers, agent_id, tag, n):
         prefix = [ev(i, f"{tag}{uuid.uuid4().hex}") for i in range(n)]  # never seen, so no checkpoint
@@ -49,39 +49,51 @@ async def test_one_orgs_policy_work_does_not_queue_another_orgs(client, db, org,
                                                             "prefix": prefix})
         assert r.status_code == 200, r.text
 
-    noisy = [asyncio.create_task(check(other_headers, other_agent.id, "A", 20_000 // 101 * 40)) for _ in range(24)]
+    noisy = [asyncio.create_task(check(other_headers, other_agent.id, f"A{j:02}", 20_000 // 101 * 40))
+             for j in range(24)]
     deadline = time.monotonic() + 60
-    while slices.count("A") < 48 and time.monotonic() < deadline:  # every noisy check is in its slices
+    while len(set(slices)) < 24 and time.monotonic() < deadline:  # every noisy check is in its slices
         await asyncio.sleep(0.01)
     before = len(slices)
-    await check(api_key_headers, agent.id, "B", 198 * 10)  # ten slices
-    during = slices[before:]
+    await check(api_key_headers, agent.id, "B--", 198 * 10)  # ten slices
+    during = "".join(s[0] for s in slices[before:])
+    # from its first slice: before it, the request's own parsing and queries share the process's CPU with the pool
+    # threads, which no scheduling of the pool changes (SG-A11.1 in PLAN.md)
+    during = during[during.index("B"):during.rindex("B") + 1]
     for t in noisy:
         t.cancel()
     await asyncio.gather(*noisy, return_exceptions=True)
     assert during.count("B") >= 10
-    # fair or per-org bounded: at most a few of the other org's slices per slice of this one; about 40 a slice today
+    # at most a few of the other org's slices per slice of this one; about 24 a slice with one FIFO pool
     assert during.count("A") <= 4 * during.count("B"), (during.count("A"), during.count("B"))
 
 
 # A11-2: whole-trace uploads queue their batch check on the one `policy` Celery queue, first come first served, and
 # nothing bounds the batch work an org has queued: an upload over MAX_REQUEST_WORK does no inline work at all (SG-A10.1)
 # and log/alert policies never do. At the org cap a 10 000-event trace is ~31 s of batch verdicts, so one org's
-# minute of uploads at its rate limit queues hours of work ahead of every other org's checks.
-@pytest.mark.xfail(strict=True, reason="A11-2")
-async def test_one_orgs_queued_batch_work_is_bounded(client, db, org, agent, api_key_headers, enqueued):
+# minute of uploads at its rate limit queued hours of work ahead of every other org's checks. Since SG-A11.1 each
+# queued task checks the next trace in turn by org, so "ahead" is the order the tasks take the traces in.
+async def test_one_orgs_queued_batch_work_is_bounded(client, db, org, agent, api_key_headers, monkeypatch):
+    monkeypatch.setattr(trace_service, "enqueue_trace_check", policy_tasks.enqueue_trace_check)
+    tasks = []
+    monkeypatch.setattr(policy_tasks.check_completed_trace, "delay", lambda *a: tasks.append(a))
     other, other_agent, other_headers = await _other_org(db)
     await _policy(db, other, BIG)
     await _policy(db, org, BIG)
     n = tps.MAX_REQUEST_WORK // 1_001 + 1  # just over the bound: stored, no inline work
+    uploads = []
     for j in range(20):
         r = await client.post("/api/traces/ingest", headers=other_headers, json={
             "agent_id": other_agent.id, "events": [ev(i, f"{j}-{i}") for i in range(n)]})
         assert r.status_code in (202, 429), r.text
+        uploads += [r.json()["id"]] * (r.status_code == 202)
     r = await client.post("/api/traces/ingest", headers=api_key_headers, json={
         "agent_id": agent.id, "events": [ev(0, "a")]})
     assert r.status_code == 202, r.text
-    ahead = enqueued[:enqueued.index(r.json()["id"])]
+    assert set(tasks) == {()} and len(tasks) == len(uploads) + 1
+    order = [await policy_tasks.next_trace_check() for _ in tasks]
+    assert sorted(order) == sorted(uploads + [r.json()["id"]]) and await policy_tasks.next_trace_check() is None
+    ahead = order[:order.index(r.json()["id"])]
     # at most a few requests' worth of the other org's batch work ahead of this org's check; 20 today
     assert len(ahead) * work([tps._compile("x", BIG)], n) <= 4 * tps.MAX_REQUEST_WORK, len(ahead)
 

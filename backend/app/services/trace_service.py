@@ -178,7 +178,8 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn, room: Op
         policy_note = await evaluate_policies(db, org_id, agent, payload, events)
         policies = await tps.active_policies(db, org_id, agent.id, payload.environment)
         blocking = [c for row, c in policies if row.action == "block"]
-        blocked = _charge(blocking, len(events), room) and await tps.blocking_violations(blocking, _events(events))
+        blocked = _charge(blocking, len(events), room) and await tps.blocking_violations(
+            org_id, blocking, _events(events))
         if blocked:
             raise _trace_policy_block(blocked[0].policy_name, blocked[0].at_seq)
     except PolicyViolation as pv:
@@ -219,7 +220,7 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn, room: Op
 
     await db.commit()
     if policies:
-        await enqueue_trace_check(trace.id)
+        await enqueue_trace_check(trace.id, trace.org_id)
 
     # Publish to Redis pub/sub for real-time feed
     r = get_redis()
@@ -337,10 +338,10 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                 except PolicyViolation as pv:
                     pv.target = "trace"
                     raise
-            monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)
+            monitor, replayed = await tps.load_monitor(db, org_id, trace.id, [c for _, c in policies], next_seq)
             blocking = {row.id: c.policy.name for row, c in policies if row.action == "block"}
             found = await tps.run_sliced(partial(_step_events, monitor, blocking=blocking), _events(req.events),
-                                         [c for _, c in policies])
+                                         [c for _, c in policies], org_id)
         except PolicyViolation as pv:
             if pv.violations is None:
                 await _block(db, org_id, agent.id, pv, trace_uid=trace_uid)
@@ -373,7 +374,7 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
     if refused:
         raise refused
     if req.final:
-        await enqueue_trace_check(trace.id)
+        await enqueue_trace_check(trace.id, trace.org_id)
     return trace, rows
 
 
@@ -417,7 +418,7 @@ async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limi
     if not await r.exists(SEEDED_KEY):
         await _retrack_open_streams(db)
     cutoff = (time.time() if now is None else now) - STREAM_IDLE_S
-    closed = []
+    closed, orgs = [], {}
     for trace_id in await r.zrangebyscore(OPEN_STREAMS_KEY, "-inf", cutoff, start=0, num=limit):
         trace = await db.get(Trace, trace_id)
         if trace is None or (trace.meta or {}).get("stream") != "open":
@@ -438,13 +439,14 @@ async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limi
                 trace.latency_ms = max(0, int((score - started) * 1000))  # to its last append
                 await db.commit()
                 closed.append(trace_id)
+                orgs[trace_id] = trace.org_id
             await r.zrem(OPEN_STREAMS_KEY, trace_id)
             await tps.save_monitor(trace_id, None)
         finally:
             with suppress(LockError):
                 await lock.release()
     for trace_id in closed:
-        await enqueue_trace_check(trace_id)
+        await enqueue_trace_check(trace_id, orgs[trace_id])
     return closed
 
 

@@ -265,6 +265,51 @@ async def test_celery_task_checks_publishes_and_closes_redis(monkeypatch, sessio
     assert calls == ["t1"] and closed == [True]
 
 
+async def test_batch_checks_are_taken_in_turn_by_org(redis, monkeypatch):
+    """SG-A11.1 (A11-2): a queued task checks the next trace in turn by org, not the trace it was queued for."""
+    tasks = []
+    monkeypatch.setattr(policy_tasks.check_completed_trace, "delay", lambda *a: tasks.append(a))
+    for tid, org_id in [("a1", "A"), ("a2", "A"), ("a3", "A"), ("b1", "B"), ("c1", "C"), ("b2", "B")]:
+        await policy_tasks.enqueue_trace_check(tid, org_id)
+    assert tasks == [()] * 6
+    assert [await policy_tasks.next_trace_check() for _ in range(7)] == ["a1", "b1", "c1", "a2", "b2", "a3", None]
+    assert await redis.keys("policy:batch:*") == []
+
+
+async def test_celery_task_checks_the_next_trace_in_turn(monkeypatch, session_maker):
+    calls, waiting, closed = [], ["t1"], []
+
+    async def fake_check(s, trace_id, counterexamples):
+        calls.append(trace_id)
+        return ["row"]
+
+    async def fake_close():
+        closed.append(True)
+
+    async def next_trace():
+        return waiting.pop() if waiting else None
+
+    monkeypatch.setattr(policy_tasks, "check_and_publish", fake_check)
+    monkeypatch.setattr(policy_tasks, "close_redis", fake_close)
+    monkeypatch.setattr(policy_tasks, "next_trace_check", next_trace)
+    monkeypatch.setattr(policy_tasks, "async_sessionmaker", lambda *a, **k: session_maker)
+    assert await asyncio.to_thread(policy_tasks.check_completed_trace.run) == 1
+    assert await asyncio.to_thread(policy_tasks.check_completed_trace.run) == 0  # nothing left: a lost race
+    assert calls == ["t1"] and len(closed) == 3  # the client is bound to each task's own loop
+
+
+async def test_enqueue_without_redis_queues_the_trace_itself(monkeypatch, caplog):
+    class Down:
+        async def eval(self, *a):
+            raise ConnectionError("redis down")
+
+    tasks = []
+    monkeypatch.setattr(policy_tasks, "get_redis", lambda: Down())
+    monkeypatch.setattr(policy_tasks.check_completed_trace, "delay", lambda *a: tasks.append(a))
+    await policy_tasks.enqueue_trace_check("t1", "o1")
+    assert tasks == [("t1",)] and "t1" in caplog.text
+
+
 async def test_celery_task_past_soft_limit_stores_verdicts(monkeypatch, session_maker, caplog):
     calls = []
 
