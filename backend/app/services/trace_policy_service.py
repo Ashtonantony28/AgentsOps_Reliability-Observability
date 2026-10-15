@@ -220,7 +220,12 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     keys = [f"policy:prefix:{d}" for d in await asyncio.to_thread(
         _marks, f"{org_id}|{trace_id}|{next_seq}|{plans}", prefix, k)]
     r, start, m = get_redis(), 0, None
-    for j, blob in reversed(list(enumerate(await r.mget(keys), 1))):
+    try:
+        blobs = await r.mget(keys)
+    except Exception:  # a check is answered without Redis, from the start
+        log.exception("could not read prefix checkpoints")
+        blobs, r = [], None
+    for j, blob in reversed(list(enumerate(blobs, 1))):
         if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq + j * k)):
             start = j * k
             break
@@ -228,7 +233,9 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     last = len(keys) * k
     if start < last:
         await run_sliced(partial(_step_inputs, m), prefix[start:last], compiled)
-        await r.set(keys[-1], await asyncio.to_thread(m.snapshot), ex=PREFIX_TTL_S)
+        if r is not None:
+            with suppress(Exception):
+                await r.set(keys[-1], await asyncio.to_thread(m.snapshot), ex=PREFIX_TTL_S)
     await asyncio.to_thread(_step_inputs, m, prefix[last:])
     return m
 

@@ -53,6 +53,17 @@ async def test_long_prefix_resumes_from_an_earlier_checks_checkpoint(client, db,
     assert n == 1_000
 
 
+async def test_long_prefix_is_checked_without_redis(client, db, org, agent, api_key_headers, redis, monkeypatch):
+    await _policy(db, org, BIG, action="block")
+
+    async def down(*a, **kw):
+        raise ConnectionError("redis down")
+    monkeypatch.setattr(redis, "mget", down)
+    r = await client.post("/api/trace-policies/check", headers=api_key_headers, json={
+        "agent_id": agent.id, "candidate": ev(0, "n0"), "prefix": [ev(i, "t") for i in range(500)]})
+    assert r.status_code == 200 and r.json()["allowed"] is False, r.text
+
+
 async def test_checkpointed_check_agrees_with_a_fresh_one(client, db, org, agent, api_key_headers, monkeypatch):
     monkeypatch.setattr(tps, "WORK_SLICE", 50)
     await _policy(db, org, 'policy p severity high:\n  always not (tool("b") and once tool("a"))', action="block")
