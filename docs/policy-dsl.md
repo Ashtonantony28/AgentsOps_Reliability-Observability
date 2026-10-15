@@ -128,7 +128,7 @@ Each live check costs about half a microsecond per monitor node per event, where
 | Limit | Value | Past it |
 |---|---|---|
 | policies per org (not archived) | 100 | create or source update: 422 `policy_limit` |
-| monitor nodes over an org's policies | 4 000 | create or source update: 422 `policy_limit` |
+| monitor nodes over an org's policies (each policy's `Plan.cost`, or the nodes parsed for it, unused tags included, if more) | 4 000 | create or source update: 422 `policy_limit` |
 | policy work of an event append: events × nodes of every active policy | 2 000 000 (about a second) | 413 `policy_work_too_large` with `work`, `max_work` and `max_events`, the events that fit; nothing is stored. A one-event append is always taken. The SDK sends its backlog again in appends of `max_events`. |
 | policy work of a request's trace uploads: events × nodes of its `block` policies | 2 000 000, over all traces of a `/ingest/bulk` request | a later trace that doesn't fit in what is left is rejected `policy_work_too_large` (`work`, `max_work`: what was left), and the SDK sends it again in a new request. A trace over the bound alone is stored and its batch check judges it: a `block` violation is recorded, not refused. |
 | `count … by` values kept exactly by the live checker | 1 000 per node, or 10 000 split evenly over the `count … by` nodes of the org's policies if less (at least 5 within the node limit), so one policy's values never use up another's; the batch check counts every value | later values share an overflow counter (nothing is missed, but a count it cannot settle fails the policy from then on); values over 32 characters are kept as a 96-bit digest |
