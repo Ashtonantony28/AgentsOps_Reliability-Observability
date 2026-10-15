@@ -1,6 +1,7 @@
 """AUDIT-11.md (round 5: checker correctness, performance and security) findings as failing tests; each is
 xfail(strict=True) until its sub-goal fixes it."""
 import asyncio
+import gc
 import time
 import uuid
 
@@ -97,13 +98,16 @@ def _unused_tags(j: int) -> str:
 # shared by every org of the process; 21 self-registered orgs at the 100-policy cap make every request miss, and each
 # of their requests then stalls the loop for every org for the time to parse 100 policies (2 s here)
 async def test_policy_compile_does_not_stall_the_event_loop(client, db, org, agent, auth_headers, api_key_headers):
-    for j in range(3):  # unused tags count toward the org cap now
+    for j in range(3):  # unused tags count toward the org cap now, so an org holds two of these
         r = await client.post("/api/trace-policies", headers=auth_headers, json={"source": _unused_tags(j)})
         assert r.status_code == 200 if j < 2 else _err(r, 422, "policy_limit"), r.text
-    for j in range(2, tps.MAX_ORG_POLICIES):  # stored before that
-        await _policy(db, org, _unused_tags(j))
+    for j in range(2, tps.MAX_ORG_POLICIES):
+        r = await client.post("/api/trace-policies", headers=auth_headers,
+                              json={"source": f'policy s{j}:\n  always not tool("x")'})
+        assert r.status_code == 200, r.text
     for i in range(tps.COMPILE_CACHE_SIZE):  # the other orgs' policies, used since
         tps._compile(f"other-{i}", f'policy p{i}:\n  always not tool("x")')
+    gc.collect()  # so a full collection the setup's garbage is due doesn't land in the window
     stall, done = 0.0, False
 
     async def heartbeat():
