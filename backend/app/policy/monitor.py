@@ -5,7 +5,7 @@ Same recurrences as the linear Z3 encoding, evaluated on concrete values so a li
 import hashlib
 import operator
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from app.policy import ast
 from app.policy.encode import Dag, compile_globs, glob_cost, matches
@@ -77,7 +77,7 @@ class Plan:
         self.cost = len(self.nodes) + sum(max(sum(map(glob_cost, set(f.globs))) - 1, 0)
                                           for op, f, _ in self.nodes if op == "Match")
         self.digest = hashlib.sha256(repr((policy.name, policy.severity, list(dag.keys))).encode()).hexdigest()[:16]
-        self._globs: dict[int, tuple] = {}  # compiled on first step: plans built only for `cost` stay small
+        self._globs: dict[int, Callable[[str], bool]] = {}  # compiled on first step: plans built only for `cost` stay small
 
     def _match(self, k: int, f: ast.Match, e: Event) -> bool:
         globs = self._globs.get(k)

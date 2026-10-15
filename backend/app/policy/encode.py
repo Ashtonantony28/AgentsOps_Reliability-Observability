@@ -69,14 +69,29 @@ def attr_equal(actual: Any, expected: Any) -> bool:
     return type(actual) is type(expected) and actual == expected
 
 
-def compile_globs(globs: Sequence[str]) -> tuple[Callable[[str], bool], ...]:
-    return tuple(map(compile_glob, dict.fromkeys(globs)))
+def compile_globs(globs: Sequence[str]) -> Callable[[str], bool]:
+    """Any of `globs`; plain names, `prefix*` and `*suffix` globs are one set lookup or one C call per name."""
+    exact, heads, tails, rest = set(), [], [], []
+    for g in dict.fromkeys(globs):
+        if "?" in g or g.count("*") > 1:
+            rest.append(compile_glob(g))
+        elif "*" not in g:
+            exact.add(g)
+        elif g.endswith("*"):
+            heads.append(g[:-1])
+        elif g.startswith("*"):
+            tails.append(g[1:])
+        else:
+            rest.append(compile_glob(g))
+    heads_t, tails_t = tuple(heads), tuple(tails)
+    return lambda name: (name in exact or name.startswith(heads_t) or name.endswith(tails_t)
+                         or any(g(name) for g in rest))
 
 
-def matches(m: ast.Match, e: Event, globs: Sequence[Callable[[str], bool]] | None = None) -> bool:
-    """`globs`: `m.globs` compiled (`compile_globs`), for a plan that outlives the shared glob cache."""
+def matches(m: ast.Match, e: Event, name_ok: Callable[[str], bool] | None = None) -> bool:
+    """`name_ok`: `compile_globs(m.globs)`, for a plan that outlives the shared glob cache."""
     return ((m.kind is None or e.kind == m.kind)
-            and (not m.globs or (any(g(e.name) for g in globs) if globs is not None
+            and (not m.globs or (name_ok(e.name) if name_ok is not None
                                  else any(glob_match(g, e.name) for g in m.globs)))
             and (m.status is None or e.status == m.status)
             and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
