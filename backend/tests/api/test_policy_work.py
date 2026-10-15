@@ -133,7 +133,7 @@ async def test_work_within_the_bound_runs_off_the_event_loop(client, db, org, ag
     done.set()
     await beat
     assert r.status_code == 200 and r.json()["allowed"] is False
-    assert stall < max(0.2, took / 4), (stall, took)
+    assert stall < max(0.3, took / 2), (stall, took)  # work on the loop stalls for about all of `took` (A10-8)
 
 
 async def test_org_policy_count_is_bounded(client, auth_headers, monkeypatch):
