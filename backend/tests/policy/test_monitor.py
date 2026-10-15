@@ -8,7 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from app.policy import ast, monitor
-from app.policy.checker import Monitor, Violation, check_trace, check_verdicts, compile_policy
+from app.policy.checker import Monitor, Violation, check_trace, check_verdicts, compile_policy, work
 from app.policy.dsl import parse
 from app.policy.events import Event
 from app.policy.reference import evaluate
@@ -287,3 +287,14 @@ def test_clearing_the_batch_memo_keeps_verdicts(fx):
     with patch("app.policy.checker._MEMO_MAX", 0):
         cleared = check_verdicts(compiled, fx.events)
     assert cleared == check_verdicts(compiled, fx.events)
+
+
+@pytest.mark.parametrize("body, cost", [
+    ('tool("delete_*")', 2), ("tool(*)", 2), ('tool("a", "b", "c")', 4), ('tool("a*b*c")', 4), ('tool("a*b", "a*b")', 2),
+    ('tool("***", "a?c")', 6), ('tool("x") and tool("x")', 3),
+])
+def test_plan_cost_charges_globs(body, cost):
+    """SG-A9.1 (A9-1): a Match costs one node plus its globs past the first simple one, so `work` sees glob lists."""
+    (p,) = parse(f"policy p:\n  always not {body}")
+    assert monitor.plan_for(p).cost == cost
+    assert work(_compiled([p]), 10) == 10 * cost

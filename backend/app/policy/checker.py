@@ -72,8 +72,8 @@ def first_violations(policies: Sequence[CompiledPolicy], events: Sequence[Event]
 
 
 def work(policies: Sequence[CompiledPolicy], events: int) -> int:
-    """Monitor work for stepping `events` events: policy nodes x events, about half a microsecond each."""
-    return events * sum(len(plan_for(p.policy).nodes) for p in policies)
+    """Monitor work for stepping `events` events: (policy nodes + glob costs) x events, about half a microsecond each."""
+    return events * sum(plan_for(p.policy).cost for p in policies)
 
 
 def _check(policies: Sequence[CompiledPolicy], events: Sequence[Event], deadline: float | None) -> list[Violation]:

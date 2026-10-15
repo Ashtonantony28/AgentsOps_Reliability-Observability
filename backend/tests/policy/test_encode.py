@@ -57,6 +57,7 @@ def test_violation_fields():
     ("a*", "a", True), ("a*", "ba", False), ("?", "é", True), ("?", "", False), ("??", "🚀", False),
     ("a.b", "a.b", True), ("a.b", "axb", False), ("a+", "aa", False), ("(x)", "(x)", True), ("*_?", "a_\n", True),
     ("A*", "a", False), ("*", "", True), ("a?c", "a\nc", True), ("$", "$", True), ("^a", "^a", True),
+    ("a**b", "ab", True), ("a**b", "a", False), ("*?*a", "a", False), ("**?**", "x", True), ("a*?b*", "ab", False),
 ])
 def test_glob(glob, name, ok):
     assert glob_match(glob, name) is ok

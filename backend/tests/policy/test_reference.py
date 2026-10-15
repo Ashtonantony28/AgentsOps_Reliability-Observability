@@ -65,6 +65,13 @@ def test_glob_matchers_agree_with_naive(glob, name):
     assert glob_match(glob, name) is encode.glob_match(glob, name) is _glob(glob, name)
 
 
+@settings(max_examples=2000)
+@given(st.lists(st.text("ab*?", min_size=1, max_size=5), min_size=1, max_size=4), st.text("abx", max_size=8))
+def test_compiled_glob_lists_agree_with_naive(globs, name):
+    """SG-A9.1: the plan's glob-list matcher (sets and prefix/suffix tuples) is any() of the naive matcher."""
+    assert encode.compile_globs(globs)(name) is any(_glob(g, name) for g in globs)
+
+
 @pytest.mark.parametrize("match", [glob_match, encode.glob_match])
 def test_glob_does_not_backtrack(match):
     glob = "*a" * 10 + "b"
