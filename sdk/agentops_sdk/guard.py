@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 from agentops_sdk import client as _client
 from agentops_sdk.precheck import PolicyBlocked
-from agentops_sdk.trace import current_trace
+from agentops_sdk.trace import current_trace, loop_lock
 from agentops_sdk.utils import now_ms
 
 log = logging.getLogger("agentops_sdk")
@@ -36,9 +36,7 @@ async def _alock(t):
     if t is None:
         yield
         return
-    if t._guard_alock is None:
-        t._guard_alock = asyncio.Lock()
-    async with t._guard_alock:  # the trace's tasks queue here, then share the lock with sync calls in threads
+    async with loop_lock(t._guard_alocks):  # the loop's tasks queue here, then share the lock with sync calls
         delay = 0.0005
         while not t._guard_lock.acquire(blocking=False):
             await asyncio.sleep(delay)

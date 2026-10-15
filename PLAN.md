@@ -460,10 +460,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_12.py tests/api/test_policy_work.py && TEST_DB=postgres pytest -q tests/audit/test_audit_12.py` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
 
 ### SG-A12.2 AUDIT-12 medium (A12-2)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-12
+- **Owner:** thread SG-A12.2 · **Status:** done · **Depends:** AUDIT-12
 - **Scope:** a trace's async guarded calls (and the async client's pushes) work when the trace's calls run in more than one event loop, e.g. asyncio locks kept per loop, or the shared threading lock awaited without an asyncio primitive. SDK only.
 - **Acceptance:** `sdk/tests/test_audit_12.py` passes unmarked; `tests/test_guard.py` and `tests/test_audit_10.py` unchanged.
 - **Verify:** `cd sdk && pytest -q`
+- **Result:** `trace.loop_lock` keeps one `asyncio.Lock` per running loop (`WeakKeyDictionary`) for the guard queue (`Trace._guard_alocks`) and the async push (`Trace._alocks`); calls in different loops still exclude each other through the shared threading `_guard_lock`, so the sync/async sharing of #47 holds. `test_audit_12.py` passes unmarked; `tests/test_guard_loops.py` adds the per-loop lock and an async guarded call waiting for a sync one in another thread (kills AUDIT-12's surviving `guard.py` one-poll mutant). Open low: async pushes of one trace from two loops running at once in different threads no longer exclude each other (before, the second loop raised `RuntimeError`).
 
 ## Audits (after SG5b; SG6 included if built)
 
