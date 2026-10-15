@@ -20,6 +20,10 @@ from app.redis import get_redis
 
 log = logging.getLogger(__name__)
 STATE_TTL_S = 24 * 3600
+# policy nodes x events one request may step (about a second); /check, appends and uploads past it get a 413
+MAX_REQUEST_WORK = 2_000_000
+MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
+MAX_ORG_POLICY_NODES = 4_000
 
 Active = list[tuple[TracePolicy, CompiledPolicy]]
 
@@ -103,16 +107,20 @@ async def _replay(db: AsyncSession, trace_id: str,
     slots = _rebuild_slots.get(loop) or _rebuild_slots.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_REBUILDS))
     async with slots:
         spans = (await db.execute(select(*_EVENT_COLUMNS).where(Span.trace_id == trace_id))).all()
-        m = Monitor(compiled)
-        return m, [v for e in events_from_spans(spans) for v in m.step(e)]
+        return await asyncio.to_thread(_rebuild, spans, compiled)
+
+
+def _rebuild(spans, compiled: Sequence[CompiledPolicy]) -> tuple[Monitor, list[Violation]]:
+    m = Monitor(compiled)
+    return m, [v for e in events_from_spans(spans) for v in m.step(e)]
 
 
 async def load_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
                        next_seq: int) -> tuple[Monitor, list[Violation]]:
     """Monitor positioned after the stored events. Rebuilt from spans if the Redis state is missing, stale or
     for other policies; the violations found while rebuilding are returned so they can be recorded."""
-    m = _restore(await get_redis().get(_state_key(trace_id)), compiled, next_seq)
-    if m:
+    blob = await get_redis().get(_state_key(trace_id))
+    if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq)):
         return m, []
     await get_redis().delete(_precheck_key(trace_id))  # the state this append saves supersedes it
     return await _replay(db, trace_id, compiled)
@@ -125,15 +133,15 @@ async def precheck_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[C
     r = get_redis()
     keys = (_state_key(trace_id), _precheck_key(trace_id))
     for blob in await r.mget(keys):
-        if m := _restore(blob, compiled, next_seq):
+        if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq)):
             return m
     lock = r.lock(f"lock:monitor-rebuild:{trace_id}", timeout=30, blocking_timeout=5)
     locked = await lock.acquire()
     try:
-        if m := _restore(await r.get(keys[1]), compiled, next_seq):  # built while we waited
+        if m := await asyncio.to_thread(_restore, await r.get(keys[1]), compiled, next_seq):  # built while waiting
             return m
         m, _ = await _replay(db, trace_id, compiled)
-        await r.set(keys[1], m.snapshot().decode(), ex=STATE_TTL_S)
+        await r.set(keys[1], await asyncio.to_thread(m.snapshot), ex=STATE_TTL_S)
         return m
     finally:
         if locked:
@@ -145,7 +153,7 @@ async def save_monitor(trace_id: str, monitor: Monitor | None) -> None:
     if monitor is None:
         await get_redis().delete(_state_key(trace_id), _precheck_key(trace_id))
     else:
-        await get_redis().set(_state_key(trace_id), monitor.snapshot().decode(), ex=STATE_TTL_S)
+        await get_redis().set(_state_key(trace_id), await asyncio.to_thread(monitor.snapshot), ex=STATE_TTL_S)
 
 
 def blocking_violations(policies: Active, events: Sequence[Event]) -> list[Violation]:

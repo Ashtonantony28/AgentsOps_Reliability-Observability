@@ -118,6 +118,8 @@ async def _ingest_message(db, org_id: str, raw: str) -> dict:
         trace = await ingest_trace(db, org_id, payload)
     except PolicyViolation as pv:
         return {"ok": False, "error": "policy_block", "rule": pv.rule_name}
+    except TraceConflict as tc:
+        return {"ok": False, "error": tc.code, "message": tc.message, **tc.details}
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "id": trace.id}

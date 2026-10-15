@@ -180,10 +180,13 @@ def test_attr_values_stay_type_distinct():
 
 
 @settings(deadline=None, max_examples=1000)
-@given(st.lists(vocab_policies, min_size=1, max_size=3), traces(), st.integers(0, 3))
-def test_past_the_group_bound_no_violation_is_missed(ps, events, max_groups):
+@given(st.lists(vocab_policies, min_size=1, max_size=3), traces(), st.integers(0, 3), st.integers(0, 6),
+       st.sampled_from([0, 32]))
+def test_past_the_group_bound_no_violation_is_missed(ps, events, max_groups, monitor_groups, key_chars):
+    """Per node and per monitor bounds, values kept whole or as digests (key_chars=0)."""
     compiled = _compiled(ps)
-    with patch.object(monitor, "MAX_GROUPS", max_groups):
+    with patch.object(monitor, "MAX_GROUPS", max_groups), patch.object(monitor, "MAX_MONITOR_GROUPS", monitor_groups), \
+            patch.object(monitor, "MAX_KEY_CHARS", key_chars):
         m = Monitor(compiled)
         for e in events:
             m.step(e)
@@ -251,3 +254,36 @@ def test_plan_digest_is_by_content():
     b = parse('policy p severity high: always not (tool("a") and tool("a"))')[0]
     assert monitor.plan_for(a).digest == monitor.plan_for(b).digest
     assert monitor.plan_for(a).digest != monitor.plan_for(replace(b, severity="low")).digest
+
+
+def test_long_values_are_counted_exactly_by_digest():
+    p = ast.Policy("p", "low", ast.Count(ast.Match(), "<=", 1, by="name"))
+    a, b = "a" * 254 + "x", "a" * 254 + "y"
+    m = Monitor(_compiled([p]))
+    assert [bool(m.step(Event(i, "tool", n, "success", {}))) for i, n in enumerate([a, b, "\0#" + a[:30], a])] == \
+        [False, False, False, True]
+    assert a not in m.snapshot().decode()
+
+
+def test_group_slots_are_shared_by_the_whole_monitor():
+    ps = [ast.Policy(str(i), "low", ast.Count(ast.Match(), "<=", 5, by="name")) for i in range(3)]
+    m = Monitor(_compiled(ps))
+    with patch.object(monitor, "MAX_MONITOR_GROUPS", 4):
+        m.step(Event(0, "tool", "a", "success", {}))
+        m.step(Event(1, "tool", "b", "success", {}))
+    assert [row[3][1] for row in json.loads(m.snapshot())["p"]] == [{"a": 1, "b": 1}] + [{"a": 1, "\0": 1}] * 2
+
+
+def test_a_v1_snapshot_is_rebuilt():
+    compiled = _compiled([ast.Policy("p", "low", ast.Count(ast.Match(), "<=", 1, by="name"))])
+    blob = json.loads(Monitor(compiled).snapshot())
+    with pytest.raises(ValueError):
+        Monitor.restore(compiled, json.dumps({**blob, "v": 1}).encode())
+
+
+@pytest.mark.parametrize("fx", FIXTURES, ids=lambda f: f.name)
+def test_clearing_the_batch_memo_keeps_verdicts(fx):
+    compiled = [compile_policy(p.name, p) for p in parse(fx.source)]
+    with patch("app.policy.checker._MEMO_MAX", 0):
+        cleared = check_verdicts(compiled, fx.events)
+    assert cleared == check_verdicts(compiled, fx.events)
