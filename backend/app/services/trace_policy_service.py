@@ -159,13 +159,16 @@ def blocking_violations(policies: Active, events: Sequence[Event]) -> list[Viola
 async def check_completed_trace(db: AsyncSession, trace_id: str,
                                 counterexamples: bool = True) -> list[TracePolicyViolation]:
     """Batch check of a completed trace; re-running it stores nothing new."""
-    trace = await db.get(Trace, trace_id)
-    if trace is None or (trace.meta or {}).get("stream") == "open":
+    trace = await db.get(Trace, trace_id, populate_existing=True)
+    if trace is None or (stream := (trace.meta or {}).get("stream")) == "open":
         return []
     policies = await active_policies(db, trace.org_id, trace.agent_id, trace.environment)
     spans = (await db.execute(select(Span).where(Span.trace_id == trace_id))).scalars().all()
     check = check_trace if counterexamples else check_verdicts
     violations = check([c for _, c in policies], events_from_spans(spans))
+    await db.refresh(trace)
+    if (trace.meta or {}).get("stream") != stream:  # an idle trace reopened meanwhile; its next close checks it
+        return []
     rows = await record_violations(db, trace, policies, violations, "batch")
     # live rows are stored before their counterexample: fill in those the batch found at the same event; the rest
     # (an older policy version, a refused call that was never stored) get none

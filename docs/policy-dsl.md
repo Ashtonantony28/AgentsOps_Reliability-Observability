@@ -98,6 +98,10 @@ The counterexample of a violation at `at_seq` is the minimal set `S` of seqs suc
 - `no_exfil_after_secret` with one secret read at seq 1 and a network call at seq 4: `{1, 4}`.
 - `always tool("charge_*") -> count(event("confirmation")) > 1` violated at a charge at seq 1: `{1}`; two events cannot hold two confirmations when one of them is the charge.
 
+## Streamed traces
+
+Events appended to a streamed trace (`POST /api/traces/{uid}/events`, `/ws/ingest`) are checked live, and the append with `final` closes the trace and queues the batch check, which fills in counterexamples. A trace with no append for an hour is closed as `timeout` and batch-checked as it stands; a later append reopens it, its live checks carry on from the stored events, and its next close runs the batch check again (it stores no violation twice; the outcome stays `timeout` until the `final` append sets one). Only a `final` trace refuses more events (409 `trace_closed`).
+
 ## Errors
 
 `parse` raises `PolicyParseError(line, col, message)` at the first error; `line`/`col` locate the offending token and `message` names what was expected (e.g. `expected ')'`, `expected integer bound after '<='`).
