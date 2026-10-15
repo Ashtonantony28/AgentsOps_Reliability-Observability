@@ -415,6 +415,24 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Acceptance:** the A9-2, A9-3 and A9-4 tests pass unmarked; the overflow rule stays Hypothesis-checked against `reference.evaluate` across restores; differential and counterexample property tests unchanged; counterexample, batch and precheck bench rows met.
 - **Verify:** `cd backend && pytest tests/audit/test_audit_9.py -k "counterexample or groups or memory" tests/policy -q` · `python backend/scripts/bench_policy.py --path counterexample --assert-budget`
 
+### SG-A10.1 The work bound fits what clients send (AUDIT-10 A10-1 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-10; SG-A9.1 changes how the same bound counts work (globs), so one thread, or SG-A9.1 first
+- **Scope:** no policy set the API accepts makes the SDK's ordinary requests fail on `policy_work_too_large`: a check of an unstreamed trace (its whole history as `prefix`), a stopped stream's check (SG-A8.1's prefix), a trace upload and a streamed backlog. The fixing thread picks how, e.g. org caps consistent with the bound (nodes x `MAX_TRACE_EVENTS` within it), or a bound sized for that product off the event loop with its own concurrency limit, or 413s that say how many events fit (`max_events`) with the SDK splitting appends and bulk batches by it while `/check` and single uploads are always answered. A contract change, approved under the Rules line if sound.
+- **Acceptance:** the three A10-1 tests in `backend/tests/audit/test_audit_10.py` pass unmarked on SQLite and Postgres; `tests/api/test_policy_work.py` updated to the new contract; precheck, ingest and live bench rows met.
+- **Verify:** `cd backend && pytest -q tests/audit/test_audit_10.py tests/api && TEST_DB=postgres pytest -q tests/audit/test_audit_10.py` · `cd sdk && pytest -q` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+
+### SG-A10.2 A bulk upload's policy work is bounded (AUDIT-10 A10-2 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-10; same code as SG-A10.1, so one thread may take both
+- **Scope:** `/ingest/bulk` counts policy work across the request's traces against the per-request bound (rejecting the traces past it with `policy_work_too_large`, or the request with 413), so no request does more than the bound; consider a dedicated bounded executor for policy work so one org's uploads cannot starve other orgs' checks.
+- **Acceptance:** `test_bulk_upload_work_is_bounded_per_request` passes unmarked; a bulk of 20 traces x 499 events against 3 984 `block` nodes no longer takes over the bound's time; SG-A6.1's SDK batching tests unchanged.
+- **Verify:** `cd backend && pytest -q tests/audit/test_audit_10.py tests/api` · `cd sdk && pytest -q`
+
+### SG-A10.3 AUDIT-10 mediums (A10-3, A10-4)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-10
+- **Scope:** a running guarded call does not hold back events other tasks add after it (A10-3); sync and async guarded calls of one trace are checked in turn (A10-4). SDK only.
+- **Acceptance:** both tests in `sdk/tests/test_audit_10.py` pass unmarked; `tests/test_guard.py` (A8-3 cases) unchanged; `python backend/scripts/mutants_audit10.py probe` kills every row.
+- **Verify:** `cd sdk && pytest -q` · `cd backend && pytest -q tests/audit/test_audit_8.py`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -430,6 +448,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A7 | Round 3: checker correctness, performance and security; done, see `AUDIT-7.md`: 1 critical, 3 high → SG-A7.1 to SG-A7.3 | Round-2 fixes re-checked, property tests at 10x, inputs sized to the caps (glob shape, policies near 20 000 characters, 10 000-event traces and prefixes, many `count ... by name` nodes), a paused stream. |
 | A8 | Round 3: API/SDK consistency, contracts, security and test quality; done, see `AUDIT-8.md`: 1 high → SG-A8.1 | Read-through of the round-2 changes, tests against the real app with the real SDK, 31 mutants of the round-2 fixes. |
 | A9 | Round 4: checker correctness, performance and security; done, see `AUDIT-9.md`: 1 critical → SG-A9.1; 3 medium → SG-A9.2 | Round-3 fixes re-checked, differential of the batch path at 5 000 examples with digested and marker-like names, globs sized to the caps (glob lists, long globs, wide alphabets), `count ... by` nodes up to the org cap, idle reopen against the batch. |
+| A10 | Round 4: API/SDK consistency, contracts, security and test quality; done, see `AUDIT-10.md`: 2 high → SG-A10.1, SG-A10.2 | Read-through of the round-3 changes, tests against the real app with the real SDK, the work bound measured at the real caps, 30 mutants of the round-3 fixes. |
 
 ## Interface contracts
 
@@ -582,4 +601,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: SG-A7.3 done (A7-3/A7-4: per-request policy work cap with 413, monitor work off the event loop, count-by state bounded per monitor with digests, org policy caps).
 - 2026-10-15: SG-A7.4 done (A7-5/A8-2: an append reopens an idle-closed trace; the sweep re-tracks open traces after a Redis loss).
 - 2026-10-15: Audit A9 (round 4, checker correctness, performance and security) done: 1 critical, 0 high, 3 medium, 1 low in AUDIT-9.md; SG-A9.1 and SG-A9.2 proposed. Round-3 fixes hold.
+- 2026-10-15: Audit A10 (round 4, API/SDK and tests) done: 0 critical, 2 high, 2 medium, 4 low in AUDIT-10.md (one more low is AUDIT-9's A9-5); SG-A10.1 to SG-A10.3 proposed.
 - 2026-10-15: SG-A9.1 done (PR #45): policy work and the org cap charge globs (`Plan.cost`); globs compiled per plan. A9-1 tests unmarked.
