@@ -456,6 +456,18 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Acceptance:** `test_policy_compile_does_not_stall_the_event_loop` and `test_huge_integer_is_a_parse_error` pass unmarked; DSL and trace-policy API tests unchanged except for any new size rule; bench rows met.
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_11.py -k "stall or integer" tests/policy/test_dsl.py tests/api/test_trace_policies.py`
 
+### SG-A12.1 Overlapping checks of a long prefix resume (AUDIT-12 A12-1 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-12
+- **Scope:** a `/check` whose prefix overlaps one still being stepped (an earlier check of the same history that the SDK gave up on, or a concurrent task's) resumes from what that one has done instead of stepping the whole prefix again, e.g. each digest's checkpoint saved as its slice is stepped and a newer one looked for before each slice, or one job per digest with later checks waiting for it; work for a check whose request is gone (or past a deadline near the SDK's `check_timeout_s`) stops. A per-org share of `_pool` is SG-A11.1's (AUDIT-11 A11-1, which found the cross-org side of the same pool); coordinate on `trace_policy_service.py`. A changed `/check` or checkpoint contract is approved under the Rules line if sound.
+- **Acceptance:** `test_check_resumes_from_an_earlier_check_still_running` passes unmarked on SQLite and Postgres; `tests/api/test_policy_work.py` checkpoint tests unchanged; 8 checks of a 4 000-event history a second apart at 3 996 units each finish in about one check's time, not 49 to 65 s (AUDIT-12 A12-1); tests added so the checkpoint-key and restore rows of `python backend/scripts/mutants_audit12.py A12-8` are killed (A12-5: they guard checkpointed verdicts and this rewrites that code); precheck and ingest bench rows met.
+- **Verify:** `cd backend && pytest -q tests/audit/test_audit_12.py tests/api/test_policy_work.py && TEST_DB=postgres pytest -q tests/audit/test_audit_12.py` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+
+### SG-A12.2 AUDIT-12 medium (A12-2)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-12
+- **Scope:** a trace's async guarded calls (and the async client's pushes) work when the trace's calls run in more than one event loop, e.g. asyncio locks kept per loop, or the shared threading lock awaited without an asyncio primitive. SDK only.
+- **Acceptance:** `sdk/tests/test_audit_12.py` passes unmarked; `tests/test_guard.py` and `tests/test_audit_10.py` unchanged.
+- **Verify:** `cd sdk && pytest -q`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -473,6 +485,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A9 | Round 4: checker correctness, performance and security; done, see `AUDIT-9.md`: 1 critical → SG-A9.1; 3 medium → SG-A9.2 | Round-3 fixes re-checked, differential of the batch path at 5 000 examples with digested and marker-like names, globs sized to the caps (glob lists, long globs, wide alphabets), `count ... by` nodes up to the org cap, idle reopen against the batch. |
 | A10 | Round 4: API/SDK consistency, contracts, security and test quality; done, see `AUDIT-10.md`: 2 high → SG-A10.1, SG-A10.2 | Read-through of the round-3 changes, tests against the real app with the real SDK, the work bound measured at the real caps, 30 mutants of the round-3 fixes. |
 | A11 | Round 5: checker correctness, performance and security; done, see `AUDIT-11.md`: 3 high → SG-A11.1, SG-A11.2 | Round-4 changes re-checked, property tests at 5 000 examples, checkpoint key review, glob fast paths against the reference matcher, cost per unit on new shapes, two orgs against the real app sharing the policy pool, batch queue, compile cache and event loop. |
+| A12 | Round 5: API/SDK contracts, SDK and test quality; done, see `AUDIT-12.md`: 1 high → SG-A12.1; 1 medium → SG-A12.2 | Read-through of the round-4 changes, overlapping and abandoned checks measured at the org caps, tests against the real app and both SDK clients, 28 mutants of the round-4 fixes. |
 
 ## Interface contracts
 
@@ -631,4 +644,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: SG-A9.2 done (A9-2 glob automaton and string regexes bounded in the counterexample; A9-3 count-by values split per node; A9-4 batch count-by in integer arrays; A9-5 busy batch retried).
 - 2026-10-15: SG-A10.3 done (A10-3: a running guarded call no longer holds back later events; A10-4: one guard lock for sync and async calls; lows A10-5 proxy 413, A10-6 stale mutant rows fixed).
 - 2026-10-15: Audit A11 (round 5, checker correctness, performance and security) done: 0 critical, 3 high, 0 medium, 1 low in AUDIT-11.md; SG-A11.1 and SG-A11.2 proposed. Round-4 fixes hold; the highs are per-org bounds on shared resources.
+- 2026-10-15: Audit A12 (round 5, API/SDK and tests) done: 0 critical, 1 high, 1 medium, 3 low in AUDIT-12.md; SG-A12.1 and SG-A12.2 proposed.
 - 2026-10-15: SG-A11.1 done (A11-1: policy pool slices and span rebuilds taken in turn by org; A11-2: batch checks taken from per-org lists in turn by org).
