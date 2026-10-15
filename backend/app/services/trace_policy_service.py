@@ -2,12 +2,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import uuid
 import weakref
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime
-from functools import lru_cache, partial
+from functools import partial
 from typing import Callable, Sequence
 
 from redis.exceptions import LockError
@@ -16,6 +18,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Span, Trace, TracePolicy, TracePolicyViolation
+from app.policy.ast import Policy
 from app.policy.checker import (CompiledPolicy, Monitor, Violation, check_trace, check_verdicts, compile_policy,
                                 work)
 from app.policy.dsl import PolicyParseError, parse
@@ -34,15 +37,51 @@ _pool = ThreadPoolExecutor(2, thread_name_prefix="policy-work")  # so long jobs 
 PREFIX_TTL_S = 3600
 BATCH_LOCK_WAIT_S = 10
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
-MAX_ORG_POLICY_NODES = 4_000  # `Plan.cost` summed: nodes, and glob lists or long globs on top
+MAX_ORG_POLICY_NODES = 4_000  # `org_cost` summed
 
 Active = list[tuple[TracePolicy, CompiledPolicy]]
 
 
-@lru_cache(maxsize=2048)
-def _compile(policy_id: str, source: str) -> CompiledPolicy:
-    (p,) = parse(source)
-    return compile_policy(policy_id, p)
+COMPILE_CACHE_SIZE = 2048
+_compiled: "OrderedDict[tuple[str, str], CompiledPolicy | None]" = OrderedDict()
+_compiled_lock = threading.Lock()
+
+
+def _compile(policy_id: str, source: str) -> CompiledPolicy | None:
+    """Parsed and planned once per (id, source) while cached; None, also cached, if it no longer parses to one policy.
+    A miss can take tens of ms per policy, so callers on the event loop compile misses in a thread."""
+    key = (policy_id, source)
+    with _compiled_lock:
+        if key in _compiled:
+            _compiled.move_to_end(key)
+            return _compiled[key]
+    try:
+        (p,) = parse(source)
+        c = compile_policy(policy_id, p)
+        plan_for(p)
+    except (PolicyParseError, ValueError):
+        log.warning("skipping trace policy %s: source does not parse to one policy", policy_id)
+        c = None
+    with _compiled_lock:
+        _compiled[key] = c
+        if len(_compiled) > COMPILE_CACHE_SIZE:
+            _compiled.popitem(last=False)
+    return c
+
+
+def org_cost(p: Policy) -> int:
+    """`Plan.cost` (nodes, and glob lists or long globs on top), or the nodes parsed for it if more (unused tags)."""
+    return max(plan_for(p).cost, p.parsed)
+
+
+def _compile_all(keys: list[tuple[str, str]]) -> list[CompiledPolicy | None]:
+    return [_compile(*k) for k in keys]
+
+
+async def compile_all(keys: list[tuple[str, str]]) -> list[CompiledPolicy | None]:
+    if all(k in _compiled for k in keys):
+        return _compile_all(keys)
+    return await asyncio.to_thread(_compile_all, keys)
 
 
 async def active_policies(db: AsyncSession, org_id: str, agent_id: str, environment: str) -> Active:
@@ -54,13 +93,8 @@ async def active_policies(db: AsyncSession, org_id: str, agent_id: str, environm
             or_(TracePolicy.environment.is_(None), TracePolicy.environment == environment),
         ).order_by(TracePolicy.id)
     )).scalars().all()
-    out = []
-    for r in rows:
-        try:
-            out.append((r, _compile(r.id, r.source)))
-        except (PolicyParseError, ValueError):
-            log.warning("skipping trace policy %s: source does not parse to one policy", r.id)
-    return out
+    compiled = await compile_all([(r.id, r.source) for r in rows])
+    return [(r, c) for r, c in zip(rows, compiled) if c is not None]
 
 
 def _status(mode: str, v: Violation) -> str:

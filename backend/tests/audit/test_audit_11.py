@@ -12,6 +12,7 @@ from app.models import Agent, ApiKey, Organization
 from app.policy.checker import work
 from app.services import trace_policy_service as tps
 from tests.api.test_event_ingest import _policy, ev
+from tests.api.test_trace_policies import _err
 from tests.audit.test_audit_7 import _many_atoms
 
 CHECK = "/api/trace-policies/check"
@@ -95,12 +96,13 @@ def _unused_tags(j: int) -> str:
 # A11-3: `active_policies` parses each policy on the event loop on a miss of the 2 048-entry `_compile` cache, which is
 # shared by every org of the process; 21 self-registered orgs at the 100-policy cap make every request miss, and each
 # of their requests then stalls the loop for every org for the time to parse 100 policies (2 s here)
-@pytest.mark.xfail(strict=True, reason="A11-3")
 async def test_policy_compile_does_not_stall_the_event_loop(client, db, org, agent, auth_headers, api_key_headers):
-    for j in range(tps.MAX_ORG_POLICIES):
+    for j in range(3):  # unused tags count toward the org cap now
         r = await client.post("/api/trace-policies", headers=auth_headers, json={"source": _unused_tags(j)})
-        assert r.status_code == 200, r.text
-    for i in range(tps._compile.cache_info().maxsize):  # the other orgs' policies, used since
+        assert r.status_code == 200 if j < 2 else _err(r, 422, "policy_limit"), r.text
+    for j in range(2, tps.MAX_ORG_POLICIES):  # stored before that
+        await _policy(db, org, _unused_tags(j))
+    for i in range(tps.COMPILE_CACHE_SIZE):  # the other orgs' policies, used since
         tps._compile(f"other-{i}", f'policy p{i}:\n  always not tool("x")')
     stall, done = 0.0, False
 
@@ -122,7 +124,6 @@ async def test_policy_compile_does_not_stall_the_event_loop(client, db, org, age
 
 # A11-4: an integer of over 4 300 digits (Python's int-from-string limit) in an attr value or count bound is a
 # ValueError, not a PolicyParseError: /validate and create answer 500 instead of invalid_policy
-@pytest.mark.xfail(strict=True, reason="A11-4")
 @pytest.mark.parametrize("formula", ['not attr("k", ' + "1" * 4_301 + ")", "count(tool(*)) <= " + "1" * 4_301],
                          ids=["attr", "count-bound"])
 async def test_huge_integer_is_a_parse_error(app_, auth_headers, formula):

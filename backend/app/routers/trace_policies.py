@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime
 from typing import List
@@ -37,9 +38,9 @@ def parse_single(source: str) -> Policy:
     return policies[0]
 
 
-def _parse_or_422(source: str) -> Policy:
+async def _parse_or_422(source: str) -> Policy:
     try:
-        return parse_single(source)
+        return await asyncio.to_thread(parse_single, source)
     except PolicyParseError as e:
         raise HTTPException(422, detail={
             "error": "invalid_policy", "message": e.message,
@@ -61,8 +62,8 @@ async def _check_name_free(db: AsyncSession, org_id: str, name: str, exclude_id:
 
 
 async def _check_org_limits(db: AsyncSession, org_id: str, parsed: Policy, exclude_id: str | None = None) -> None:
-    """At most MAX_ORG_POLICIES non-archived policies and MAX_ORG_POLICY_NODES units of per-event work in all
-    (monitor nodes and glob costs, `Plan.cost`), so the work of a span rebuild or a batch check is bounded per trace."""
+    """At most MAX_ORG_POLICIES non-archived policies and MAX_ORG_POLICY_NODES units in all (`org_cost`), so the work
+    of a span rebuild or a batch check is bounded per trace, and the time to compile an org's policies too."""
     await db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
     q = select(TracePolicy.id, TracePolicy.source).where(TracePolicy.org_id == org_id,
                                                          TracePolicy.archived_at.is_(None))
@@ -72,17 +73,13 @@ async def _check_org_limits(db: AsyncSession, org_id: str, parsed: Policy, exclu
     if len(rows) >= tps.MAX_ORG_POLICIES:
         raise HTTPException(422, detail={"error": "policy_limit", "max_policies": tps.MAX_ORG_POLICIES,
                                          "message": f"an org has at most {tps.MAX_ORG_POLICIES} policies"})
-    nodes = plan_for(parsed).cost
-    for pid, source in rows:
-        try:
-            nodes += plan_for(tps._compile(pid, source).policy).cost
-        except (PolicyParseError, ValueError):
-            pass
+    compiled = await tps.compile_all([tuple(r) for r in rows])
+    nodes = sum(tps.org_cost(p) for p in [parsed, *(c.policy for c in compiled if c)])
     if nodes > tps.MAX_ORG_POLICY_NODES:
         raise HTTPException(422, detail={
             "error": "policy_limit", "nodes": nodes, "max_nodes": tps.MAX_ORG_POLICY_NODES,
-            "message": f"this org's policies would have {nodes} formula nodes and glob costs in all; at most "
-                       f"{tps.MAX_ORG_POLICY_NODES} are allowed"})
+            "message": f"this org's policies would have {nodes} formula nodes, glob costs and tag nodes in all; "
+                       f"at most {tps.MAX_ORG_POLICY_NODES} are allowed"})
 
 
 async def _check_agent(db: AsyncSession, org_id: str, agent_id: str | None) -> None:
@@ -135,7 +132,7 @@ async def create_trace_policy(
     ctx: AuthContext = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    parsed = _parse_or_422(req.source)
+    parsed = await _parse_or_422(req.source)
     await _check_agent(db, ctx.org_id, req.agent_id)
     await _check_name_free(db, ctx.org_id, parsed.name)
     await _check_org_limits(db, ctx.org_id, parsed)
@@ -157,7 +154,7 @@ async def validate_trace_policy(
     ctx: AuthContext = Depends(get_current_user),
 ):
     try:
-        parse_single(req.source)
+        await asyncio.to_thread(parse_single, req.source)
     except PolicyParseError as e:
         return PolicyValidateOut(ok=False, errors=[PolicyError(line=e.line, col=e.col, message=e.message)])
     return PolicyValidateOut(ok=True, errors=[])
@@ -187,7 +184,7 @@ async def update_trace_policy(
     changes: dict = {}
     source = fields.pop("source", None)
     if source is not None and source != p.source:
-        parsed = _parse_or_422(source)
+        parsed = await _parse_or_422(source)
         if parsed.name != p.name:
             await _check_name_free(db, ctx.org_id, parsed.name, exclude_id=p.id)
         await _check_org_limits(db, ctx.org_id, parsed, exclude_id=p.id)

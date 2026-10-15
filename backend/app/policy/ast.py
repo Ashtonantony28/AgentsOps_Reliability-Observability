@@ -74,3 +74,4 @@ class Policy:
     severity: Severity
     formula: Formula                              # the body of `always φ`
     source: str = field(default="", compare=False)
+    parsed: int = field(default=0, compare=False, repr=False)  # nodes parsed for its source, unused tags included
