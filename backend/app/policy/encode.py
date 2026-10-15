@@ -23,7 +23,7 @@ def compile_glob(glob: str) -> Callable[[str], bool]:
     first, *rest = glob.split("*")
     if not rest:
         if "?" not in first:
-            return first.__eq__
+            return lambda name: name == first
         whole = _part(first)
         return lambda name: whole.fullmatch(name) is not None
     head, n0 = _part(first), len(first)
@@ -51,10 +51,11 @@ def compile_glob(glob: str) -> Callable[[str], bool]:
 
 
 def glob_cost(glob: str) -> int:
-    """Work units (`checker.work`) of matching one name: one, two per `*` between parts, and one per character of
-    a part with `?` (a regex that may try each of its characters at each position of the name)."""
-    parts = [p for p in glob.split("*") if p]
-    return 1 + 2 * max(len(parts) - 1, 0) + sum(len(p) for p in parts if "?" in p)
+    """Work units (`checker.work`) of matching one name: one, two per part searched for between stars (a scan of
+    the name), and one per character of a part with `?` (a regex that may try each character at each position)."""
+    first, *rest = glob.split("*")
+    parts = [first, *rest]
+    return 1 + 2 * sum(1 for p in rest[:-1] if p) + sum(len(p) for p in parts if "?" in p)
 
 
 _glob_match = lru_cache(maxsize=4096)(compile_glob)
@@ -68,20 +69,17 @@ def attr_equal(actual: Any, expected: Any) -> bool:
     return type(actual) is type(expected) and actual == expected
 
 
-def matches(m: ast.Match, e: Event) -> bool:
+def compile_globs(globs: Sequence[str]) -> tuple[Callable[[str], bool], ...]:
+    return tuple(map(compile_glob, dict.fromkeys(globs)))
+
+
+def matches(m: ast.Match, e: Event, globs: Sequence[Callable[[str], bool]] | None = None) -> bool:
+    """`globs`: `m.globs` compiled (`compile_globs`), for a plan that outlives the shared glob cache."""
     return ((m.kind is None or e.kind == m.kind)
-            and (not m.globs or any(glob_match(g, e.name) for g in m.globs))
+            and (not m.globs or (any(g(e.name) for g in globs) if globs is not None
+                                 else any(glob_match(g, e.name) for g in m.globs)))
             and (m.status is None or e.status == m.status)
             and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
-
-
-def compile_match(m: ast.Match) -> Callable[[Event], bool]:
-    """`matches(m, .)` with its globs compiled once, for a plan that outlives any shared glob cache."""
-    globs = tuple(map(compile_glob, dict.fromkeys(m.globs)))
-    return lambda e: ((m.kind is None or e.kind == m.kind)
-                      and (not globs or any(g(e.name) for g in globs))
-                      and (m.status is None or e.status == m.status)
-                      and all(k in e.attrs and attr_equal(e.attrs[k], v) for k, v in m.attrs))
 
 
 def _match_key(m: ast.Match) -> Hashable:

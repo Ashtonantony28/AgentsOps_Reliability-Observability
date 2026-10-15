@@ -8,7 +8,7 @@ import threading
 from typing import Any
 
 from app.policy import ast
-from app.policy.encode import Dag, compile_match, glob_cost
+from app.policy.encode import Dag, compile_globs, glob_cost, matches
 from app.policy.events import Event
 
 _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">=": operator.ge,
@@ -73,11 +73,17 @@ class Plan:
             (type(f).__name__, f if isinstance(f, (ast.Match, ast.Count)) else None, kids)
             for f, kids in zip(dag.nodes, dag.kids)]
         self.count_by = [k for k, (op, f, _) in enumerate(self.nodes) if op == "Count" and f.by]
-        self.match = {k: compile_match(f) for k, (op, f, _) in enumerate(self.nodes) if op == "Match"}
         # `checker.work` units per event: one per node, which covers a Match's first simple glob
-        self.cost = len(self.nodes) + sum(max(sum(map(glob_cost, f.globs)) - 1, 0)
+        self.cost = len(self.nodes) + sum(max(sum(map(glob_cost, set(f.globs))) - 1, 0)
                                           for op, f, _ in self.nodes if op == "Match")
         self.digest = hashlib.sha256(repr((policy.name, policy.severity, list(dag.keys))).encode()).hexdigest()[:16]
+        self._globs: dict[int, tuple] = {}  # compiled on first step: plans built only for `cost` stay small
+
+    def _match(self, k: int, f: ast.Match, e: Event) -> bool:
+        globs = self._globs.get(k)
+        if globs is None:
+            globs = self._globs[k] = compile_globs(f.globs)
+        return matches(f, e, globs)
 
     def initial(self) -> list:
         return [({} if f.by else 0) if op == "Count" else _INIT.get(op) for op, f, _ in self.nodes]
@@ -97,11 +103,11 @@ class Plan:
         for k, (op, f, kids) in enumerate(self.nodes):
             if op == "Match":
                 if memo is None or f.attrs:
-                    v[k] = self.match[k](e)
+                    v[k] = self._match(k, f, e)
                 else:
                     key = (k, e.kind, e.name, e.status)
                     hit = memo.get(key)
-                    v[k] = memo[key] = self.match[k](e) if hit is None else hit
+                    v[k] = memo[key] = self._match(k, f, e) if hit is None else hit
             elif op == "Not":
                 v[k] = not v[kids[0]]
             elif op == "And":

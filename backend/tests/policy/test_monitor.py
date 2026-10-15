@@ -290,7 +290,7 @@ def test_clearing_the_batch_memo_keeps_verdicts(fx):
 
 
 @pytest.mark.parametrize("body, cost", [
-    ('tool("delete_*")', 2), ("tool(*)", 2), ('tool("a", "b", "c")', 4), ('tool("a*b*c")', 6),
+    ('tool("delete_*")', 2), ("tool(*)", 2), ('tool("a", "b", "c")', 4), ('tool("a*b*c")', 4), ('tool("a*b", "a*b")', 2),
     ('tool("***", "a?c")', 6), ('tool("x") and tool("x")', 3),
 ])
 def test_plan_cost_charges_globs(body, cost):
