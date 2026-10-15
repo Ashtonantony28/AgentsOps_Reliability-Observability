@@ -27,7 +27,7 @@ async def test_check_resumes_from_an_earlier_check_still_running(client, db, org
         first or first.append(m)
         if m is first[0] and stepped.get(id(m), 0) >= N // 2:  # the first check is half done, and still running
             paused.set()
-            release.wait(30)
+            release.wait(10)  # a fix that makes the second check wait for this one still ends
         stepped[id(m)] = stepped.get(id(m), 0) + len(events)
         return real(m, events)
 
@@ -35,8 +35,11 @@ async def test_check_resumes_from_an_earlier_check_still_running(client, db, org
     body = {"agent_id": agent.id, "candidate": ev(0, "n0"), "prefix": [ev(i, f"t{i % 7}") for i in range(N)]}
     one = asyncio.create_task(client.post("/api/trace-policies/check", headers=api_key_headers, json=body))
     try:
-        while not paused.is_set():
+        for _ in range(3000):
+            if paused.is_set() or one.done():
+                break
             await asyncio.sleep(0.01)
+        assert paused.is_set(), "the first check never reached half its prefix"
         r = await client.post("/api/trace-policies/check", headers=api_key_headers, json=body)
     finally:
         release.set()
