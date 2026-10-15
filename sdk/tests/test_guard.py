@@ -182,7 +182,8 @@ def test_sync_guard_inside_async_trace(client, server):
     assert agentops_sdk.guard is guard
 
 
-# A6-7: guarded calls in one trace run one at a time, each checked after the ones before it are recorded
+# A6-7, A8-3: guarded calls in one trace are checked one at a time, each after the ones started before it are
+# recorded; the calls themselves overlap
 @pytest.mark.parametrize("stream", [False, True])
 def test_concurrent_async_guarded_calls_are_checked_in_turn(client, aclient, server, stream):
     for c in (client, aclient):
@@ -200,7 +201,7 @@ def test_concurrent_async_guarded_calls_are_checked_in_turn(client, aclient, ser
                 await asyncio.gather(delete_user(1), delete_user(2))
 
         asyncio.run(main())
-        assert ran == [("start", 1), ("end", 1), ("start", 2), ("end", 2)]
+        assert ran == [("start", 1), ("start", 2), ("end", 1), ("end", 2)]
         first, second = server.bodies("check")
         if stream:
             routes = server.routes()
@@ -252,8 +253,55 @@ def test_nested_guarded_calls_do_not_deadlock(client, server):
 
     with client.trace() as t:
         assert outer() == 2
-    assert [e["name"] for e in t.events] == ["inner", "outer"]
-    assert [e["name"] for e in asyncio.run(amain()).events] == ["ainner", "aouter"]
+    assert [e["name"] for e in t.events] == ["outer", "inner"]
+    assert [e["name"] for e in asyncio.run(amain()).events] == ["aouter", "ainner"]
+
+
+# A8-3: a call's event is recorded when it starts; its status and latency are set when it ends unless it was sent
+@pytest.mark.parametrize("stream", [False, True])
+def test_guarded_call_outcome_is_set_when_it_ends(aclient, server, stream):
+    @guard
+    async def slow(fail, s=0.02):
+        await asyncio.sleep(s)
+        if fail:
+            raise ValueError("x")
+
+    async def main():
+        async with aclient.trace(stream=stream) as t:
+            with pytest.raises(ValueError):
+                await slow(True)
+            await asyncio.gather(slow(False), slow(True, 0.1), return_exceptions=True)
+        return t
+
+    t = asyncio.run(main())
+    got = [(e["status"], e["latency_ms"] >= 15) for e in t.events]
+    if stream:  # the second gathered check sent the first's event, and the first's end push the second's
+        assert got == [("error", True), ("success", False), ("success", False)]
+        assert [e["status"] for b in server.bodies("events") for e in b["events"]] == ["error", "success", "success"]
+    else:
+        assert got == [("error", True), ("success", True), ("error", True)]
+
+
+def test_sync_guarded_calls_in_threads_overlap_and_check_in_turn(client, server):
+    import contextvars
+    import threading
+    import time
+
+    started = threading.Barrier(2, timeout=2)
+
+    @guard
+    def call():
+        started.wait()  # both run at once: neither holds the lock across the call
+        time.sleep(0.01)
+
+    with client.trace() as t:
+        threads = [threading.Thread(target=contextvars.copy_context().run, args=(call,)) for _ in range(2)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+    assert sorted(len(b["prefix"]) for b in server.bodies("check")) == [0, 1]
+    assert [(e["status"], e["latency_ms"] >= 10) for e in t.events] == [("success", True)] * 2
 
 
 def test_guarded_calls_in_different_traces_run_concurrently(client, server):

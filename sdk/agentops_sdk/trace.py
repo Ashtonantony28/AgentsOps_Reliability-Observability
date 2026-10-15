@@ -86,10 +86,28 @@ class Trace:
                   output: Optional[dict] = None, **attrs):
         if self.tool_calls:
             raise ValueError("a trace holds either events or tool_calls, not both")
+        self._add(kind, name, status, input, output, attrs)
+        self._schedule_push()
+
+    def _add(self, kind: str, name: str, status: str = "success", input: Optional[dict] = None,
+             output: Optional[dict] = None, attrs: Optional[dict] = None) -> dict:
+        attrs = dict(attrs or {})
         latency_ms = attrs.pop("latency_ms", 0)
+        ev = event_dict(0, kind, name, status, input, output, attrs, latency_ms=latency_ms,
+                        timestamp=datetime.now(timezone.utc).isoformat())
         with self._lock:  # the seq is the event's index, so taking it and appending are one step
-            self.events.append(event_dict(len(self.events), kind, name, status, input, output, attrs,
-                                          latency_ms=latency_ms, timestamp=datetime.now(timezone.utc).isoformat()))
+            ev["seq"] = len(self.events)
+            self.events.append(ev)
+        return ev
+
+    def _end(self, ev: dict, status: str, latency_ms: int) -> None:
+        """Sets the outcome of a call recorded when it started, unless its event was sent meanwhile."""
+        with self._lock:
+            if any(e is ev for e in self.events[self._sent:]):
+                ev.update(status=status, latency_ms=int(latency_ms))
+        self._schedule_push()
+
+    def _schedule_push(self) -> None:
         if not self._streaming():
             return
         if not self._client.is_async:
@@ -127,7 +145,7 @@ class Trace:
 
     def _check_body(self, name: str, kind: str, input: Optional[dict], attrs: dict) -> dict:
         candidate = event_dict(len(self.events), kind, name, input=input, attrs=attrs)
-        if self._streaming():
+        if self._streaming() and not self.tool_calls:  # tool calls are never streamed: they go as the prefix
             # a stopped stream's undelivered events go along as the prefix, after the ones the server holds
             prefix = _bare(self.events[self._sent:]) if self._dead else []
             return check_request(self.agent_id, self.trace_id, candidate, prefix, self.environment)

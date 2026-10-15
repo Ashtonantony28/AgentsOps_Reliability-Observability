@@ -1,5 +1,6 @@
 """SG-A6.4 (A6-12): a streamed trace with no append for STREAM_IDLE_S is closed and batch-checked."""
 import time
+from datetime import timezone
 
 import pytest
 
@@ -106,3 +107,44 @@ async def test_beat_task_closes_idle_streams(client, db, agent, api_key_headers,
     await _append(client, api_key_headers, agent, "u", [ev(0, "search")])
     assert await policy_tasks._close_idle() == 1
     assert enqueued == [(await _trace(db, "u")).id]
+
+
+# A8-8: an append landing between the sweep's listing and its lock keeps the trace open
+async def test_sweep_skips_a_trace_appended_to_after_listing(client, db, agent, api_key_headers, redis, enqueued,
+                                                              monkeypatch):
+    await _append(client, api_key_headers, agent, "busy", [ev(0, "search")])
+    t = await _trace(db, "busy")
+    listed = redis.zrangebyscore
+
+    async def append_after_listing(*a, **kw):
+        ids = await listed(*a, **kw)
+        await redis.zadd(OPEN_STREAMS_KEY, {t.id: _later()})
+        return ids
+
+    monkeypatch.setattr(redis, "zrangebyscore", append_after_listing)
+    assert await close_idle_streams(db, now=_later()) == []
+    assert (await _trace(db, "busy")).meta == {"stream": "open"} and enqueued == []
+
+
+# A8-7: an idle-closed trace is a timeout, with its latency up to its last append
+async def test_idle_closed_trace_is_a_timeout(client, db, agent, api_key_headers, redis, enqueued):
+    await _append(client, api_key_headers, agent, "t", [ev(0, "search")])
+    t = await _trace(db, "t")
+    await redis.zadd(OPEN_STREAMS_KEY, {t.id: t.created_at.replace(tzinfo=timezone.utc).timestamp() + 5})
+    assert await close_idle_streams(db, now=_later() + 5) == [t.id]
+    t = await _trace(db, "t")
+    assert t.status == "timeout" and abs(t.latency_ms - 5000) <= 1
+
+
+# A8-8: the batch fills a pending live row only when it was found by the same policy version
+async def test_batch_leaves_an_older_versions_pending_row(client, db, org, agent, api_key_headers, enqueued):
+    p = await _policy(db, org, NO_DROP)
+    await _append(client, api_key_headers, agent, "u1", [ev(0, "drop_db")])
+    p.version = 2
+    await db.commit()
+    await _append(client, api_key_headers, agent, "u1", [], final=True)
+    (tid,) = enqueued
+    await tps.check_completed_trace(db, tid)
+    rows = await _rows(db, TracePolicyViolation)
+    assert sorted((r.policy_version, r.at_seq, r.counterexample_status) for r in rows) == [
+        (1, 0, "none"), (2, 0, "minimal")]
