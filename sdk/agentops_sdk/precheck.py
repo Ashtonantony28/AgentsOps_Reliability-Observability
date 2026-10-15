@@ -48,7 +48,8 @@ def events_request(agent_id: str, events: List[dict], final: bool, **fields) -> 
     return {"agent_id": agent_id, "events": events, "final": final, **fields}
 
 
-# the server answered but rejected the key, the agent or the request (413: too much policy work), which no retry fixes
+# the server answered but rejected the key, the agent or the request, which no retry fixes; a 413 only when it is the
+# server's policy_work_too_large, not a proxy's body limit
 CONFIG_ERRORS = (401, 403, 404, 413, 422)
 
 
@@ -63,7 +64,8 @@ def check_result(outcome: Union[httpx.Response, BaseException], fail_closed: boo
         return failed_result("timeout", fail_closed)
     if isinstance(outcome, BaseException):
         return failed_result(f"{type(outcome).__name__}: {outcome}"[:200], fail_closed)
-    if outcome.status_code in CONFIG_ERRORS:
+    if outcome.status_code in CONFIG_ERRORS and (outcome.status_code != 413
+                                                 or _error(outcome).get("code") == "policy_work_too_large"):
         log.error("agentops policy check rejected (http %s: %s); blocking", outcome.status_code, outcome.text[:200])
         return CheckResult(allowed=False, error=f"http {outcome.status_code}")
     if not outcome.is_success:

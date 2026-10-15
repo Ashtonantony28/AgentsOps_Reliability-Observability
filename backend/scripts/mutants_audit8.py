@@ -11,8 +11,8 @@ TPS = "backend/app/services/trace_policy_service.py"
 
 m.MUTANTS = [
     # SDK
-    ("probe", "sdk/agentops_sdk/precheck.py", "CONFIG_ERRORS = (401, 403, 404, 422)",
-     "CONFIG_ERRORS = (401, 404, 422)", *S),
+    ("probe", "sdk/agentops_sdk/precheck.py", "CONFIG_ERRORS = (401, 403, 404, 413, 422)",
+     "CONFIG_ERRORS = (401, 404, 413, 422)", *S),
     ("probe", "sdk/agentops_sdk/utils.py", "    if st.st_uid != os.getuid():\n        return False\n", "", *S),
     ("probe", "sdk/agentops_sdk/utils.py", "        os.chmod(base, 0o700)", "        pass", *S),
     ("probe", "sdk/agentops_sdk/utils.py", "getattr(os, \"O_NOFOLLOW\", 0), 0o600)",
@@ -20,12 +20,12 @@ m.MUTANTS = [
     ("probe", "sdk/agentops_sdk/utils.py", "        if k > max_events:", "        if k >= max_events:", *S),
     ("probe", "sdk/agentops_sdk/utils.py", "len(out) >= size or n + k > max_events",
      "len(out) >= size or n + k >= max_events", *S),
-    ("probe", "sdk/agentops_sdk/guard.py", "with t._guard_lock if t is not None else contextlib.nullcontext():",
-     "with contextlib.nullcontext():", *S),
+    ("probe", "sdk/agentops_sdk/guard.py", "            with _lock(t):",
+     "            with contextlib.nullcontext():", *S),
     ("probe", "sdk/agentops_sdk/guard.py", "                async with _alock(t):", "                async with _alock(None):",
      *S),
-    ("probe", "sdk/agentops_sdk/trace.py", "            if any(e is ev for e in self.events[self._sent:]):",
-     "            if True:", *S),
+    ("probe", "sdk/agentops_sdk/trace.py", "pending = _has(self.events[self._sent:], ev) and",
+     "pending = True and", *S),
     ("probe", "sdk/agentops_sdk/trace.py", "if self._streaming() and not self.tool_calls:", "if self._streaming():",
      *S),
     ("probe", "backend/app/routers/ws.py", "if key is None or key.revoked_at:", "if key is None:", *B),
@@ -69,8 +69,8 @@ m.MUTANTS = [
      "            EvaluationRun.created_at >= cutoff,", *B),
     ("probe", "backend/app/routers/evaluations.py", "        EvaluationSet.org_id == ctx.org_id\n    )\n    a =",
      "        True\n    )\n    a =", *B),
-    ("probe", "backend/app/routers/traces.py", "raise HTTPException(e.status, detail=",
-     "raise HTTPException(409, detail=", *B),
+    ("probe", "backend/app/routers/traces.py", "\"target\": e.target})\n    except TraceConflict as e:\n        raise HTTPException(e.status, detail=",
+     "\"target\": e.target})\n    except TraceConflict as e:\n        raise HTTPException(409, detail=", *B),
     ("probe", "backend/app/policy/dsl.py", "MAX_FORMULA_DEPTH = 64 ", "MAX_FORMULA_DEPTH = 400 ", *B),
     ("probe", "backend/app/policy/dsl.py", "MAX_SOURCE_CHARS = 20_000", "MAX_SOURCE_CHARS = 200_000", *B),
 ]

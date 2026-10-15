@@ -56,7 +56,8 @@ class Trace:
     _refused: int = field(default=0, init=False, repr=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
     _alock: Any = field(default=None, init=False, repr=False, compare=False)
-    _guard_lock: Any = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
+    _guard_lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)  # sync and async
+    _guard_owner: Optional[int] = field(default=None, init=False, repr=False, compare=False)  # the holder's thread
     _guard_alock: Any = field(default=None, init=False, repr=False, compare=False)
     _running: list = field(default_factory=list, init=False, repr=False, compare=False)  # guarded calls' events
     _sending: list = field(default_factory=list, init=False, repr=False, compare=False)
@@ -105,8 +106,8 @@ class Trace:
         return ev
 
     def _end(self, ev: dict, status: str, latency_ms: int) -> None:
-        """Sets the outcome of a call recorded when it started, unless a check or the trace's exit sent its event
-        meanwhile; until then, pushes stop short of it."""
+        """Sets the outcome of a call recorded when it started, unless its event was sent meanwhile; until then,
+        background pushes hold it back while no later event follows it."""
         with self._lock:
             self._running = [e for e in self._running if e is not ev]
             pending = _has(self.events[self._sent:], ev) and not _has(self._sending, ev)
@@ -171,8 +172,8 @@ class Trace:
             return None
         start = self._sent
         pending = self.events[start:start + 1] if start < self._split else self.events[start:]
-        if hold:  # a background push leaves running guarded calls' events for their outcome
-            pending = pending[:next((i for i, e in enumerate(pending) if _has(self._running, e)), len(pending))]
+        while hold and pending and _has(self._running, pending[-1]):  # a running call's event awaits its outcome,
+            pending = pending[:-1]  # but never holds back the events after it
         if not pending and not final:
             return None
         final = final and start + len(pending) == len(self.events)

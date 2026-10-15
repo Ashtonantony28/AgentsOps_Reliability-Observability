@@ -16,8 +16,11 @@ m.MUTANTS = [
     ("A6-16", "backend/app/routers/ws.py", "            if ak and not ak.revoked_at:", "            if ak:",
      "backend", m.BACKEND_TESTS),
     ("A6-16", "backend/app/services/trace_service.py",
-     "    environment = (req.environment or agent.environment) if trace is None else trace.environment",
-     "    environment = req.environment or agent.environment", "backend", m.BACKEND_TESTS),
+     "    environment = (req.environment or agent.environment) if trace is None else trace.environment\n"
+     "    policies = await tps.active_policies(db, org_id, agent.id, environment)\n    compiled =",
+     "    environment = req.environment or agent.environment\n"
+     "    policies = await tps.active_policies(db, org_id, agent.id, environment)\n    compiled =",
+     "backend", m.BACKEND_TESTS),
 ]
 
 if __name__ == "__main__":

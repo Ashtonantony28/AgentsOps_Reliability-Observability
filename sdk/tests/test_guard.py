@@ -5,6 +5,7 @@ import pytest
 
 import agentops_sdk
 from agentops_sdk import PolicyBlocked, guard
+from agentops_sdk.trace import current_trace
 
 BLOCK = (200, {"allowed": False, "violations": [{"policy_id": "p1", "policy_name": "no-refunds"}]})
 
@@ -321,3 +322,74 @@ def test_guarded_calls_in_different_traces_run_concurrently(client, server):
 
     asyncio.run(main())
     assert ran[:2] == [("start", 1), ("start", 2)]
+
+
+# A10-3: a background push holds back a running call's event only while no later event follows it
+@pytest.mark.parametrize("sync", [True, False])
+def test_running_call_outcome_survives_a_background_push(client, aclient, server, sync):
+    @guard
+    async def slow():
+        current_trace()._schedule_push()  # as a push scheduled by another task before the call would
+        await asyncio.sleep(0.02)
+        raise ValueError("x")
+
+    async def main():
+        async with (client if sync else aclient).trace(stream=True):
+            with pytest.raises(ValueError):
+                await slow()
+
+    asyncio.run(main())
+    assert [(e["status"], e["latency_ms"] >= 15) for b in server.bodies("events") for e in b["events"]] == [
+        ("error", True)]
+
+
+# A10-3: once an event follows it, a running call's event is sent and keeps the outcome it was sent with
+def test_outcome_of_a_call_sent_while_it_runs_matches_the_server(aclient, server):
+    server.delay = 0.05
+
+    @guard
+    async def tool():
+        current_trace().add_event("llm", "plan")
+        await asyncio.sleep(0.01)  # the push of both events is on the wire
+        raise ValueError("x")
+
+    async def main():
+        async with aclient.trace(stream=True) as t:
+            with pytest.raises(ValueError):
+                await tool()
+        return t
+
+    t = asyncio.run(main())
+    streamed = [(e["name"], e["status"]) for b in server.bodies("events") for e in b["events"]]
+    assert streamed == [(e["name"], e["status"]) for e in t.events] == [("tool", "success"), ("plan", "success")]
+
+
+# A10-4: a sync guarded call made on the loop's thread while an async one awaits its check can't wait for that
+# check without blocking the loop, so it goes ahead instead of hanging
+def test_sync_guard_on_the_loop_thread_does_not_wait_for_an_async_one(aclient, server):
+    import threading
+
+    server.delay = 0.05
+
+    @guard
+    async def atool():
+        return 1
+
+    @guard
+    def stool():
+        return 1
+
+    async def call_sync():
+        await asyncio.sleep(0.01)  # atool's check is on the wire
+        return stool()
+
+    async def main():
+        async with aclient.trace() as t:
+            await asyncio.gather(atool(), call_sync())
+        done.append(t)
+
+    done = []
+    th = threading.Thread(target=asyncio.run, args=(main(),), daemon=True)
+    th.start()
+    th.join(2)
+    assert done and sorted(e["name"] for e in done[0].events) == ["atool", "stool"]

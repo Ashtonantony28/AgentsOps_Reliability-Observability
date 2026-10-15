@@ -1,6 +1,6 @@
 """AUDIT-10 mutation probe of the round-3 API and SDK fixes (PRs #39, #41, #42, #43), replayed like AUDIT-4's:
 python backend/scripts/mutants_audit10.py [probe | A10-7]. The "probe" rows were killed when AUDIT-10 ran; the
-A10-7 rows survived it (AUDIT-10.md A10-7)."""
+A10-7 rows survived it (AUDIT-10.md A10-7); the SDK ones are killed since SG-A10.3, which added its own."""
 import sys
 
 import mutants_audit4 as m
@@ -14,6 +14,7 @@ TS = "backend/app/services/trace_service.py"
 TPS = "backend/app/services/trace_policy_service.py"
 TP = "backend/app/routers/trace_policies.py"
 TR = "sdk/agentops_sdk/trace.py"
+G = "sdk/agentops_sdk/guard.py"
 
 m.MUTANTS = [
     # SDK: 413 blocks, stopped-stream prefix (#39, #42); guard records at start, outcome at end (#41)
@@ -21,17 +22,23 @@ m.MUTANTS = [
      "CONFIG_ERRORS = (401, 403, 404, 422)", *S),
     ("probe", TR, "_bare(self.events[self._sent:]) if self._dead else []",
      "_bare(self.events[self._sent + 1:]) if self._dead else []", *S),
-    ("A10-7", TR, "            pending = _has(self.events[self._sent:], ev) and not _has(self._sending, ev)",
+    ("probe", TR, "            pending = _has(self.events[self._sent:], ev) and not _has(self._sending, ev)",
      "            pending = _has(self.events[self._sent:], ev)", *S),
-    ("A10-7", TR, "                self._sending = batch[1]", "                self._sending = []", *S),
-    ("A10-7", TR, "        if hold:  # a background push", "        if False:  # a background push", *S),
-    ("A10-7", TR, "            self._push(hold=True)\n            return", "            self._push()\n            return", *S),
-    ("A10-7", TR, "create_task(self._apush(hold=True))", "create_task(self._apush())", *S),
+    ("probe", TR, "                self._sending = batch[1]", "                self._sending = []", *S),
+    ("probe", TR, "        while hold and pending and", "        while False and pending and", *S),
+    ("probe", TR, "_has(self._running, pending[-1]):", "_has(self._running, pending[0]):", *S),
+    ("probe", TR, "            self._push(hold=True)\n            return", "            self._push()\n            return", *S),
+    ("probe", TR, "create_task(self._apush(hold=True))", "create_task(self._apush())", *S),
     ("probe", TR, "        if pending:\n            self._schedule_push()", "        if False:\n            self._schedule_push()",
      *S),
     ("probe", TR, "            self._running = [e for e in self._running if e is not ev]",
      "            self._running = list(self._running)", *S),
-    ("A10-7", "sdk/agentops_sdk/guard.py", "a, running=True)", "a, running=False)", *S),
+    ("probe", G, "a, running=True)", "a, running=False)", *S),
+    # SDK: one guard lock for sync and async calls, a proxy's 413 is an outage (SG-A10.3)
+    ("probe", G, "        while not t._guard_lock.acquire(blocking=False):", "        while False:", *S),
+    ("probe", G, "    if t is None or t._guard_owner == threading.get_ident():", "    if t is None:", *S),
+    ("probe", "sdk/agentops_sdk/precheck.py", 'or _error(outcome).get("code") == "policy_work_too_large"):',
+     "or True):", *S),
     # backend: per-request work bound (#42)
     ("probe", TS, '_bound_work([c for row, c in policies if row.action == "block"], len(events))',
      "_bound_work([], len(events))", *B),
