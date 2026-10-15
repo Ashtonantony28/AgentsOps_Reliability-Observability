@@ -53,6 +53,7 @@ class Trace:
     _sent: int = field(default=0, init=False, repr=False)
     _dead: bool = field(default=False, init=False, repr=False)
     _split: int = field(default=0, init=False, repr=False)  # events before this index are pushed one at a time
+    _max_batch: Optional[int] = field(default=None, init=False, repr=False)  # events per append the server takes
     _refused: int = field(default=0, init=False, repr=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
     _alock: Any = field(default=None, init=False, repr=False, compare=False)
@@ -172,6 +173,7 @@ class Trace:
             return None
         start = self._sent
         pending = self.events[start:start + 1] if start < self._split else self.events[start:]
+        pending = pending[:self._max_batch]
         while hold and pending and _has(self._running, pending[-1]):  # a running call's event awaits its outcome,
             pending = pending[:-1]  # but never holds back the events after it
         if not pending and not final:
@@ -197,7 +199,10 @@ class Trace:
         n = len(sent)
         if outcome == "ok":
             self._sent = max(self._sent, start + n)
-            return self._sent < len(self.events) and (self._sent < self._split or final)
+            return self._sent < len(self.events) and (self._sent < self._split or final or bool(self._max_batch))
+        if isinstance(outcome, tuple):  # too much policy work for one append: send fewer
+            self._max_batch = max(1, min(outcome[1], n - 1))
+            return True
         if isinstance(outcome, int) and start < outcome <= len(self.events):
             self._sent = max(self._sent, outcome)
             return True

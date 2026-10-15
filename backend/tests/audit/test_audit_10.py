@@ -41,7 +41,6 @@ async def _stored_events(db, trace_uid) -> int | None:
 
 # A10-1: an unstreamed trace sends its whole history as the check's prefix; past MAX_REQUEST_WORK / nodes events
 # /check answers 413, which the SDK blocks on whatever fail_closed, though no policy is violated
-@pytest.mark.xfail(strict=True, reason="A10-1: /check 413 on a long unstreamed trace blocks every guarded call")
 async def test_long_unstreamed_trace_checks_are_answered(client, auth_headers, sdk_client):
     await _accepted_policy(client, auth_headers, action="alert")
     async with sdk_client.trace() as short:
@@ -56,7 +55,6 @@ async def test_long_unstreamed_trace_checks_are_answered(client, auth_headers, s
 
 
 # A10-1: the same trace's upload is refused (only block policies count there) and the SDK drops it for good
-@pytest.mark.xfail(strict=True, reason="A10-1: a long trace's upload is refused with 413 and dropped")
 async def test_long_unstreamed_trace_is_stored(db, client, auth_headers, sdk_client):
     await _accepted_policy(client, auth_headers)
     async with sdk_client.trace() as short:
@@ -72,7 +70,6 @@ async def test_long_unstreamed_trace_is_stored(db, client, auth_headers, sdk_cli
 
 # A10-1: a streamed trace whose pending events pile up (a slow or unreachable server) pushes them as one append; past
 # the bound that is a fatal 413, the stream stops and the rest of the trace is never stored
-@pytest.mark.xfail(strict=True, reason="A10-1: a streamed backlog over the work bound stops the stream")
 async def test_streamed_backlog_is_delivered(db, client, auth_headers, sdk_client):
     await _accepted_policy(client, auth_headers)
     async with sdk_client.trace(stream=True) as t:
@@ -86,7 +83,6 @@ async def test_streamed_backlog_is_delivered(db, client, auth_headers, sdk_clien
 
 
 # A10-2: /ingest/bulk bounds each trace's work, not the request's: many traces each under MAX_REQUEST_WORK add up
-@pytest.mark.xfail(strict=True, reason="A10-2: a bulk upload's policy work is bounded per trace only")
 async def test_bulk_upload_work_is_bounded_per_request(client, db, org, agent, api_key_headers, monkeypatch):
     monkeypatch.setattr(tps, "MAX_REQUEST_WORK", 1_000)
     await _policy(db, org, 'policy p severity high:\n  always not tool("x")', action="block")  # 2 nodes

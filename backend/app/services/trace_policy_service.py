@@ -1,11 +1,14 @@
 import asyncio
+import hashlib
+import json
 import logging
 import uuid
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime
-from functools import lru_cache
-from typing import Sequence
+from functools import lru_cache, partial
+from typing import Callable, Sequence
 
 from redis.exceptions import LockError
 from sqlalchemy import or_, select
@@ -13,16 +16,22 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Span, Trace, TracePolicy, TracePolicyViolation
-from app.policy.checker import CompiledPolicy, Monitor, Violation, check_trace, check_verdicts, compile_policy
+from app.policy.checker import (CompiledPolicy, Monitor, Violation, check_trace, check_verdicts, compile_policy,
+                                work)
 from app.policy.dsl import PolicyParseError, parse
 from app.policy.events import Event, events_from_spans
+from app.policy.monitor import plan_for
 from app.redis import get_redis
+from app.schemas.trace import EventIn
 
 log = logging.getLogger(__name__)
 STATE_TTL_S = 24 * 3600
-# `checker.work` (events x policy nodes and glob costs) one request may do, about a second; /check, appends and
-# uploads past it get a 413
+# `checker.work` (events x policy nodes and glob costs) of an append, or of a request's uploads checked inline, about a
+# second: a longer append is a 413 saying how many events fit, a later upload of a bulk request is refused for another
 MAX_REQUEST_WORK = 2_000_000
+WORK_SLICE = 200_000  # work one thread does at a time; longer jobs go in slices through _pool
+_pool = ThreadPoolExecutor(2, thread_name_prefix="policy-work")  # so long jobs can't starve the short ones
+PREFIX_TTL_S = 3600
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
 MAX_ORG_POLICY_NODES = 4_000  # `Plan.cost` summed: nodes, and glob lists or long globs on top
 
@@ -108,12 +117,30 @@ async def _replay(db: AsyncSession, trace_id: str,
     slots = _rebuild_slots.get(loop) or _rebuild_slots.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_REBUILDS))
     async with slots:
         spans = (await db.execute(select(*_EVENT_COLUMNS).where(Span.trace_id == trace_id))).all()
-        return await asyncio.to_thread(_rebuild, spans, compiled)
+        m = Monitor(compiled)
+        return m, await run_sliced(partial(_steps, m), await asyncio.to_thread(events_from_spans, spans), compiled)
 
 
-def _rebuild(spans, compiled: Sequence[CompiledPolicy]) -> tuple[Monitor, list[Violation]]:
-    m = Monitor(compiled)
-    return m, [v for e in events_from_spans(spans) for v in m.step(e)]
+async def run_sliced(fn: Callable[[Sequence], list], items: Sequence, compiled: Sequence[CompiledPolicy]) -> list:
+    """`fn` over consecutive slices of `items` (events, stepped through `compiled`) off the event loop, results
+    concatenated; past WORK_SLICE in slices through `_pool`, so no job holds a thread for long."""
+    cost = work(compiled, 1)
+    if cost * len(items) <= WORK_SLICE:
+        return await asyncio.to_thread(fn, items)
+    loop, n, out = asyncio.get_running_loop(), max(1, WORK_SLICE // cost), []
+    for i in range(0, len(items), n):
+        out += await loop.run_in_executor(_pool, fn, items[i:i + n])
+    return out
+
+
+def _steps(m: Monitor, events: Sequence[Event]) -> list[Violation]:
+    return [v for e in events for v in m.step(e)]
+
+
+def _step_inputs(m: Monitor, events: Sequence[EventIn]) -> list:
+    for e in events:
+        m.step(Event(m.next_seq, e.kind, e.name, e.status, dict(e.attrs)))
+    return []
 
 
 async def load_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
@@ -157,12 +184,60 @@ async def save_monitor(trace_id: str, monitor: Monitor | None) -> None:
         await get_redis().set(_state_key(trace_id), await asyncio.to_thread(monitor.snapshot), ex=STATE_TTL_S)
 
 
-def blocking_violations(policies: Active, events: Sequence[Event]) -> list[Violation]:
-    compiled = [c for row, c in policies if row.action == "block"]
+async def blocking_violations(compiled: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[Violation]:
     if not compiled:
         return []
     m = Monitor(compiled)
-    return [v for e in events for v in m.step(e)]
+    return await run_sliced(partial(_steps, m), events, compiled)
+
+
+def _marks(seed: str, prefix: Sequence[EventIn], k: int) -> list[str]:
+    """Digests of prefix[:k], prefix[:2k], ...: each covers every event before it."""
+    h, out = hashlib.blake2b(seed.encode(), digest_size=16).digest(), []
+    for i, e in enumerate(prefix[:len(prefix) // k * k], 1):
+        row = json.dumps([e.kind, e.name, e.status, e.attrs], sort_keys=True, default=str, separators=(",", ":"))
+        h = hashlib.blake2b(h + row.encode(), digest_size=16).digest()
+        if i % k == 0:
+            out.append(h.hex())
+    return out
+
+
+async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, compiled: Sequence[CompiledPolicy],
+                         next_seq: int, prefix: Sequence[EventIn]) -> Monitor:
+    """The monitor after the trace's stored events, if any, and `prefix`. The SDK sends an unstreamed trace's whole
+    history with each check, so a long prefix resumes from the checkpoint an earlier check of the same events (and
+    policies) saved every `k` events: a check pays for the events since, not for the whole trace."""
+    async def stored() -> Monitor:
+        return Monitor(compiled) if trace_id is None else await precheck_monitor(db, trace_id, compiled, next_seq)
+
+    k = max(1, WORK_SLICE // max(1, work(compiled, 1)))
+    if len(prefix) < k:
+        m = await stored()
+        if prefix:
+            await asyncio.to_thread(_step_inputs, m, prefix)
+        return m
+    plans = ",".join(f"{c.policy_id}:{plan_for(c.policy).digest}" for c in compiled)
+    keys = [f"policy:prefix:{d}" for d in await asyncio.to_thread(
+        _marks, f"{org_id}|{trace_id}|{next_seq}|{plans}", prefix, k)]
+    r, start, m = get_redis(), 0, None
+    try:
+        blobs = await r.mget(keys)
+    except Exception:  # a check is answered without Redis, from the start
+        log.exception("could not read prefix checkpoints")
+        blobs, r = [], None
+    for j, blob in reversed(list(enumerate(blobs, 1))):
+        if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq + j * k)):
+            start = j * k
+            break
+    m = m or await stored()
+    last = len(keys) * k
+    if start < last:
+        await run_sliced(partial(_step_inputs, m), prefix[start:last], compiled)
+        if r is not None:
+            with suppress(Exception):
+                await r.set(keys[-1], await asyncio.to_thread(m.snapshot), ex=PREFIX_TTL_S)
+    await asyncio.to_thread(_step_inputs, m, prefix[last:])
+    return m
 
 
 async def check_completed_trace(db: AsyncSession, trace_id: str,

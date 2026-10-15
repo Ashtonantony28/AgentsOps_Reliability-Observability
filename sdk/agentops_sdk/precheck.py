@@ -88,23 +88,26 @@ def _error(r: httpx.Response) -> dict:
     return err if isinstance(err, dict) else {"code": err}
 
 
-def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, int]:
+def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, int, tuple]:
     """'ok', 'retry' (keep pending events), 'refused' (a policy blocked the batch; the trace goes on without it),
-    'fatal' (drop the batch and stop streaming the trace, also when a policy blocked the trace's text), or the server's expected seq on a seq conflict,
-    so a batch stored before a lost reply can be resynced."""
+    'fatal' (drop the batch and stop streaming the trace, also when a policy blocked the trace's text), the server's expected seq on a seq conflict,
+    so a batch stored before a lost reply can be resynced, or ('max_events', n) when the batch was too much policy work."""
     if isinstance(outcome, BaseException):
         return "retry"
     if outcome.is_success:
         return "ok"
     if outcome.status_code >= 500 or outcome.status_code == 429:
         return "retry"
-    err = _error(outcome) if outcome.status_code in (403, 409) else {}
+    err = _error(outcome) if outcome.status_code in (403, 409, 413) else {}
     if outcome.status_code == 403 and err.get("code") == "policy_block":
         log.warning("agentops events refused by policy: %s", err.get("message"))
         # a block on the trace's input/output text refuses the trace, not an event
         return "fatal" if (err.get("details") or {}).get("target") == "trace" else "refused"
     if err.get("code") == "trace_busy":
         return "retry"
+    fit = (err.get("details") or {}).get("max_events") if err.get("code") == "policy_work_too_large" else None
+    if isinstance(fit, int) and not isinstance(fit, bool) and fit > 0:
+        return "max_events", fit
     expected = (err.get("details") or {}).get("expected_seq") if err.get("code") == "seq_conflict" else None
     if isinstance(expected, int) and not isinstance(expected, bool):
         return expected

@@ -375,3 +375,21 @@ def test_block_on_trace_text_stops_streaming_and_keeps_events(client, server):
         t.add_event("tool", "a")
         t.add_event("tool", "b")
     assert seqs(server) == [[0]] and [e["name"] for e in t.events] == ["a", "b"] and t._dead
+
+
+def test_backlog_over_the_work_bound_is_split(client, server):
+    """SG-A10.1: an append that is too much policy work is sent again in appends of the size the server says fits."""
+    too_much = (413, {"error": {"code": "policy_work_too_large", "message": "x", "details": {"max_events": 2}}})
+    server.queue("events", (500, {}), (500, {}), (500, {}), too_much)
+    with client.trace(stream=True) as t:
+        for name in "abcde":
+            t.add_event("tool", name)
+    assert seqs(server) == [[0], [0, 1], [0, 1, 2], [0, 1, 2, 3], [0, 1], [2, 3], [4], []]
+    assert t._sent == 5 and not t._dead
+
+
+def test_other_413_on_append_stops_streaming(client, server):
+    server.queue("events", (413, "request too large"))
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+    assert t._dead

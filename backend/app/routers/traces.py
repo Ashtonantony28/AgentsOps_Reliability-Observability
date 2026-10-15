@@ -23,6 +23,7 @@ from app.schemas.trace import (
     TraceIn,
     TraceOut,
 )
+from app.services import trace_policy_service as tps
 from app.services.report_service import traces_to_csv
 from app.services.trace_service import PolicyViolation, TraceConflict, append_events as append_trace_events, ingest_trace
 
@@ -50,10 +51,10 @@ async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Dep
     org, api_key = await authenticate_api_key(request, db)
     await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
     org_id = org.id  # a policy block rolls the session back and expires `org`
-    accepted, rejected = [], []
+    accepted, rejected, room = [], [], [tps.MAX_REQUEST_WORK]  # the policy work left to this request
     for i, raw in enumerate(req.traces):
         try:
-            tr = await ingest_trace(db, org_id, TraceIn.model_validate(raw))
+            tr = await ingest_trace(db, org_id, TraceIn.model_validate(raw), room)
             accepted.append({"id": tr.id, "trace_uid": tr.trace_uid})
         except ValidationError as e:
             errors = e.errors(include_url=False, include_context=False, include_input=False)
