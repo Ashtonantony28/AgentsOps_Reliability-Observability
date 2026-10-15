@@ -11,7 +11,7 @@ from app.policy.dsl import parse
 from app.policy.events import Event
 from app.policy.reference import evaluate
 from tests.api.test_event_ingest import ev
-from tests.api.test_trace_policies import URL, _create
+from tests.api.test_trace_policies import _create
 
 US_PER_WORK = 5e-6  # `checker.work` documents about half a microsecond per unit; 10x that
 
@@ -22,7 +22,7 @@ def _compiled(source: str, pid: str = "p"):
 
 
 def _many_globs(j: int, n: int = 2400) -> str:
-    """One atom with n short globs (19.6 KB, 2 monitor nodes): within the 20 000-character and 2 000-atom caps."""
+    """One atom with n short globs (19.6 KB, 2 monitor nodes): within the 20 000-character and 2 000-node caps."""
     return f"policy g{j} severity high:\n  always not tool(" + ",".join(f'"{j}{i:x}*"' for i in range(n)) + ")"
 
 
