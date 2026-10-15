@@ -4,6 +4,7 @@ Same recurrences as the linear Z3 encoding, evaluated on concrete values so a li
 """
 import hashlib
 import operator
+import threading
 from typing import Any
 
 from app.policy import ast
@@ -13,20 +14,29 @@ from app.policy.events import Event
 _CMP = {"<": operator.lt, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">=": operator.ge,
         ">": operator.gt}
 _INIT = {"Previously": False, "Once": False, "Historically": True, "Since": False}
-MAX_GROUPS = 1000
+MAX_GROUPS = 1000  # per `count ... by` node
+MAX_MONITOR_GROUPS = 10_000  # over all of a monitor's nodes, so its snapshot stays a few hundred KB
+MAX_KEY_CHARS = 32  # longer values are kept as a digest
 _OVERFLOW, _UNSURE = "\0", "\0?"
 
 
-def _count_group(groups: dict, g: str, hit: bool, max_groups: float) -> tuple[int, int]:
+def _group_key(g: str) -> str:
+    if len(g) > MAX_KEY_CHARS:
+        return "\0#" + hashlib.blake2b(g.encode(), digest_size=12).hexdigest()
+    return "\0" + g if g.startswith("\0") else g  # keeps client values clear of the markers and digests
+
+
+def _count_group(groups: dict, g: str, hit: bool, max_groups: float, room: list[float] | None) -> tuple[int, int]:
     """Bounds on the count of `g` after this event: exact for the first MAX_GROUPS values seen with a hit (event
-    names are client-chosen); later values share one overflow counter, so at least this event, at most every
-    overflow hit."""
-    if g.startswith("\0"):  # keeps client values clear of the markers
-        g = "\0" + g
+    names are client-chosen) while `room[0]`, the slots left in the monitor, lasts; later values share one
+    overflow counter, so at least this event, at most every overflow hit."""
+    g = _group_key(g)
     if g in groups:
         c = groups[g] = groups[g] + hit
         return c, c
-    if hit and len(groups) < max_groups:
+    if hit and len(groups) < max_groups and (room is None or room[0] > 0):
+        if room is not None:
+            room[0] -= 1
         groups[g] = 1
         return 1, 1
     hi = groups.get(_OVERFLOW, 0) + hit
@@ -37,6 +47,7 @@ def _count_group(groups: dict, g: str, hit: bool, max_groups: float) -> tuple[in
 
 _plans: dict[int, tuple[ast.Policy, "Plan"]] = {}
 _PLANS_MAX = 4096
+_plans_lock = threading.Lock()
 
 
 def plan_for(policy: ast.Policy) -> "Plan":
@@ -45,9 +56,10 @@ def plan_for(policy: ast.Policy) -> "Plan":
     if hit is not None and hit[0] is policy:
         return hit[1]
     plan = Plan(policy)
-    if len(_plans) >= _PLANS_MAX:
-        _plans.pop(next(iter(_plans)), None)
-    _plans[id(policy)] = (policy, plan)  # holding `policy` keeps its id from being reused while cached
+    with _plans_lock:  # monitors are built in worker threads too
+        if len(_plans) >= _PLANS_MAX:
+            _plans.pop(next(iter(_plans)), None)
+        _plans[id(policy)] = (policy, plan)  # holding `policy` keeps its id from being reused while cached
     return plan
 
 
@@ -66,10 +78,16 @@ class Plan:
     def initial(self) -> list:
         return [({} if f.by else 0) if op == "Count" else _INIT.get(op) for op, f, _ in self.nodes]
 
-    def step(self, state: list, e: Event, max_groups: float | None = None, memo: dict | None = None) -> bool:
+    def groups(self, state: list) -> int:
+        """Values counted exactly in `state`, the overflow markers aside."""
+        return sum(len(state[k]) - (_OVERFLOW in state[k]) - (_UNSURE in state[k]) for k in self.count_by)
+
+    def step(self, state: list, e: Event, max_groups: float | None = None, memo: dict | None = None,
+             room: list[float] | None = None) -> bool:
         """Advances `state` in place by event `e`; returns the formula's value at `e`. `max_groups=math.inf`
         counts every group exactly, for a batch check whose state is never stored. `memo` keeps attr-free atoms'
-        values by (node, kind, name, status) across steps, for replays where names repeat."""
+        values by (node, kind, name, status) across steps, for replays where names repeat. `room` holds the
+        group slots left, shared by the plans of one monitor."""
         v: list[bool] = [False] * len(self.nodes)
         max_groups = MAX_GROUPS if max_groups is None else max_groups
         for k, (op, f, kids) in enumerate(self.nodes):
@@ -102,7 +120,7 @@ class Plan:
                     state[k] += v[kids[0]]
                     v[k] = cmp(state[k], f.bound)
                 else:
-                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]], max_groups)
+                    lo, hi = _count_group(state[k], getattr(e, f.by), v[kids[0]], max_groups, room)
                     v[k] = cmp(hi, f.bound)
                     if lo != hi and len({v[k], cmp(lo, f.bound), cmp(min(max(f.bound, lo), hi), f.bound)}) > 1:
                         state[k][_UNSURE] = 1

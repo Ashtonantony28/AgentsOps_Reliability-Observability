@@ -1,17 +1,18 @@
+import asyncio
 import json
 import logging
 import time
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from redis.exceptions import LockError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Agent, Trace, Span, PolicyRule, AuditLog, TracePolicyViolation
-from app.policy.checker import Monitor, Violation
+from app.policy.checker import CompiledPolicy, Monitor, Violation, work
 from app.policy.events import Event, event_inputs
 from app.redis import get_redis
 from app.schemas.policy import EventsAppendIn, PolicyCheckIn, PolicyCheckOut, ViolationOut
@@ -173,7 +174,8 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
     try:
         policy_note = await evaluate_policies(db, org_id, agent, payload, events)
         policies = await tps.active_policies(db, org_id, agent.id, payload.environment)
-        blocked = tps.blocking_violations(policies, _events(events))
+        _bound_work([c for row, c in policies if row.action == "block"], len(events))
+        blocked = await asyncio.to_thread(tps.blocking_violations, policies, _events(events))
         if blocked:
             raise _trace_policy_block(blocked[0].policy_name, blocked[0].at_seq)
     except PolicyViolation as pv:
@@ -242,6 +244,26 @@ async def ingest_trace(db: AsyncSession, org_id: str, payload: TraceIn) -> Trace
     return trace
 
 
+def _bound_work(compiled: Sequence[CompiledPolicy], events: int) -> None:
+    if (w := work(compiled, events)) > tps.MAX_REQUEST_WORK:
+        raise TraceTooLong("policy_work_too_large",
+                           f"{events} events x this agent's policies is {w} steps of policy work; a request may "
+                           f"do at most {tps.MAX_REQUEST_WORK}: send fewer events per request",
+                           work=w, max_work=tps.MAX_REQUEST_WORK)
+
+
+def _step_events(monitor: Monitor, events: Sequence[Event], blocking: dict[str, str]) -> list[Violation]:
+    """Off the event loop; raises the block of the first event a blocking policy is false at."""
+    found = []
+    for e in events:
+        hits = monitor.step(e)
+        found += hits
+        blocked = [blocking[pid] for pid in monitor.failing if pid in blocking]
+        if blocked:
+            raise _trace_policy_block(blocked[0], e.seq, [v for v in hits if v.policy_id in blocking])
+    return found
+
+
 async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                         req: EventsAppendIn) -> tuple[Trace, list[TracePolicyViolation]]:
     """Appends events to a streamed trace and checks them live; `final` closes the trace and queues the batch check."""
@@ -274,9 +296,11 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
         if next_seq + len(req.events) > MAX_TRACE_EVENTS:
             raise TraceTooLong("trace_too_long", f"a trace holds at most {MAX_TRACE_EVENTS} events",
                                max_events=MAX_TRACE_EVENTS)
+        environment = (req.environment or agent.environment) if trace is None else trace.environment
+        policies = await tps.active_policies(db, org_id, agent.id, environment)
+        _bound_work([c for _, c in policies], len(req.events))
         if trace is None:
-            trace = Trace(org_id=org_id, agent_id=agent.id, trace_uid=trace_uid,
-                          environment=req.environment or agent.environment,
+            trace = Trace(org_id=org_id, agent_id=agent.id, trace_uid=trace_uid, environment=environment,
                           agent_version=req.agent_version or agent.current_version, meta={"stream": "open"})
             db.add(trace)
             await db.flush()
@@ -293,16 +317,9 @@ async def append_events(db: AsyncSession, org_id: str, trace_uid: str,
                 except PolicyViolation as pv:
                     pv.target = "trace"
                     raise
-            policies = await tps.active_policies(db, org_id, agent.id, trace.environment)
             monitor, replayed = await tps.load_monitor(db, trace.id, [c for _, c in policies], next_seq)
             blocking = {row.id: c.policy.name for row, c in policies if row.action == "block"}
-            found = []
-            for e in _events(req.events):
-                hits = monitor.step(e)
-                found += hits
-                blocked = [blocking[pid] for pid in monitor.failing if pid in blocking]
-                if blocked:
-                    raise _trace_policy_block(blocked[0], e.seq, [v for v in hits if v.policy_id in blocking])
+            found = await asyncio.to_thread(_step_events, monitor, _events(req.events), blocking)
         except PolicyViolation as pv:
             if pv.violations is None:
                 await _block(db, org_id, agent.id, pv, trace_uid=trace_uid)
@@ -383,6 +400,12 @@ async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limi
     return closed
 
 
+def _judge(monitor: Monitor, prefix: Sequence[EventIn], c: EventIn) -> list[Violation]:
+    for e in prefix:
+        monitor.step(Event(monitor.next_seq, e.kind, e.name, e.status, dict(e.attrs)))
+    return monitor.check(Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
+
+
 async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyCheckOut:
     """Evaluates `req.candidate` as the next event after the stored trace and `req.prefix` (their own seqs are
     ignored); stores nothing. A trace at the event cap is still answered: the schema bounds the prefix."""
@@ -403,15 +426,14 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     environment = (req.environment or agent.environment) if trace is None else trace.environment
     policies = await tps.active_policies(db, org_id, agent.id, environment)
     compiled = [c for _, c in policies]
+    _bound_work(compiled, len(req.prefix) + 1)
     if trace is None:
         monitor = Monitor(compiled)
     else:
         last = (await db.execute(select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
         monitor = await tps.precheck_monitor(db, trace.id, compiled, 0 if last is None else last + 1)
-    for e in req.prefix:
-        monitor.step(Event(monitor.next_seq, e.kind, e.name, e.status, dict(e.attrs)))
     c = req.candidate
-    found = monitor.check(Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
+    found = await asyncio.to_thread(_judge, monitor, req.prefix, c)
     rows = {row.id: row for row, _ in policies}
     now = datetime.utcnow()
     legacy = []

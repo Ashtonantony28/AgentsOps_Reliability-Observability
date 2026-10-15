@@ -117,6 +117,19 @@ The counterexample of a violation at `at_seq` is the minimal set `S` of seqs suc
 | too large | a source over 20 000 characters; a policy over 2 000 atoms and operators with its tags expanded | 1:1; the `policy` keyword |
 | too deep | a formula nested over 64 deep, tags expanded (parentheses count while parsing) | where the limit is crossed |
 
+## Limits
+
+Each live check costs about half a microsecond per monitor node per event, where a policy's nodes are its distinct atoms and operators (`always not tool("rm")` is 2).
+
+| Limit | Value | Past it |
+|---|---|---|
+| policies per org (not archived) | 100 | create or source update: 422 `policy_limit` |
+| monitor nodes over an org's policies | 4 000 | create or source update: 422 `policy_limit` |
+| policy work per request: events × nodes of the policies it runs | 2 000 000 (about a second) | `/check`, event append or trace upload: 413 `policy_work_too_large` with `work` and `max_work`; nothing is stored. A `/check` counts its prefix and candidate, an append its events against every active policy, an upload its events against `block` policies only. The SDK blocks a check answered 413. |
+| `count … by` values kept exactly | 1 000 per node, 10 000 per trace over all policies | later values share an overflow counter (nothing is missed, but a count it cannot settle fails the policy from then on); values over 32 characters are kept as a 96-bit digest |
+
+The work of rebuilding a trace's monitor from stored events (after its Redis state is lost) is not counted against a request; the org limits bound it.
+
 ## Fixtures
 
 `backend/tests/policy/fixtures/*.json`, one per file, loaded by `tests/policy/fixtures.py`:

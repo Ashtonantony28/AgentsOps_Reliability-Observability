@@ -48,8 +48,8 @@ def events_request(agent_id: str, events: List[dict], final: bool, **fields) -> 
     return {"agent_id": agent_id, "events": events, "final": final, **fields}
 
 
-# the server answered but rejected the key, the agent or the request: a configuration error no retry fixes
-CONFIG_ERRORS = (401, 403, 404, 422)
+# the server answered but rejected the key, the agent or the request (413: too much policy work), which no retry fixes
+CONFIG_ERRORS = (401, 403, 404, 413, 422)
 
 
 def failed_result(reason: str, fail_closed: bool) -> CheckResult:
