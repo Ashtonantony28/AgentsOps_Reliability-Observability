@@ -652,4 +652,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: Audit A12 (round 5, API/SDK and tests) done: 0 critical, 1 high, 1 medium, 3 low in AUDIT-12.md; SG-A12.1 and SG-A12.2 proposed.
 - 2026-10-15: SG-A11.2 done: policies compile off the event loop, failures cached, unused tags count toward the org cap; A11-4 huge integers are a parse error.
 - 2026-10-15: SG-A11.1 done (A11-1: policy pool slices and span rebuilds taken in turn by org; A11-2: batch checks taken from per-org lists in turn by org).
-- 2026-10-19: SG-A12.1 done (A12-1: a long `/check` prefix saves each checkpoint as its slice is stepped and resumes from the newest before every slice; a slice another check is stepping is waited for; a check whose request is gone or past 30 s stops with 503 `check_timeout`).
+- 2026-10-19: SG-A12.1 done (A12-1: a long `/check` prefix saves each checkpoint as its slice is stepped and resumes from the newest before every slice; a slice another check is stepping is waited for while its pieces move; a check whose request is gone or past 30 s stops with 503 `check_timeout`).

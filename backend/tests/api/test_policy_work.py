@@ -166,6 +166,30 @@ async def test_a_stalled_checks_slice_is_stepped_by_the_next(client, db, org, ag
     assert r.json()["allowed"] is False and (await one).json()["allowed"] is False
 
 
+async def test_a_slow_but_moving_slice_is_waited_for_not_stepped_twice(client, db, org, agent, api_key_headers,
+                                                                       monkeypatch):
+    """SG-A12.1: on a slow machine a slice runs past SLICE_WAIT_S; a check waits for it while its pieces move."""
+    monkeypatch.setattr(tps, "SLICE_WAIT_S", 0.2)
+    await _policy(db, org, BIG, action="block")
+    stepped, real = [], tps._step_inputs
+
+    def slow(m, events):
+        stepped.append(len(events))
+        time.sleep(0.003 * len(events))  # about 0.6 s a slice
+        return real(m, events)
+
+    monkeypatch.setattr(tps, "_step_inputs", slow)
+    prefix = [ev(i, f"t{i % 7}") for i in range(400)]
+
+    async def later():
+        await asyncio.sleep(0.05)
+        return await _check(client, api_key_headers, agent, prefix, "n0")
+
+    rs = await asyncio.wait_for(asyncio.gather(_check(client, api_key_headers, agent, prefix, "n0"), later()), 10)
+    assert [r.json()["allowed"] for r in rs] == [False] * 2
+    assert sum(stepped) < 400 + 199, stepped  # each slice once, and the tails
+
+
 async def test_a_check_stops_once_its_request_is_gone_and_the_next_resumes(client, db, org, agent, api_key_headers,
                                                                            monkeypatch):
     """SG-A12.1 (A12-1): a check the SDK gave up on stops between slices (503 check_timeout) and keeps what it

@@ -40,7 +40,7 @@ _pool = ThreadPoolExecutor(POOL_THREADS, thread_name_prefix="policy-work")  # so
 PREFIX_TTL_S = 3600
 CHECK_DEADLINE_S = 30  # a check's policy work stops past this, or once its request is gone
 # a check waits for another's slice of the same prefix, looking at its deadline and request this often, and steps the
-# slice itself once the other has run it this long (about 10 slices' time: its thread is stalled)
+# slice itself once the other has stepped no piece of it for this long (about 1 000 pieces' time: its thread is stalled)
 SLICE_WAIT_S = 1.0
 BATCH_LOCK_WAIT_S = 10
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
@@ -373,7 +373,7 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
 
 class _Slice:
     def __init__(self):
-        self.done, self.blob, self.started = asyncio.Event(), None, None
+        self.done, self.blob, self.moved = asyncio.Event(), None, None
 
 
 _stepping: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # per event loop: checkpoint key -> _Slice
@@ -411,7 +411,7 @@ class _Steps:
     def free(self, key: str) -> bool:
         """No check of this process is stepping `key`, or the one that is has stalled."""
         s = self.running.get(key)
-        return s is None or s.started is not None and time.monotonic() - s.started > SLICE_WAIT_S
+        return s is None or s.moved is not None and time.monotonic() - s.moved > SLICE_WAIT_S
 
     async def _restore(self, blob: str | None, slices: int) -> Monitor | None:
         if not blob:
@@ -421,11 +421,14 @@ class _Steps:
     async def step(self, key: str, m: Monitor, events: Sequence[EventIn]) -> None:
         """Steps `m` through `events` and saves the checkpoint `key`; checks waiting for it get its snapshot."""
         s = self.running[key] = _Slice()
+
+        def piece(events: Sequence[EventIn]) -> list:
+            s.moved = time.monotonic()  # a slow machine's slice is waited for as long as it moves, not stepped twice
+            return _step_inputs(m, events)
+
         try:
             async with _fair()[0](self.org_id):
-                s.started = time.monotonic()
-                await asyncio.get_running_loop().run_in_executor(_pool, _in_pieces, partial(_step_inputs, m), events,
-                                                                 self.piece)
+                await asyncio.get_running_loop().run_in_executor(_pool, _in_pieces, piece, events, self.piece)
             s.blob = (await asyncio.to_thread(m.snapshot)).decode()
             if self.r is not None:
                 with suppress(Exception):

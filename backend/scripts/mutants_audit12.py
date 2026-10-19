@@ -45,7 +45,7 @@ m.MUTANTS = [
     ("A12-8", TPS, "for i in range(len(blobs), 0, -1):", "for i in range(1, len(blobs) + 1):", *B),
     # SG-A12.1: a check resumes from, or waits for, what another check of the same prefix steps; it stops when gone
     ("A12-1", TPS, "if j < len(keys) and (s := self.running.get(keys[j])):", "if False:", *B),
-    ("A12-1", TPS, "return s is None or s.started is not None and", "return s is None and", *B),
+    ("A12-1", TPS, "return s is None or s.moved is not None and", "return s is None and", *B),
     ("A12-1", TPS, "if time.monotonic() > deadline or (gone is not None and await gone()):", "if False:", *B),
     ("A12-1", TPS, "if time.monotonic() > deadline or", "if", *B),
     ("A12-1", TPS, "            s.done.set()", "            pass", *B),
