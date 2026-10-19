@@ -65,6 +65,7 @@ async def test_overlapping_checks_of_a_growing_history_finish_in_about_one_check
         assert r.status_code == 200, r.text
         return time.perf_counter() - t
 
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", 600)  # measures overlap, not the deadline; slow runners pass 30 s
     real, stepped = tps._step_inputs, []
     monkeypatch.setattr(tps, "_step_inputs", lambda m, events: stepped.append(len(events)) or real(m, events))
     alone = await timed([ev(i, f"a{i % 7}") for i in range(4_000)])
