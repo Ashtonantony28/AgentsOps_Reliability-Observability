@@ -2,6 +2,7 @@
 uploads' work is bounded (413 / rejected policy_work_too_large), a check always answered; an org's policies are
 bounded in number and size (422 policy_limit). SG-A11.1: pool slices and rebuilds are taken in turn by org."""
 import asyncio
+import threading
 import time
 
 from sqlalchemy import select
@@ -73,6 +74,135 @@ async def test_checkpointed_check_agrees_with_a_fresh_one(client, db, org, agent
     for n in (20, 29, 40, 31, 60):  # resumed from checkpoints before and after the "a"
         r = await client.post("/api/trace-policies/check", headers=api_key_headers, json=body(n))
         assert r.json()["allowed"] is (n <= 30), (n, r.text)
+
+
+def _check(client, headers, agent, prefix, candidate="b", **kw):
+    return client.post("/api/trace-policies/check", headers=headers, json={
+        "agent_id": agent.id, "candidate": ev(0, candidate), "prefix": prefix, **kw})
+
+
+def _count_steps(monkeypatch) -> list:
+    stepped, real = [], tps._step_inputs
+    monkeypatch.setattr(tps, "_step_inputs", lambda m, es: stepped.append(len(es)) or real(m, es))
+    return stepped
+
+
+async def test_checkpoints_tell_apart_event_status_and_attrs(client, db, org, agent, api_key_headers, monkeypatch):
+    """SG-A12.1 (A12-5): two prefixes that differ only in one event's status, or its attrs, never share a checkpoint."""
+    monkeypatch.setattr(tps, "WORK_SLICE", 50)
+    await _policy(db, org, 'policy s severity high:\n  always not (tool("b") and once (tool("a") and status("error")))',
+                  action="block")
+    await _policy(db, org, 'policy t severity high:\n  always not (tool("b") and once attr("k", 1))', action="block")
+    prefix = lambda **a: [ev(i, "a", **a) if i == 3 else ev(i, "t") for i in range(40)]
+    for blocked, events in ((True, prefix(status="error")), (False, prefix(status="success")),
+                            (True, prefix(attrs={"k": 1})), (False, prefix(attrs={"k": 2}))):
+        for n in (40, 41):  # from scratch, then resumed from its own checkpoints
+            r = await _check(client, api_key_headers, agent, events + [ev(40, "t")] * (n - 40))
+            assert r.json()["allowed"] is not blocked, (blocked, events[3], r.text)
+
+
+async def test_checkpoints_of_stored_traces_are_their_own(client, db, org, agent, api_key_headers, monkeypatch):
+    """SG-A12.1 (A12-5): a check of a stored trace resumes from its own checkpoints, after its stored events, and
+    never from another stored trace's of the same length."""
+    monkeypatch.setattr(tps, "WORK_SLICE", 50)
+    await _policy(db, org, 'policy p severity high:\n  always not (tool("b") and once tool("a"))', action="block")
+    for uid, name in (("u1", "a"), ("u2", "t")):
+        assert (await _append(client, api_key_headers, agent, uid, [ev(0, name), ev(1, "t")])).status_code == 202
+    prefix, stepped = [ev(i, "t") for i in range(40)], _count_steps(monkeypatch)
+    k = tps.WORK_SLICE // tps.work([c for _, c in await tps.active_policies(db, org.id, agent.id, "dev")], 1)
+    for uid, allowed in (("u1", False), ("u2", True)):
+        r = await _check(client, api_key_headers, agent, prefix, trace_uid=uid)
+        assert r.json()["allowed"] is allowed, (uid, r.text)
+    stepped.clear()
+    r = await _check(client, api_key_headers, agent, prefix + [ev(40, "t")], trace_uid="u2")
+    assert r.json()["allowed"] is True and sum(stepped) == 41 - 41 // k * k, stepped
+
+
+async def test_a_check_restores_only_the_newest_checkpoint(client, db, org, agent, api_key_headers, monkeypatch):
+    await _policy(db, org, BIG)
+    prefix = [ev(i, f"t{i % 7}") for i in range(1_000)]
+    assert (await _check(client, api_key_headers, agent, prefix)).status_code == 200
+    restored, real = [], tps._restore
+    monkeypatch.setattr(tps, "_restore", lambda *a: restored.append(a[2]) or real(*a))
+    assert (await _check(client, api_key_headers, agent, prefix + [ev(1_000, "t")])).status_code == 200
+    assert restored == [1_000 // 199 * 199]
+
+
+async def test_concurrent_checks_of_one_prefix_step_it_once(client, db, org, agent, api_key_headers, monkeypatch):
+    """SG-A12.1 (A12-1): a slice another check is stepping is waited for, not stepped again, and the verdicts agree."""
+    monkeypatch.setattr(tps, "SLICE_WAIT_S", 30)  # a waiting check is woken by the slice's end, not by a timeout
+    await _policy(db, org, BIG, action="block")
+    stepped = _count_steps(monkeypatch)
+    prefix = [ev(i, f"t{i % 7}") for i in range(1_000)]
+    rs = await asyncio.wait_for(asyncio.gather(*(
+        _check(client, api_key_headers, agent, prefix + [ev(1_000, "t")] * n, "n0") for n in range(4))), 10)
+    assert [r.json()["allowed"] for r in rs] == [False] * 4
+    assert sum(stepped) < 1_000 + 6 + 199, stepped  # each slice once (a race may repeat one), and the tails
+
+
+async def test_a_stalled_checks_slice_is_stepped_by_the_next(client, db, org, agent, api_key_headers, monkeypatch):
+    """SG-A12.1: a check waits for another's slice only while that one makes progress; past SLICE_WAIT_S of a stuck
+    thread it steps the slice itself."""
+    monkeypatch.setattr(tps, "SLICE_WAIT_S", 0.2)
+    await _policy(db, org, BIG, action="block")
+    real, release, first = tps._step_inputs, threading.Event(), []
+
+    def step(m, events):
+        first or first.append(m)
+        if m is first[0] and m.next_seq >= 300:
+            release.wait(10)
+        return real(m, events)
+
+    monkeypatch.setattr(tps, "_step_inputs", step)
+    prefix = [ev(i, f"t{i % 7}") for i in range(1_000)]
+    one = asyncio.create_task(_check(client, api_key_headers, agent, prefix, "n0"))
+    try:
+        while not tps._stepping.get(asyncio.get_running_loop()):
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)
+        r = await asyncio.wait_for(_check(client, api_key_headers, agent, prefix, "n0"), 5)
+    finally:
+        release.set()
+    assert r.json()["allowed"] is False and (await one).json()["allowed"] is False
+
+
+async def test_a_check_stops_once_its_request_is_gone_and_the_next_resumes(client, db, org, agent, api_key_headers,
+                                                                           monkeypatch):
+    """SG-A12.1 (A12-1): a check the SDK gave up on stops between slices (503 check_timeout) and keeps what it
+    stepped; so does one past CHECK_DEADLINE_S."""
+    from starlette.requests import Request
+    await _policy(db, org, BIG, action="block")
+    stepped, stop = _count_steps(monkeypatch), True
+
+    async def gone(self):
+        return stop and sum(stepped) >= 3 * 199
+
+    monkeypatch.setattr(Request, "is_disconnected", gone)
+    prefix = [ev(i, f"t{i % 7}") for i in range(1_000)]
+    _err(await _check(client, api_key_headers, agent, prefix, "n0"), 503, "check_timeout")
+    assert sum(stepped) == 3 * 199, stepped
+    stop = False
+    stepped.clear()
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", -1)
+    _err(await _check(client, api_key_headers, agent, prefix, "n0"), 503, "check_timeout")
+    assert stepped == []
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", 30)
+    r = await _check(client, api_key_headers, agent, prefix, "n0")
+    assert r.json()["allowed"] is False and sum(stepped) == 1_000 - 3 * 199, stepped
+
+
+async def test_long_work_runs_in_slices_on_the_pool(client, db, org, agent, api_key_headers, monkeypatch):
+    """SG-A10.1: work over WORK_SLICE goes through `_pool` a slice at a time; within it, to a default thread."""
+    await _policy(db, org, BIG)
+    ran, real = [], tps._in_pieces
+    monkeypatch.setattr(tps, "_in_pieces", lambda fn, items, n: items and ran.append(
+        (threading.current_thread().name.startswith("policy-work"), len(items))) or real(fn, items, n))
+    assert (await _append(client, api_key_headers, agent, "s1", [ev(i, "t") for i in range(500)])).status_code == 202
+    assert ran == [(True, 199), (True, 199), (True, 102)]
+    ran.clear()
+    assert (await _append(client, api_key_headers, agent, "s1", [ev(i, "t") for i in range(500, 600)])).status_code \
+        == 202
+    assert ran == [(False, 100)]
 
 
 async def test_append_over_the_work_bound_is_413_with_the_events_that_fit(client, db, org, agent, api_key_headers):

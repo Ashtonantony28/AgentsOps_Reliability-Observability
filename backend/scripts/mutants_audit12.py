@@ -1,6 +1,6 @@
 """AUDIT-12 mutation probe of the round-4 API and SDK fixes (PRs #45, #47, #48, #49), replayed like AUDIT-4's:
-python backend/scripts/mutants_audit12.py [probe | A12-8]. The "probe" rows were killed when AUDIT-12 ran; the
-A12-8 rows survived it (AUDIT-12.md A12-8)."""
+python backend/scripts/mutants_audit12.py [probe | A12-8 | A12-1]. The "probe" rows were killed when AUDIT-12 ran;
+the A12-8 rows survived it (AUDIT-12.md A12-8); the A12-1 rows are SG-A12.1's, killed by its tests."""
 import sys
 
 import mutants_audit4 as m
@@ -36,14 +36,19 @@ m.MUTANTS = [
     ("probe", TS, "blocked = _charge(blocking, len(events), room) and", "blocked = _charge(blocking, 0, room) and", *B),
     # backend: prefix checkpoints of /check (#48)
     ("probe", TPS, "    if len(prefix) < k:", "    if True:", *B),
-    ("A12-8", TPS, "compiled, next_seq + j * k)", "compiled, j * k)", *B),
+    ("A12-8", TPS, "self.next_seq + slices * self.k)", "slices * self.k)", *B),
     ("A12-8", TPS, 'f"{org_id}|{trace_id}|{next_seq}|{plans}"', 'f"{org_id}|{plans}"', *B),
     ("A12-8", TPS, "json.dumps([e.kind, e.name, e.status, e.attrs]", "json.dumps([e.kind, e.name, e.attrs]", *B),
     ("A12-8", TPS, "json.dumps([e.kind, e.name, e.status, e.attrs]", "json.dumps([e.kind, e.name, e.status]", *B),
-    ("probe", TPS, "        if r is not None:", "        if False:", *B),
-    ("probe", TPS, "await asyncio.to_thread(_step_inputs, m, prefix[last:])", "None", *B),
-    ("A12-8", TPS, "for j, blob in reversed(list(enumerate(blobs, 1))):", "for j, blob in list(enumerate(blobs, 1)):",
-     *B),
+    ("probe", TPS, "await self.r.set(key, s.blob, ex=PREFIX_TTL_S)", "None", *B),
+    ("probe", TPS, "await asyncio.to_thread(_step_inputs, m, prefix[len(keys) * k:])", "None", *B),
+    ("A12-8", TPS, "for i in range(len(blobs), 0, -1):", "for i in range(1, len(blobs) + 1):", *B),
+    # SG-A12.1: a check resumes from, or waits for, what another check of the same prefix steps; it stops when gone
+    ("A12-1", TPS, "if j < len(keys) and (s := self.running.get(keys[j])):", "if False:", *B),
+    ("A12-1", TPS, "return s is None or s.started is not None and", "return s is None and", *B),
+    ("A12-1", TPS, "if time.monotonic() > deadline or (gone is not None and await gone()):", "if False:", *B),
+    ("A12-1", TPS, "if time.monotonic() > deadline or", "if", *B),
+    ("A12-1", TPS, "            s.done.set()", "            pass", *B),
     # backend: long work sliced on its own pool (#48), busy batch retried (#49), org cap in cost units (#45)
     ("A12-8", TPS, "if cost * len(items) <= WORK_SLICE:", "if True:", *B),
     ("probe", TPS, "raise TraceBusy(trace_id)", "locked = False", *B),
