@@ -178,7 +178,7 @@ class _Parser:
             raise PolicyParseError(start.line, start.col,
                                    f"policy has over {MAX_FORMULA_SIZE} atoms and operators with its tags expanded")
         end = self.toks[self.i - 1].end
-        return Policy(name.value, severity, formula, self.src[start.start:end])
+        return Policy(name.value, severity, formula, self.src[start.start:end], len(self.shape))
 
     def node(self, f: Formula, *kids: Formula) -> Formula:
         # sized as each node is built, so tags (shared nodes) are never walked again
@@ -335,7 +335,7 @@ class _Parser:
         if t.type == "str":
             return self.advance().value
         if t.type == "num" and t.value.isdigit():
-            return int(self.advance().value)
+            return self.integer()
         if self.at("true", "false"):
             return self.advance().value == "true"
         raise self.fail("attribute value (string, integer, true or false)")
@@ -356,7 +356,14 @@ class _Parser:
         op = self.advance().value
         if not (self.tok.type == "num" and self.tok.value.isdigit()):
             raise self.fail(f"integer bound after '{op}'")
-        return self.node(Count(pred, op, int(self.advance().value), by), pred)
+        return self.node(Count(pred, op, self.integer(), by), pred)
+
+    def integer(self) -> int:
+        t = self.advance()
+        try:
+            return int(t.value)
+        except ValueError:  # over Python's int-from-string digit limit
+            raise PolicyParseError(t.line, t.col, f"integer of {len(t.value)} digits is too long") from None
 
 
 def parse(src: str) -> list[Policy]:

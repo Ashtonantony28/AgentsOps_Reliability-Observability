@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -18,6 +19,15 @@ _current: ContextVar[Optional["Trace"]] = ContextVar("agentops_current_trace", d
 
 def current_trace() -> Optional["Trace"]:
     return _current.get()
+
+
+def loop_lock(locks: weakref.WeakKeyDictionary) -> asyncio.Lock:
+    # an asyncio.Lock binds to the loop it first waits in, and a trace's calls can run in several (asyncio.run per step)
+    loop = asyncio.get_running_loop()
+    lock = locks.get(loop)
+    if lock is None:
+        lock = locks[loop] = asyncio.Lock()
+    return lock
 
 
 @dataclass
@@ -56,10 +66,10 @@ class Trace:
     _max_batch: Optional[int] = field(default=None, init=False, repr=False)  # events per append the server takes
     _refused: int = field(default=0, init=False, repr=False)
     _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
-    _alock: Any = field(default=None, init=False, repr=False, compare=False)
+    _alocks: Any = field(default_factory=weakref.WeakKeyDictionary, init=False, repr=False, compare=False)
     _guard_lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)  # sync and async
     _guard_owner: Optional[int] = field(default=None, init=False, repr=False, compare=False)  # the holder's thread
-    _guard_alock: Any = field(default=None, init=False, repr=False, compare=False)
+    _guard_alocks: Any = field(default_factory=weakref.WeakKeyDictionary, init=False, repr=False, compare=False)
     _running: list = field(default_factory=list, init=False, repr=False, compare=False)  # guarded calls' events
     _sending: list = field(default_factory=list, init=False, repr=False, compare=False)
     _tasks: set = field(default_factory=set, init=False, repr=False, compare=False)
@@ -237,9 +247,7 @@ class Trace:
                     return
 
     async def _apush(self, final: bool = False, hold: bool = False) -> None:
-        if self._alock is None:
-            self._alock = asyncio.Lock()
-        async with self._alock:
+        async with loop_lock(self._alocks):
             for _ in range(2 * (len(self.events) - self._sent) + 2):
                 batch = self._batch(final, hold)
                 if batch is None:

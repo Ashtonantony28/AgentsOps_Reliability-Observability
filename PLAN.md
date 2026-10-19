@@ -451,10 +451,12 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Open (low):** a task that pops a trace and dies before checking it (worker killed past `acks_late`) loses that trace's batch check, where the old per-trace task was redelivered; if Redis takes the push but the broker refuses the task, the trace waits for the next queued task. Policy work still shares one process's CPU with every org's requests (about 2x slower while the pool is saturated, independent of how many jobs fill it).
 
 ### SG-A11.2 Policy compile off the event loop (AUDIT-11 A11-3 high)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-11
+- **Owner:** thread "Stop policy re-parse freezing the server" · **Status:** done · **Depends:** AUDIT-11
 - **Scope:** `active_policies` (and `_check_org_limits`, `plan_for` on request paths) never parse or plan a policy on the event loop; parse time is bounded by what the caps count (tag definitions counted toward the size limits, or unused tags rejected), and/or compiled policies are cached so another org's traffic can't evict them; a stored policy that doesn't parse is not re-parsed per request. A11-4 (huge integers are a 500) rides along.
 - **Acceptance:** `test_policy_compile_does_not_stall_the_event_loop` and `test_huge_integer_is_a_parse_error` pass unmarked; DSL and trace-policy API tests unchanged except for any new size rule; bench rows met.
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_11.py -k "stall or integer" tests/policy/test_dsl.py tests/api/test_trace_policies.py`
+- **Decision (contract change, approved under the standing rule):** the org cap (`MAX_ORG_POLICY_NODES` = 4 000, 422 `policy_limit`) charges each policy `org_cost`: its `Plan.cost`, or the nodes the parser built for its source (unused tags included, `Policy.parsed`) if more, so parse time is bounded per org too (a 500-unused-tag policy now costs 1 501, so an org holds two). Policies stored over the new cap keep running; the org can't add more until under it. A11-4: an integer over Python's digit limit is `PolicyParseError` "integer of N digits is too long" at the token.
+- **Result:** both tests unmarked; the stall test now fills the org to the cap through the API (two tag-heavy policies, the third refused, then 98 small ones), since 100 tag-heavy policies are no longer reachable; with 100 stored tag-heavy policies the off-loop compile still stalls the loop 0.13 to 0.4 s through gen-2 GC passes its allocations trigger (CI). Compiled policies live in a 2 048-entry LRU keyed by (id, source) that also caches sources that no longer parse (`None`, logged once per miss); `active_policies` and `_check_org_limits` compile misses in one `asyncio.to_thread` call, hits stay on the loop; create/update/validate parse in a thread. Measured: cold `/check` for 100 such policies takes 2.6 s in a thread, loop stall 0.13 to 0.16 s (was 2.6 s), the remainder being full GC passes triggered by the parse's allocations; warm 0.03 s. Backend 1198 passed on SQLite, Postgres subset 447. Bench: live p95 0.02 ms, ingest 0.10, batch 29, precheck 4.7, counterexample 328. Open (low): a cache thrashed by many orgs still costs each request its org's compile time in a default-executor thread (bounded by the cap for new orgs, ~2.6 s for orgs stored over it), shared with monitor stepping; gen-2 GC pauses of ~0.1 s under that churn.
 
 ### SG-A12.1 Overlapping checks of a long prefix resume (AUDIT-12 A12-1 high)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-12
@@ -463,10 +465,11 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_12.py tests/api/test_policy_work.py && TEST_DB=postgres pytest -q tests/audit/test_audit_12.py` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
 
 ### SG-A12.2 AUDIT-12 medium (A12-2)
-- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-12
+- **Owner:** thread SG-A12.2 · **Status:** done · **Depends:** AUDIT-12
 - **Scope:** a trace's async guarded calls (and the async client's pushes) work when the trace's calls run in more than one event loop, e.g. asyncio locks kept per loop, or the shared threading lock awaited without an asyncio primitive. SDK only.
 - **Acceptance:** `sdk/tests/test_audit_12.py` passes unmarked; `tests/test_guard.py` and `tests/test_audit_10.py` unchanged.
 - **Verify:** `cd sdk && pytest -q`
+- **Result:** `trace.loop_lock` keeps one `asyncio.Lock` per running loop (`WeakKeyDictionary`) for the guard queue (`Trace._guard_alocks`) and the async push (`Trace._alocks`); calls in different loops still exclude each other through the shared threading `_guard_lock`, so the sync/async sharing of #47 holds. `test_audit_12.py` passes unmarked; `tests/test_guard_loops.py` adds the per-loop lock and an async guarded call waiting for a sync one in another thread (kills AUDIT-12's surviving `guard.py` one-poll mutant). Open low: async pushes of one trace from two loops running at once in different threads no longer exclude each other (before, the second loop raised `RuntimeError`).
 
 ## Audits (after SG5b; SG6 included if built)
 
@@ -645,4 +648,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: SG-A10.3 done (A10-3: a running guarded call no longer holds back later events; A10-4: one guard lock for sync and async calls; lows A10-5 proxy 413, A10-6 stale mutant rows fixed).
 - 2026-10-15: Audit A11 (round 5, checker correctness, performance and security) done: 0 critical, 3 high, 0 medium, 1 low in AUDIT-11.md; SG-A11.1 and SG-A11.2 proposed. Round-4 fixes hold; the highs are per-org bounds on shared resources.
 - 2026-10-15: Audit A12 (round 5, API/SDK and tests) done: 0 critical, 1 high, 1 medium, 3 low in AUDIT-12.md; SG-A12.1 and SG-A12.2 proposed.
+- 2026-10-15: SG-A11.2 done: policies compile off the event loop, failures cached, unused tags count toward the org cap; A11-4 huge integers are a parse error.
 - 2026-10-15: SG-A11.1 done (A11-1: policy pool slices and span rebuilds taken in turn by org; A11-2: batch checks taken from per-org lists in turn by org).

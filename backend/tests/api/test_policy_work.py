@@ -7,6 +7,7 @@ import time
 from sqlalchemy import select
 
 from app.models import Trace
+from app.policy.dsl import parse as tps_parse
 from app.services import trace_policy_service as tps
 from tests.api.test_event_ingest import _append, _policy, ev
 from tests.api.test_trace_policies import SRC_A, SRC_B, URL, _create, _err
@@ -227,3 +228,18 @@ async def test_rebuild_slots_are_taken_in_turn_by_org(client, db, org, agent, ap
     assert r.status_code == 200 and len(rebuilds._waiting["hog"]) == 1  # the other org's slot went back to the hog
     release.set()
     await asyncio.gather(*held, return_exceptions=True)
+
+
+async def test_policies_are_compiled_off_the_event_loop_once(db, org, agent, monkeypatch):
+    good = await _policy(db, org, SRC_A)
+    bad = await _policy(db, org, SRC_B)
+    bad.source = SRC_A + SRC_B  # stored before a rule it now breaks
+    await db.commit()
+    parsed, threads = [], []
+    monkeypatch.setattr(tps, "parse", lambda s: parsed.append(s) or tps_parse(s))
+    real = asyncio.to_thread
+    monkeypatch.setattr(tps.asyncio, "to_thread", lambda f, *a: threads.append(f) or real(f, *a))
+    tps._compiled.clear()
+    for _ in range(3):
+        assert [r.id for r, _ in await tps.active_policies(db, org.id, agent.id, "dev")] == [good.id]
+    assert sorted(parsed) == sorted([SRC_A, SRC_A + SRC_B]) and threads == [tps._compile_all]

@@ -285,3 +285,11 @@ def test_round_trip(p):
 def test_round_trip_formula_is_stable(fm):
     s = pretty_formula(fm)
     assert pretty_formula(f(s)) == s
+
+
+@pytest.mark.parametrize("formula", ['attr("k", 1N)', "count(tool(*)) <= 1N"])
+def test_integer_over_the_digit_limit_is_a_parse_error(formula):
+    e = err("policy p: always " + formula.replace("1N", "1" * 4_301))
+    assert (e.line, e.col) == (1, 18 + formula.index("1N"))
+    assert e.message == "integer of 4301 digits is too long"
+    assert parse("policy p: always " + formula.replace("1N", "9" * 4_300))
