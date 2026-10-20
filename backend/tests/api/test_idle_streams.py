@@ -147,6 +147,7 @@ def test_busy_trace_task_is_retried(monkeypatch):
     with pytest.raises(RuntimeError):
         policy_tasks.check_completed_trace.run("t1")
     assert retried[0]["countdown"] == 60 and isinstance(retried[0]["exc"], tps.TraceBusy)
+    assert retried[0]["args"] == ("t1",)  # the retry checks this trace, not the next in turn
 
 
 # PR #35 gap: after a Redis loss (or for traces opened before tracking began) the sweep re-tracks open traces from

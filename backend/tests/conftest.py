@@ -104,7 +104,7 @@ def enqueued(monkeypatch):
     """Trace ids queued for the batch policy check, instead of sending them to Celery."""
     ids: list[str] = []
 
-    async def _enqueue(trace_id):
+    async def _enqueue(trace_id, org_id):
         ids.append(trace_id)
 
     monkeypatch.setattr(app.services.trace_service, "enqueue_trace_check", _enqueue)

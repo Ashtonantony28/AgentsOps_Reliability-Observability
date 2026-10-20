@@ -3,11 +3,12 @@ import hashlib
 import json
 import logging
 import threading
+import time
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from functools import partial
 from typing import Callable, Sequence
@@ -33,7 +34,9 @@ STATE_TTL_S = 24 * 3600
 # second: a longer append is a 413 saying how many events fit, a later upload of a bulk request is refused for another
 MAX_REQUEST_WORK = 2_000_000
 WORK_SLICE = 200_000  # work one thread does at a time; longer jobs go in slices through _pool
-_pool = ThreadPoolExecutor(2, thread_name_prefix="policy-work")  # so long jobs can't starve the short ones
+GIL_PIECE = 1_000  # work a pool thread does between offers of the GIL, about a millisecond
+POOL_THREADS = 2
+_pool = ThreadPoolExecutor(POOL_THREADS, thread_name_prefix="policy-work")  # so long jobs can't starve the short ones
 PREFIX_TTL_S = 3600
 BATCH_LOCK_WAIT_S = 10
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
@@ -133,7 +136,74 @@ def _precheck_key(trace_id: str) -> str:
 # the columns events_from_spans reads; full rows carry payloads the checker never needs
 _EVENT_COLUMNS = (Span.id, Span.seq, Span.kind, Span.name, Span.status, Span.attrs, Span.started_at)
 MAX_CONCURRENT_REBUILDS = 4
-_rebuild_slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # per event loop
+
+
+class FairSlots:
+    """`n` slots, handed out round robin across orgs as they free up, first come first served within an org: an org
+    with many jobs waiting delays another org's next job by at most one of its own."""
+
+    def __init__(self, n: int):
+        self._free = n
+        self._waiting: dict[str, deque[asyncio.Future]] = {}  # in turn order
+
+    @asynccontextmanager
+    async def __call__(self, org_id: str):
+        """Holds a slot; `await turn()` hands it on to the next org in turn, if one waits, and waits for this org's
+        next turn."""
+        if self._free:  # then nobody waits
+            self._free -= 1
+        else:
+            await self._wait(org_id)
+        held = True
+
+        async def turn() -> None:
+            nonlocal held
+            if self._waiting:
+                fut = self._queue(org_id)
+                held = False
+                self._release()
+                await self._wait(org_id, fut)
+                held = True
+
+        try:
+            yield turn
+        finally:
+            if held:
+                self._release()
+
+    def _queue(self, org_id: str) -> asyncio.Future:
+        fut = asyncio.get_running_loop().create_future()
+        self._waiting.setdefault(org_id, deque()).append(fut)
+        return fut
+
+    async def _wait(self, org_id: str, fut: asyncio.Future | None = None) -> None:
+        fut = fut or self._queue(org_id)
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if not fut.cancelled():  # handed a slot as it was cancelled
+                self._release()
+            raise
+
+    def _release(self) -> None:
+        while self._waiting:
+            org_id = next(iter(self._waiting))
+            queue = self._waiting.pop(org_id)
+            fut = queue.popleft()
+            if queue:
+                self._waiting[org_id] = queue  # to the back of the turn
+            if not fut.done():
+                fut.set_result(None)
+                return
+        self._free += 1
+
+
+_slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # per event loop: (pool slices, rebuilds)
+
+
+def _fair() -> tuple[FairSlots, FairSlots]:
+    loop = asyncio.get_running_loop()
+    return _slots.get(loop) or _slots.setdefault(loop, (FairSlots(POOL_THREADS), FairSlots(MAX_CONCURRENT_REBUILDS)))
 
 
 def _restore(blob: str | None, compiled: Sequence[CompiledPolicy], next_seq: int) -> Monitor | None:
@@ -145,26 +215,42 @@ def _restore(blob: str | None, compiled: Sequence[CompiledPolicy], next_seq: int
     return None
 
 
-async def _replay(db: AsyncSession, trace_id: str,
+async def _replay(db: AsyncSession, org_id: str, trace_id: str,
                   compiled: Sequence[CompiledPolicy]) -> tuple[Monitor, list[Violation]]:
-    """Rebuilds from spans. After a Redis restart every open trace needs this, so few run at once per process."""
-    loop = asyncio.get_running_loop()
-    slots = _rebuild_slots.get(loop) or _rebuild_slots.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_REBUILDS))
-    async with slots:
+    """Rebuilds from spans. After a Redis restart every open trace needs this, so few run at once per process,
+    taken in turn by orgs."""
+    async with _fair()[1](org_id):
         spans = (await db.execute(select(*_EVENT_COLUMNS).where(Span.trace_id == trace_id))).all()
         m = Monitor(compiled)
-        return m, await run_sliced(partial(_steps, m), await asyncio.to_thread(events_from_spans, spans), compiled)
+        return m, await run_sliced(partial(_steps, m), await asyncio.to_thread(events_from_spans, spans), compiled,
+                                   org_id)
 
 
-async def run_sliced(fn: Callable[[Sequence], list], items: Sequence, compiled: Sequence[CompiledPolicy]) -> list:
+async def run_sliced(fn: Callable[[Sequence], list], items: Sequence, compiled: Sequence[CompiledPolicy],
+                     org_id: str) -> list:
     """`fn` over consecutive slices of `items` (events, stepped through `compiled`) off the event loop, results
-    concatenated; past WORK_SLICE in slices through `_pool`, so no job holds a thread for long."""
+    concatenated; past WORK_SLICE in slices through `_pool`, taken in turn by orgs, so no job holds a thread for long
+    and no org's jobs queue another's."""
     cost = work(compiled, 1)
+    piece = max(1, GIL_PIECE // max(1, cost))
     if cost * len(items) <= WORK_SLICE:
-        return await asyncio.to_thread(fn, items)
-    loop, n, out = asyncio.get_running_loop(), max(1, WORK_SLICE // cost), []
+        return await asyncio.to_thread(_in_pieces, fn, items, piece)
+    loop, slots, n, out = asyncio.get_running_loop(), _fair()[0], max(1, WORK_SLICE // cost), []
+    async with slots(org_id) as turn:
+        for i in range(0, len(items), n):
+            if i:
+                await turn()
+            out += await loop.run_in_executor(_pool, _in_pieces, fn, items[i:i + n], piece)
+    return out
+
+
+def _in_pieces(fn: Callable[[Sequence], list], items: Sequence, n: int) -> list:
+    """`fn` over pieces of `n` items, offering the GIL between them: the event loop (and so every other org's
+    requests) waits for at most a piece, not the interpreter's 5 ms switch interval, each time it needs it."""
+    out = []
     for i in range(0, len(items), n):
-        out += await loop.run_in_executor(_pool, fn, items[i:i + n])
+        time.sleep(0)
+        out += fn(items[i:i + n])
     return out
 
 
@@ -178,7 +264,7 @@ def _step_inputs(m: Monitor, events: Sequence[EventIn]) -> list:
     return []
 
 
-async def load_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
+async def load_monitor(db: AsyncSession, org_id: str, trace_id: str, compiled: Sequence[CompiledPolicy],
                        next_seq: int) -> tuple[Monitor, list[Violation]]:
     """Monitor positioned after the stored events. Rebuilt from spans if the Redis state is missing, stale or
     for other policies; the violations found while rebuilding are returned so they can be recorded."""
@@ -186,10 +272,10 @@ async def load_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[Compi
     if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq)):
         return m, []
     await get_redis().delete(_precheck_key(trace_id))  # the state this append saves supersedes it
-    return await _replay(db, trace_id, compiled)
+    return await _replay(db, org_id, trace_id, compiled)
 
 
-async def precheck_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[CompiledPolicy],
+async def precheck_monitor(db: AsyncSession, org_id: str, trace_id: str, compiled: Sequence[CompiledPolicy],
                            next_seq: int) -> Monitor:
     """As `load_monitor`, but a rebuild is cached under its own key, one rebuild per trace at a time: it must not
     stand in for the append path's state, whose own rebuild records the violations it finds."""
@@ -203,7 +289,7 @@ async def precheck_monitor(db: AsyncSession, trace_id: str, compiled: Sequence[C
     try:
         if m := await asyncio.to_thread(_restore, await r.get(keys[1]), compiled, next_seq):  # built while waiting
             return m
-        m, _ = await _replay(db, trace_id, compiled)
+        m, _ = await _replay(db, org_id, trace_id, compiled)
         await r.set(keys[1], await asyncio.to_thread(m.snapshot), ex=STATE_TTL_S)
         return m
     finally:
@@ -219,11 +305,12 @@ async def save_monitor(trace_id: str, monitor: Monitor | None) -> None:
         await get_redis().set(_state_key(trace_id), await asyncio.to_thread(monitor.snapshot), ex=STATE_TTL_S)
 
 
-async def blocking_violations(compiled: Sequence[CompiledPolicy], events: Sequence[Event]) -> list[Violation]:
+async def blocking_violations(org_id: str, compiled: Sequence[CompiledPolicy],
+                              events: Sequence[Event]) -> list[Violation]:
     if not compiled:
         return []
     m = Monitor(compiled)
-    return await run_sliced(partial(_steps, m), events, compiled)
+    return await run_sliced(partial(_steps, m), events, compiled, org_id)
 
 
 def _marks(seed: str, prefix: Sequence[EventIn], k: int) -> list[str]:
@@ -243,7 +330,9 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     history with each check, so a long prefix resumes from the checkpoint an earlier check of the same events (and
     policies) saved every `k` events: a check pays for the events since, not for the whole trace."""
     async def stored() -> Monitor:
-        return Monitor(compiled) if trace_id is None else await precheck_monitor(db, trace_id, compiled, next_seq)
+        if trace_id is None:
+            return Monitor(compiled)
+        return await precheck_monitor(db, org_id, trace_id, compiled, next_seq)
 
     k = max(1, WORK_SLICE // max(1, work(compiled, 1)))
     if len(prefix) < k:
@@ -267,7 +356,7 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     m = m or await stored()
     last = len(keys) * k
     if start < last:
-        await run_sliced(partial(_step_inputs, m), prefix[start:last], compiled)
+        await run_sliced(partial(_step_inputs, m), prefix[start:last], compiled, org_id)
         if r is not None:
             with suppress(Exception):
                 await r.set(keys[-1], await asyncio.to_thread(m.snapshot), ex=PREFIX_TTL_S)
