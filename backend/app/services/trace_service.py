@@ -6,7 +6,7 @@ import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Optional, Sequence
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from redis.exceptions import LockError
 from sqlalchemy import func, select
@@ -450,9 +450,11 @@ async def close_idle_streams(db: AsyncSession, now: Optional[float] = None, limi
     return closed
 
 
-async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyCheckOut:
+async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn,
+                   gone: Optional[Callable[[], Awaitable[bool]]] = None) -> PolicyCheckOut:
     """Evaluates `req.candidate` as the next event after the stored trace and `req.prefix` (their own seqs are
-    ignored); stores nothing. Always answered: the schema bounds the prefix, and a long one's work is sliced."""
+    ignored); stores nothing. Always answered: the schema bounds the prefix, and a long one's work is sliced; raises
+    `tps.CheckStopped` once `gone()` or past `tps.CHECK_DEADLINE_S`."""
     agent = (await db.execute(
         select(Agent).where(Agent.id == req.agent_id, Agent.org_id == org_id)
     )).scalar_one_or_none()
@@ -473,7 +475,7 @@ async def precheck(db: AsyncSession, org_id: str, req: PolicyCheckIn) -> PolicyC
     last = None if trace is None else (await db.execute(
         select(func.max(Span.seq)).where(Span.trace_id == trace.id))).scalar_one()
     monitor = await tps.prefix_monitor(db, org_id, trace and trace.id, compiled, 0 if last is None else last + 1,
-                                       req.prefix)
+                                       req.prefix, gone)
     c = req.candidate
     found = await asyncio.to_thread(monitor.check, Event(monitor.next_seq, c.kind, c.name, c.status, dict(c.attrs)))
     rows = {row.id: row for row, _ in policies}

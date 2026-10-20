@@ -165,7 +165,10 @@ async def check_candidate(req: PolicyCheckIn, request: Request, db: AsyncSession
     org, _api_key = await authenticate_api_key(request, db)
     await enforce_rate_limit(f"check:{org.id}", org.rate_limit_per_min)
     try:
-        return await precheck(db, org.id, req)
+        return await precheck(db, org.id, req, request.is_disconnected)
+    except tps.CheckStopped:  # the SDK gave up on it, or follows fail_closed for this as for its own timeout
+        raise HTTPException(503, detail={"error": "check_timeout", "message": "policy check stopped; resend it to "
+                                         "resume from what it stepped"})
     except TraceConflict as e:
         raise HTTPException(e.status, detail={"error": e.code, "message": e.message, **e.details})
     except ValueError as e:

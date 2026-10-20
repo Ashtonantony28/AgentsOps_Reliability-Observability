@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from functools import partial
-from typing import Callable, Sequence
+from typing import Awaitable, Callable, Sequence
 
 from redis.exceptions import LockError
 from sqlalchemy import or_, select
@@ -38,6 +38,10 @@ GIL_PIECE = 1_000  # work a pool thread does between offers of the GIL, about a 
 POOL_THREADS = 2
 _pool = ThreadPoolExecutor(POOL_THREADS, thread_name_prefix="policy-work")  # so long jobs can't starve the short ones
 PREFIX_TTL_S = 3600
+CHECK_DEADLINE_S = 30  # a check's policy work stops past this, or once its request is gone
+# a check waits for another's slice of the same prefix, looking at its deadline and request this often, and steps the
+# slice itself once the other has stepped no piece of it for this long (about 1 000 pieces' time: its thread is stalled)
+SLICE_WAIT_S = 1.0
 BATCH_LOCK_WAIT_S = 10
 MAX_ORG_POLICIES = 100  # non-archived, so a span rebuild or batch check is bounded too
 MAX_ORG_POLICY_NODES = 4_000  # `org_cost` summed
@@ -324,11 +328,18 @@ def _marks(seed: str, prefix: Sequence[EventIn], k: int) -> list[str]:
     return out
 
 
+class CheckStopped(Exception):
+    """A check's request went away, or its work ran past CHECK_DEADLINE_S; what it stepped is kept for the next."""
+
+
 async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, compiled: Sequence[CompiledPolicy],
-                         next_seq: int, prefix: Sequence[EventIn]) -> Monitor:
+                         next_seq: int, prefix: Sequence[EventIn],
+                         gone: Callable[[], Awaitable[bool]] | None = None) -> Monitor:
     """The monitor after the trace's stored events, if any, and `prefix`. The SDK sends an unstreamed trace's whole
-    history with each check, so a long prefix resumes from the checkpoint an earlier check of the same events (and
-    policies) saved every `k` events: a check pays for the events since, not for the whole trace."""
+    history with each check, so a long prefix resumes from the checkpoints earlier checks of the same events (and
+    policies) saved every `k` events, each as soon as it was stepped: before each slice of `k` the newest one is
+    looked for, and a slice another check of this process is stepping is waited for, not stepped again. Raises
+    CheckStopped once `gone()` or past the deadline."""
     async def stored() -> Monitor:
         if trace_id is None:
             return Monitor(compiled)
@@ -343,25 +354,89 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     plans = ",".join(f"{c.policy_id}:{plan_for(c.policy).digest}" for c in compiled)
     keys = [f"policy:prefix:{d}" for d in await asyncio.to_thread(
         _marks, f"{org_id}|{trace_id}|{next_seq}|{plans}", prefix, k)]
-    r, start, m = get_redis(), 0, None
-    try:
-        blobs = await r.mget(keys)
-    except Exception:  # a check is answered without Redis, from the start
-        log.exception("could not read prefix checkpoints")
-        blobs, r = [], None
-    for j, blob in reversed(list(enumerate(blobs, 1))):
-        if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq + j * k)):
-            start = j * k
-            break
-    m = m or await stored()
-    last = len(keys) * k
-    if start < last:
-        await run_sliced(partial(_step_inputs, m), prefix[start:last], compiled, org_id)
-        if r is not None:
-            with suppress(Exception):
-                await r.set(keys[-1], await asyncio.to_thread(m.snapshot), ex=PREFIX_TTL_S)
-    await asyncio.to_thread(_step_inputs, m, prefix[last:])
+    deadline, steps = time.monotonic() + CHECK_DEADLINE_S, _Steps(compiled, org_id, get_redis(), next_seq, k)
+    j, m = 0, None
+    while j < len(keys):
+        if time.monotonic() > deadline or (gone is not None and await gone()):
+            raise CheckStopped
+        found, newer = await steps.newest(keys, j)
+        if newer:
+            j, m = found, newer
+        elif m is None:
+            m = await stored()
+        elif steps.free(keys[j]):  # else another check is stepping this slice: wait for it again
+            await steps.step(keys[j], m, prefix[j * k:(j + 1) * k])
+            j += 1
+    await asyncio.to_thread(_step_inputs, m, prefix[len(keys) * k:])
     return m
+
+
+class _Slice:
+    def __init__(self):
+        self.done, self.blob, self.moved = asyncio.Event(), None, None
+
+
+_stepping: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # per event loop: checkpoint key -> _Slice
+
+
+class _Steps:
+    """Checkpointed slices of one check's prefix (`k` events each) on `_pool`, taken in turn by orgs."""
+
+    def __init__(self, compiled: Sequence[CompiledPolicy], org_id: str, r, next_seq: int, k: int):
+        self.compiled, self.org_id, self.r, self.next_seq, self.k = compiled, org_id, r, next_seq, k
+        self.piece = max(1, GIL_PIECE // max(1, work(compiled, 1)))
+        loop = asyncio.get_running_loop()
+        self.running: dict[str, _Slice] = _stepping.get(loop) or _stepping.setdefault(loop, {})
+
+    async def newest(self, keys: list[str], j: int) -> tuple[int, Monitor | None]:
+        """The newest checkpoint after the first `j` slices, in Redis or the next one, waited for up to SLICE_WAIT_S if
+        another check of this process is stepping it: (slices it covers, its monitor), or (j, None)."""
+        blobs = []
+        if self.r is not None:
+            try:
+                blobs = await self.r.mget(keys[j:])
+            except Exception:  # a check is answered without Redis, from the start
+                log.exception("could not read prefix checkpoints")
+                self.r = None
+        for i in range(len(blobs), 0, -1):
+            if blobs[i - 1] and (m := await self._restore(blobs[i - 1], j + i)):
+                return j + i, m
+        if j < len(keys) and (s := self.running.get(keys[j])):
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(s.done.wait(), SLICE_WAIT_S)
+            if m := await self._restore(s.blob, j + 1):
+                return j + 1, m
+        return j, None
+
+    def free(self, key: str) -> bool:
+        """No check of this process is stepping `key`, or the one that is has stalled."""
+        s = self.running.get(key)
+        return s is None or s.moved is not None and time.monotonic() - s.moved > SLICE_WAIT_S
+
+    async def _restore(self, blob: str | None, slices: int) -> Monitor | None:
+        if not blob:
+            return None
+        return await asyncio.to_thread(_restore, blob, self.compiled, self.next_seq + slices * self.k)
+
+    async def step(self, key: str, m: Monitor, events: Sequence[EventIn]) -> None:
+        """Steps `m` through `events` and saves the checkpoint `key`; checks waiting for it get its snapshot."""
+        s = self.running[key] = _Slice()
+
+        def piece(events: Sequence[EventIn]) -> list:
+            s.moved = time.monotonic()  # a slow machine's slice is waited for as long as it moves, not stepped twice
+            return _step_inputs(m, events)
+
+        try:
+            async with _fair()[0](self.org_id):
+                await asyncio.get_running_loop().run_in_executor(_pool, _in_pieces, piece, events, self.piece)
+            s.blob = (await asyncio.to_thread(m.snapshot)).decode()
+            if self.r is not None:
+                with suppress(Exception):
+                    await self.r.set(key, s.blob, ex=PREFIX_TTL_S)
+        finally:
+            s.done.set()  # with no blob if stopped: a waiting check steps it
+            if self.running.get(key) is s:
+                del self.running[key]
 
 
 class TraceBusy(Exception):
