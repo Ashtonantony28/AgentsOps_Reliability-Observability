@@ -111,7 +111,6 @@ async def test_unauthenticated_requests_do_not_stall_the_event_loop(client, vect
 # A13-3: SG-A11.1 takes pool slices, rebuilds and batch checks in turn by org, but registration is open and unbounded
 # (`POST /api/auth/register`, no rate limit, no verification) and makes an org: with 24 orgs one check each, another
 # org's check saw 21.5 of their slices per slice of its own (2 with one org's 24 checks; 24 with the old FIFO pool).
-@pytest.mark.xfail(strict=True, reason="A13-3")
 async def test_one_client_cannot_make_orgs_without_bound(client):
     codes = []
     for i in range(12):

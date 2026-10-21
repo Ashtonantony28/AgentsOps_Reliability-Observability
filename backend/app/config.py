@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TTL_MIN: int = 60
     JWT_REFRESH_TTL_DAYS: int = 14
+    REGISTER_LIMIT_PER_HOUR: int = 5  # per client address; each registration makes an org
 
     POSTGRES_USER: str = "agentops"
     POSTGRES_PASSWORD: str = "agentops"

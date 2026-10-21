@@ -5,8 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.middleware.auth import AuthContext, get_current_user, require_role
+from app.middleware.rate_limit import enforce_rate_limit
 from app.models import ApiKey, OrgMembership, Organization, Session, User
 from app.schemas.auth import (
     ApiKeyCreate,
@@ -29,6 +31,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.post("/register", response_model=TokenPair)
 async def register(req: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    ip = request.client.host if request.client else ""
+    await enforce_rate_limit(f"register:{ip}", settings.REGISTER_LIMIT_PER_HOUR, 3600)
     try:
         user, org = await auth_service.register_user(
             db, req.email, req.password, req.full_name, req.org_name
@@ -38,7 +42,7 @@ async def register(req: RegisterRequest, request: Request, db: AsyncSession = De
     user, org, access, refresh, _ = await auth_service.login(
         db, req.email, req.password,
         user_agent=request.headers.get("user-agent", ""),
-        ip=request.client.host if request.client else "",
+        ip=ip,
     )
     return TokenPair(access_token=access, refresh_token=refresh)
 
