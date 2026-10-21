@@ -38,6 +38,8 @@ GIL_PIECE = 1_000  # work a pool thread does between offers of the GIL, about a 
 POOL_THREADS = 2
 _pool = ThreadPoolExecutor(POOL_THREADS, thread_name_prefix="policy-work")  # so long jobs can't starve the short ones
 PREFIX_TTL_S = 3600
+# a history keeps its newest checkpoint; an org's checkpoints past this many bytes go, oldest first
+MAX_ORG_CHECKPOINT_BYTES = 32 * 2**20
 CHECK_DEADLINE_S = 30  # a check's policy work stops past this, or once its request is gone
 # a check waits for another's slice of the same prefix, looking at its deadline and request this often, and steps the
 # slice itself once the other has stepped no piece of it for this long (about 1 000 pieces' time: its thread is stalled)
@@ -210,31 +212,34 @@ def _fair() -> tuple[FairSlots, FairSlots]:
     return _slots.get(loop) or _slots.setdefault(loop, (FairSlots(POOL_THREADS), FairSlots(MAX_CONCURRENT_REBUILDS)))
 
 
-def _restore(blob: str | None, compiled: Sequence[CompiledPolicy], next_seq: int) -> Monitor | None:
+def _restore(blob: str | None, compiled: Sequence[CompiledPolicy], next_seq: int,
+             partial: bool = False) -> Monitor | None:
+    """The monitor `blob` holds if it is at `next_seq`, or with `partial` before it."""
     if blob:
         with suppress(ValueError):
             m = Monitor.restore(compiled, blob.encode())
-            if m.next_seq == next_seq:
+            if m.next_seq == next_seq or partial and m.next_seq < next_seq:
                 return m
     return None
 
 
-async def _replay(db: AsyncSession, org_id: str, trace_id: str,
-                  compiled: Sequence[CompiledPolicy]) -> tuple[Monitor, list[Violation]]:
-    """Rebuilds from spans. After a Redis restart every open trace needs this, so few run at once per process,
-    taken in turn by orgs."""
+async def _replay(db: AsyncSession, org_id: str, trace_id: str, compiled: Sequence[CompiledPolicy],
+                  m: Monitor | None = None,
+                  between: Callable[[], Awaitable[None]] | None = None) -> tuple[Monitor, list[Violation]]:
+    """Rebuilds from spans, or steps `m` through the spans after it. After a Redis restart every open trace needs
+    this, so few run at once per process, taken in turn by orgs."""
     async with _fair()[1](org_id):
         spans = (await db.execute(select(*_EVENT_COLUMNS).where(Span.trace_id == trace_id))).all()
-        m = Monitor(compiled)
-        return m, await run_sliced(partial(_steps, m), await asyncio.to_thread(events_from_spans, spans), compiled,
-                                   org_id)
+        m = m or Monitor(compiled)
+        events = [e for e in await asyncio.to_thread(events_from_spans, spans) if e.seq >= m.next_seq]
+        return m, await run_sliced(partial(_steps, m), events, compiled, org_id, between)
 
 
 async def run_sliced(fn: Callable[[Sequence], list], items: Sequence, compiled: Sequence[CompiledPolicy],
-                     org_id: str) -> list:
+                     org_id: str, between: Callable[[], Awaitable[None]] | None = None) -> list:
     """`fn` over consecutive slices of `items` (events, stepped through `compiled`) off the event loop, results
     concatenated; past WORK_SLICE in slices through `_pool`, taken in turn by orgs, so no job holds a thread for long
-    and no org's jobs queue another's."""
+    and no org's jobs queue another's. `between()` is awaited between slices."""
     cost = work(compiled, 1)
     piece = max(1, GIL_PIECE // max(1, cost))
     if cost * len(items) <= WORK_SLICE:
@@ -243,6 +248,8 @@ async def run_sliced(fn: Callable[[Sequence], list], items: Sequence, compiled: 
     async with slots(org_id) as turn:
         for i in range(0, len(items), n):
             if i:
+                if between is not None:
+                    await between()
                 await turn()
             out += await loop.run_in_executor(_pool, _in_pieces, fn, items[i:i + n], piece)
     return out
@@ -280,26 +287,47 @@ async def load_monitor(db: AsyncSession, org_id: str, trace_id: str, compiled: S
 
 
 async def precheck_monitor(db: AsyncSession, org_id: str, trace_id: str, compiled: Sequence[CompiledPolicy],
-                           next_seq: int) -> Monitor:
-    """As `load_monitor`, but a rebuild is cached under its own key, one rebuild per trace at a time: it must not
-    stand in for the append path's state, whose own rebuild records the violations it finds."""
+                           next_seq: int, stopped: Callable[[], Awaitable[bool]]) -> Monitor:
+    """As `load_monitor`, but a rebuild is cached under its own key: it must not stand in for the append path's
+    state, whose own rebuild records the violations it finds. One rebuild per trace at a time: a check waits for the
+    one in flight, and resumes from where a stopped one got to. Raises CheckStopped once `stopped()`."""
     r = get_redis()
     keys = (_state_key(trace_id), _precheck_key(trace_id))
-    for blob in await r.mget(keys):
-        if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq)):
+    while True:
+        for blob in await r.mget(keys):
+            if blob and (m := await asyncio.to_thread(_restore, blob, compiled, next_seq)):
+                return m
+        if await stopped():
+            raise CheckStopped
+        if m := await _rebuild(db, org_id, trace_id, compiled, next_seq, stopped):
             return m
-    lock = r.lock(f"lock:monitor-rebuild:{trace_id}", timeout=30, blocking_timeout=5)
-    locked = await lock.acquire()
+
+
+async def _rebuild(db: AsyncSession, org_id: str, trace_id: str, compiled: Sequence[CompiledPolicy], next_seq: int,
+                   stopped: Callable[[], Awaitable[bool]]) -> Monitor | None:
+    """The trace's precheck monitor, rebuilt under its lock from where a stopped rebuild got to, and saved; None if
+    another check held the lock for SLICE_WAIT_S. Once `stopped()`, saves where it got to and raises CheckStopped."""
+    r, key = get_redis(), _precheck_key(trace_id)
+    lock = r.lock(f"lock:monitor-rebuild:{trace_id}", timeout=30, blocking_timeout=SLICE_WAIT_S, sleep=0.05)
+    if not await lock.acquire():
+        return None
     try:
-        if m := await asyncio.to_thread(_restore, await r.get(keys[1]), compiled, next_seq):  # built while waiting
-            return m
-        m, _ = await _replay(db, org_id, trace_id, compiled)
-        await r.set(keys[1], await asyncio.to_thread(m.snapshot), ex=STATE_TTL_S)
+        m = await asyncio.to_thread(_restore, await r.get(key), compiled, next_seq, True) or Monitor(compiled)
+
+        async def between() -> None:
+            with suppress(LockError):
+                await lock.reacquire()  # held while the rebuild moves, past the lock's timeout
+            if await stopped():
+                await r.set(key, await asyncio.to_thread(m.snapshot), ex=STATE_TTL_S)
+                raise CheckStopped
+
+        if m.next_seq < next_seq:
+            await _replay(db, org_id, trace_id, compiled, m, between)
+        await r.set(key, await asyncio.to_thread(m.snapshot), ex=STATE_TTL_S)
         return m
     finally:
-        if locked:
-            with suppress(LockError):
-                await lock.release()
+        with suppress(LockError):
+            await lock.release()
 
 
 async def save_monitor(trace_id: str, monitor: Monitor | None) -> None:
@@ -337,13 +365,18 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
                          gone: Callable[[], Awaitable[bool]] | None = None) -> Monitor:
     """The monitor after the trace's stored events, if any, and `prefix`. The SDK sends an unstreamed trace's whole
     history with each check, so a long prefix resumes from the checkpoints earlier checks of the same events (and
-    policies) saved every `k` events, each as soon as it was stepped: before each slice of `k` the newest one is
-    looked for, and a slice another check of this process is stepping is waited for, not stepped again. Raises
-    CheckStopped once `gone()` or past the deadline."""
+    policies) saved every `k` events, each as soon as it was stepped and replacing the one before: before each slice
+    of `k` the newest one is looked for, and a slice another check of this process is stepping is waited for, not
+    stepped again. Raises CheckStopped once `gone()` or past the deadline."""
+    deadline = time.monotonic() + CHECK_DEADLINE_S
+
+    async def stopped() -> bool:
+        return time.monotonic() > deadline or (gone is not None and await gone())
+
     async def stored() -> Monitor:
         if trace_id is None:
             return Monitor(compiled)
-        return await precheck_monitor(db, org_id, trace_id, compiled, next_seq)
+        return await precheck_monitor(db, org_id, trace_id, compiled, next_seq, stopped)
 
     k = max(1, WORK_SLICE // max(1, work(compiled, 1)))
     if len(prefix) < k:
@@ -354,10 +387,9 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
     plans = ",".join(f"{c.policy_id}:{plan_for(c.policy).digest}" for c in compiled)
     keys = [f"policy:prefix:{d}" for d in await asyncio.to_thread(
         _marks, f"{org_id}|{trace_id}|{next_seq}|{plans}", prefix, k)]
-    deadline, steps = time.monotonic() + CHECK_DEADLINE_S, _Steps(compiled, org_id, get_redis(), next_seq, k)
-    j, m = 0, None
+    steps, j, m = _Steps(compiled, org_id, get_redis(), next_seq, k), 0, None
     while j < len(keys):
-        if time.monotonic() > deadline or (gone is not None and await gone()):
+        if await stopped():
             raise CheckStopped
         found, newer = await steps.newest(keys, j)
         if newer:
@@ -365,7 +397,7 @@ async def prefix_monitor(db: AsyncSession, org_id: str, trace_id: str | None, co
         elif m is None:
             m = await stored()
         elif steps.free(keys[j]):  # else another check is stepping this slice: wait for it again
-            await steps.step(keys[j], m, prefix[j * k:(j + 1) * k])
+            await steps.step(keys[j], m, prefix[j * k:(j + 1) * k], keys[j - 1] if j else None)
             j += 1
     await asyncio.to_thread(_step_inputs, m, prefix[len(keys) * k:])
     return m
@@ -379,6 +411,41 @@ class _Slice:
 _stepping: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # per event loop: checkpoint key -> _Slice
 
 
+# the 1-based index of the last of KEYS that exists, or 0
+_NEWEST = "for i = #KEYS, 1, -1 do if redis.call('EXISTS', KEYS[i]) == 1 then return i end end return 0"
+# saves checkpoint KEYS[1] (ARGV: blob, ttl, now, max bytes) in place of KEYS[2], the one before it, and counts it
+# in its org's bytes: KEYS[3] orders the org's checkpoints by age, KEYS[4] holds their sizes and their 'total'. The
+# org's oldest go once over the bound; a checkpoint over the bound alone is not saved.
+_SAVE = """
+local function drop(k)
+  local n = redis.call('HGET', KEYS[4], k)
+  if n then
+    redis.call('HDEL', KEYS[4], k)
+    redis.call('HINCRBY', KEYS[4], 'total', -tonumber(n))
+  end
+  redis.call('ZREM', KEYS[3], k)
+  redis.call('DEL', k)
+end
+local ttl, now, max, size = tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), string.len(ARGV[1])
+drop(KEYS[2])
+drop(KEYS[1])
+for _, k in ipairs(redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now - ttl)) do drop(k) end
+if size > max then return 0 end
+while tonumber(redis.call('HGET', KEYS[4], 'total') or '0') + size > max do
+  local oldest = redis.call('ZRANGE', KEYS[3], 0, 0)[1]
+  if not oldest then redis.call('DEL', KEYS[4]) break end
+  drop(oldest)
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)
+redis.call('ZADD', KEYS[3], now, KEYS[1])
+redis.call('HSET', KEYS[4], KEYS[1], size)
+redis.call('HINCRBY', KEYS[4], 'total', size)
+redis.call('EXPIRE', KEYS[3], ttl)
+redis.call('EXPIRE', KEYS[4], ttl)
+return 1
+"""
+
+
 class _Steps:
     """Checkpointed slices of one check's prefix (`k` events each) on `_pool`, taken in turn by orgs."""
 
@@ -389,18 +456,21 @@ class _Steps:
         self.running: dict[str, _Slice] = _stepping.get(loop) or _stepping.setdefault(loop, {})
 
     async def newest(self, keys: list[str], j: int) -> tuple[int, Monitor | None]:
-        """The newest checkpoint after the first `j` slices, in Redis or the next one, waited for up to SLICE_WAIT_S if
-        another check of this process is stepping it: (slices it covers, its monitor), or (j, None)."""
-        blobs = []
+        """The newest checkpoint after the first `j` slices, in Redis (only it is read) or the next one, waited for up
+        to SLICE_WAIT_S if another check of this process is stepping it: (slices it covers, its monitor), or
+        (j, None)."""
+        i, blob = 0, None
         if self.r is not None:
             try:
-                blobs = await self.r.mget(keys[j:])
+                for _ in range(2):  # again if a newer one replaced it as it was read
+                    i = await self.r.eval(_NEWEST, len(keys) - j, *keys[j:])
+                    if not i or (blob := (await self.r.mget(keys[j + i - 1:j + i]))[0]):
+                        break
             except Exception:  # a check is answered without Redis, from the start
                 log.exception("could not read prefix checkpoints")
                 self.r = None
-        for i in range(len(blobs), 0, -1):
-            if blobs[i - 1] and (m := await self._restore(blobs[i - 1], j + i)):
-                return j + i, m
+        if blob and (m := await self._restore(blob, j + i)):
+            return j + i, m
         if j < len(keys) and (s := self.running.get(keys[j])):
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(s.done.wait(), SLICE_WAIT_S)
@@ -418,8 +488,9 @@ class _Steps:
             return None
         return await asyncio.to_thread(_restore, blob, self.compiled, self.next_seq + slices * self.k)
 
-    async def step(self, key: str, m: Monitor, events: Sequence[EventIn]) -> None:
-        """Steps `m` through `events` and saves the checkpoint `key`; checks waiting for it get its snapshot."""
+    async def step(self, key: str, m: Monitor, events: Sequence[EventIn], before: str | None) -> None:
+        """Steps `m` through `events` and saves the checkpoint `key` in place of `before`; checks waiting for it get
+        its snapshot."""
         s = self.running[key] = _Slice()
 
         def piece(events: Sequence[EventIn]) -> list:
@@ -432,7 +503,9 @@ class _Steps:
             s.blob = (await asyncio.to_thread(m.snapshot)).decode()
             if self.r is not None:
                 with suppress(Exception):
-                    await self.r.set(key, s.blob, ex=PREFIX_TTL_S)
+                    await self.r.eval(_SAVE, 4, key, before or key, f"policy:checkpoints:{self.org_id}",
+                                      f"policy:checkpoint-bytes:{self.org_id}", s.blob, PREFIX_TTL_S, time.time(),
+                                      MAX_ORG_CHECKPOINT_BYTES)
         finally:
             s.done.set()  # with no blob if stopped: a waiting check steps it
             if self.running.get(key) is s:

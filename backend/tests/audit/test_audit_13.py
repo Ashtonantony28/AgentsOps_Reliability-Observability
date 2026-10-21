@@ -38,7 +38,6 @@ async def _setup_counts(db, org, monkeypatch):
 # per check was stored before: a 10 000-event history at the org cap is 188 snapshots, 70 MB of Redis (was 0.4 MB),
 # and one org's 4 concurrent checks added 292 MB in two minutes against the real app (4 MB before). Redis has no
 # memory cap and is also the Celery broker, the monitor state and the batch turn lists of every org.
-@pytest.mark.xfail(strict=True, reason="A13-1")
 async def test_a_long_check_keeps_about_one_checkpoint(client, db, org, agent, api_key_headers, redis, monkeypatch):
     prefix = await _setup_counts(db, org, monkeypatch)
     await _long_check(client, api_key_headers, agent, prefix)
@@ -51,7 +50,6 @@ async def test_a_long_check_keeps_about_one_checkpoint(client, db, org, agent, a
 # A13-4: before each slice `_Steps.newest` reads every checkpoint after it (`mget(keys[j:])`) to restore one, so a
 # check that resumes a history pulls all of them from Redis into the API process: 70 MB and 0.4 to 1.2 s per check
 # for a 10 000-event history at the org cap, for the SDK's every guarded call of an unstreamed trace
-@pytest.mark.xfail(strict=True, reason="A13-4")
 async def test_a_resumed_check_reads_about_one_checkpoint(client, db, org, agent, api_key_headers, redis,
                                                           monkeypatch):
     prefix = await _setup_counts(db, org, monkeypatch)
@@ -130,7 +128,6 @@ async def test_one_client_cannot_make_orgs_without_bound(client):
 # rebuilds it from spans under a lock it waits for only 5 s, so checks arriving meanwhile (the SDK's next guarded
 # calls, once it gave up on the first after 2 s) each rebuild the whole trace again, and none of them looks at its
 # deadline or whether its request is gone; at the org caps a 10 000-event rebuild is ~20 s
-@pytest.mark.xfail(strict=True, reason="A13-5")
 async def test_concurrent_checks_rebuild_a_stored_trace_once(client, db, org, agent, api_key_headers, redis,
                                                              monkeypatch):
     await _policy(db, org, _many_atoms(250))

@@ -215,6 +215,113 @@ async def test_a_check_stops_once_its_request_is_gone_and_the_next_resumes(clien
     assert r.json()["allowed"] is False and sum(stepped) == 1_000 - 3 * 199, stepped
 
 
+async def _checkpoint_keys(redis) -> list[str]:
+    return [k async for k in redis.scan_iter("policy:prefix:*")]
+
+
+async def test_a_checkpoint_replaces_the_one_before_and_the_newest_is_restored(client, db, org, agent,
+                                                                              api_key_headers, redis, monkeypatch):
+    """SG-A13.1 (A13-1, A13-4): a history keeps its newest checkpoint; with a shorter branch's too, the newest is the
+    one read and restored."""
+    await _policy(db, org, BIG)
+    prefix, stepped = [ev(i, f"t{i % 7}") for i in range(1_000)], _count_steps(monkeypatch)
+    assert (await _check(client, api_key_headers, agent, prefix)).status_code == 200
+    (newest,) = await _checkpoint_keys(redis)
+    assert (await _check(client, api_key_headers, agent, prefix[:600])).status_code == 200  # 3 of the 5 marks
+    assert len(await _checkpoint_keys(redis)) == 2
+    stepped.clear()
+    read, real = [], redis.mget
+    monkeypatch.setattr(redis, "mget", lambda keys: read.extend(keys) or real(keys))
+    assert (await _check(client, api_key_headers, agent, prefix + [ev(1_000, "t")])).status_code == 200
+    assert read == [newest] and sum(stepped) == 1_001 - 5 * 199
+
+
+async def test_checkpoint_bytes_are_bounded_per_org(client, db, org, agent, api_key_headers, redis, monkeypatch):
+    """SG-A13.1 (A13-1): an org's checkpoints past MAX_ORG_CHECKPOINT_BYTES go, oldest first, and one over the bound
+    alone is not kept; another org's are not touched."""
+    await _policy(db, org, BIG)
+    await redis.set("policy:prefix:other", "x")
+    await redis.zadd("policy:checkpoints:other-org", {"policy:prefix:other": 0})
+    histories = [[ev(i, f"{h}{i % 7}") for i in range(400)] for h in "abc"]
+    assert (await _check(client, api_key_headers, agent, histories[0])).status_code == 200
+    (first,) = [k for k in await _checkpoint_keys(redis) if k != "policy:prefix:other"]
+    size = await redis.strlen(first)
+    monkeypatch.setattr(tps, "MAX_ORG_CHECKPOINT_BYTES", 2 * size + size // 2)  # two of them
+    for h in histories[1:]:
+        assert (await _check(client, api_key_headers, agent, h)).status_code == 200
+    kept = set(await _checkpoint_keys(redis))
+    assert len(kept) == 3 and first not in kept and "policy:prefix:other" in kept
+    assert int(await redis.hget(f"policy:checkpoint-bytes:{org.id}", "total")) == sum(
+        [await redis.strlen(k) for k in kept if k != "policy:prefix:other"])
+    monkeypatch.setattr(tps, "MAX_ORG_CHECKPOINT_BYTES", size - 1)
+    assert (await _check(client, api_key_headers, agent, histories[0] + histories[1])).status_code == 200
+    assert set(await _checkpoint_keys(redis)) == kept
+
+
+async def _stored_without_state(client, db, org, agent, headers, redis):
+    await _policy(db, org, BIG, action="block")
+    for i in (0, 500):
+        r = await _append(client, headers, agent, "u1", [ev(j, f"t{j % 7}") for j in range(i, i + 500)])
+        assert r.status_code == 202, r.text
+    await redis.delete(*[k async for k in redis.scan_iter("policy:monitor:*")])
+    return lambda: _check(client, headers, agent, [], "n0", trace_uid="u1")
+
+
+def _count_replays(monkeypatch, pause=0.0) -> list:
+    replayed, real = [], tps._steps
+    monkeypatch.setattr(tps, "_steps", lambda m, es: time.sleep(pause) or replayed.append(len(es)) or real(m, es))
+    return replayed
+
+
+async def test_a_stored_trace_rebuild_stops_once_its_request_is_gone_and_the_next_resumes(
+        client, db, org, agent, api_key_headers, redis, monkeypatch):
+    """SG-A13.1 (A13-5): a check's rebuild of a stored trace stops between slices once its request is gone or past
+    CHECK_DEADLINE_S (503 check_timeout) and keeps what it stepped for the next check."""
+    from starlette.requests import Request
+    check = await _stored_without_state(client, db, org, agent, api_key_headers, redis)
+    replayed, stop = _count_replays(monkeypatch), True
+
+    async def gone(self):
+        return stop and sum(replayed) >= 2 * 199
+
+    monkeypatch.setattr(Request, "is_disconnected", gone)
+    _err(await check(), 503, "check_timeout")
+    assert sum(replayed) == 2 * 199, replayed
+    stop = False
+    replayed.clear()
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", -1)
+    _err(await check(), 503, "check_timeout")
+    assert replayed == []
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", 30)
+    r = await check()
+    assert r.json()["allowed"] is False and sum(replayed) == 1_000 - 2 * 199, replayed
+    replayed.clear()
+    assert (await check()).json()["allowed"] is False and replayed == []
+
+
+async def test_a_check_waits_for_another_processs_rebuild_until_its_deadline(client, db, org, agent,
+                                                                             api_key_headers, redis, monkeypatch):
+    """SG-A13.1 (A13-5): a rebuild another process holds the lock for is waited for, not repeated, until the check's
+    deadline; the rebuild renews its lock between slices, so it is held past its timeout while the rebuild moves."""
+    from redis.asyncio.lock import Lock
+    check = await _stored_without_state(client, db, org, agent, api_key_headers, redis)
+    trace_id = (await db.execute(select(Trace.id))).scalar_one()
+    lock = redis.lock
+    monkeypatch.setattr(redis, "lock", lambda name, **kw: lock(name, **{**kw, "blocking_timeout": 0.1}))
+    other = lock(f"lock:monitor-rebuild:{trace_id}", timeout=30)
+    assert await other.acquire()
+    replayed = _count_replays(monkeypatch)
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", 0.3)
+    _err(await check(), 503, "check_timeout")
+    assert replayed == []
+    await other.release()
+    monkeypatch.setattr(tps, "CHECK_DEADLINE_S", 30)
+    renewed, reacquire = [], Lock.reacquire
+    monkeypatch.setattr(Lock, "reacquire", lambda self: renewed.append(sum(replayed)) or reacquire(self))
+    r = await check()
+    assert r.json()["allowed"] is False and sum(replayed) == 1_000 and renewed == [199, 398, 597, 796, 995]
+
+
 async def test_long_work_runs_in_slices_on_the_pool(client, db, org, agent, api_key_headers, monkeypatch):
     """SG-A10.1: work over WORK_SLICE goes through `_pool` a slice at a time; within it, to a default thread."""
     await _policy(db, org, BIG)
