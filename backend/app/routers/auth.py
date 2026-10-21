@@ -11,6 +11,7 @@ from app.middleware.auth import AuthContext, get_current_user, require_role
 from app.middleware.rate_limit import enforce_rate_limit
 from app.models import ApiKey, OrgMembership, Organization, Session, User
 from app.schemas.auth import (
+    AcceptInviteRequest,
     ApiKeyCreate,
     ApiKeyOut,
     InviteRequest,
@@ -18,6 +19,7 @@ from app.schemas.auth import (
     MeResponse,
     MemberOut,
     OrgOut,
+    PasswordChangeRequest,
     RefreshRequest,
     RegisterRequest,
     SessionOut,
@@ -124,6 +126,16 @@ async def invite_member(
         db.add(OrgMembership(org_id=ctx.org_id, user_id=user.id, role=req.role))
     await db.commit()
     return MemberOut(user_id=user.id, email=user.email, full_name=user.full_name, role=req.role)
+
+
+@router.post("/accept-invite", response_model=TokenPair)
+async def accept_invite(req: AcceptInviteRequest, db: AsyncSession = Depends(get_db)):
+    raise HTTPException(status_code=501, detail="not_implemented")  # SG-P1
+
+
+@router.post("/password", response_model=TokenPair)
+async def change_password(req: PasswordChangeRequest, ctx: AuthContext = Depends(get_current_user)):
+    raise HTTPException(status_code=501, detail="not_implemented")  # SG-P1
 
 
 @router.get("/sessions", response_model=List[SessionOut])

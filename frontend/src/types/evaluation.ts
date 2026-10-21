@@ -6,6 +6,21 @@ export type EvalCase = {
   weight: number;
 };
 
+export type WebhookRunner = {
+  type: "webhook";
+  url: string;
+  timeout_s?: number;
+};
+
+export type TracesRunner = {
+  type: "traces";
+  match?: "exact" | "contains";
+  lookback_days?: number;
+};
+
+// null: no output source, so every case fails
+export type EvalRunner = WebhookRunner | TracesRunner;
+
 export type EvalSet = {
   id: string;
   org_id: string;
@@ -13,6 +28,7 @@ export type EvalSet = {
   description: string;
   evaluators: string[];
   schedule_cron: string | null;
+  runner: EvalRunner | null;
   created_at: string;
   case_count: number;
   cases?: EvalCase[];

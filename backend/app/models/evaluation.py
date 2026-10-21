@@ -19,6 +19,7 @@ class EvaluationSet(Base):
     description: Mapped[str] = mapped_column(String, default="")
     evaluators: Mapped[list] = mapped_column(JSON, default=list)  # ["exact","semantic","llm_judge","latency","cost"]
     schedule_cron: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    runner: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # EvalRunner; null: no output source
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     cases = relationship("EvaluationCase", back_populates="eval_set", cascade="all, delete-orphan")
