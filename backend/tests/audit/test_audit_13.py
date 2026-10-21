@@ -91,7 +91,6 @@ async def _max_stall(coro) -> tuple:
 # A13-2: the event loop does work for requests nobody authenticated: FastAPI parses and validates a request body (no
 # size limit anywhere) before `/check` or ingest looks at the API key, and login and registration run bcrypt (0.3 s)
 # on the loop. A 20 MB body stalls every org's requests 2.4 to 4 s and is then a 401.
-@pytest.mark.xfail(strict=True, reason="A13-2")
 @pytest.mark.parametrize("vector", ["body", "login"])
 async def test_unauthenticated_requests_do_not_stall_the_event_loop(client, vector):
     if vector == "body":

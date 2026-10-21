@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.middleware.auth import AuthContext, authenticate_api_key, get_current_user, require_role
+from app.middleware.auth import ApiKeyRoute, AuthContext, get_current_user, require_role
 from app.middleware.rate_limit import enforce_rate_limit
 from app.models import Agent, AuditLog, Organization, TracePolicy
 from app.policy.ast import Policy
@@ -29,6 +29,7 @@ from app.services import trace_policy_service as tps
 from app.services.trace_service import TraceConflict, precheck
 
 router = APIRouter(prefix="/api/trace-policies", tags=["trace-policies"])
+check_router = APIRouter(prefix="/api/trace-policies", tags=["trace-policies"], route_class=ApiKeyRoute)
 
 
 def parse_single(source: str) -> Policy:
@@ -160,9 +161,9 @@ async def validate_trace_policy(
     return PolicyValidateOut(ok=True, errors=[])
 
 
-@router.post("/check", response_model=PolicyCheckOut)
+@check_router.post("/check", response_model=PolicyCheckOut)
 async def check_candidate(req: PolicyCheckIn, request: Request, db: AsyncSession = Depends(get_db)):
-    org, _api_key = await authenticate_api_key(request, db)
+    org, _api_key = request.state.api_key
     await enforce_rate_limit(f"check:{org.id}", org.rate_limit_per_min)
     try:
         return await precheck(db, org.id, req, request.is_disconnected)

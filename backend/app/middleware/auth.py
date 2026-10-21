@@ -1,13 +1,18 @@
+import asyncio
 import hashlib
+import json
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import database
 from app.config import settings
 from app.database import get_db
 from app.models import User, OrgMembership, ApiKey, Organization
@@ -111,3 +116,36 @@ async def authenticate_api_key(
     api_key.last_used_at = datetime.utcnow()
     await db.commit()
     return org, api_key
+
+
+def _validated(model, body: bytes) -> Any:
+    data = json.loads(body)
+    try:
+        return model.model_validate(data)
+    except ValidationError:
+        return data  # validated again by FastAPI, for its 422
+
+
+class _OffLoopJson(Request):
+    def __init__(self, request: Request, model):
+        super().__init__(request.scope, request.receive)
+        self._model = model
+
+    async def json(self) -> Any:
+        if not hasattr(self, "_json"):
+            self._json = await asyncio.to_thread(_validated, self._model, await self.body())
+        return self._json
+
+
+class ApiKeyRoute(APIRoute):
+    """Authenticates the API key (`request.state.api_key`: org, key) before the body is read, then parses and
+    validates the body off the event loop (AUDIT-13 A13-2)."""
+
+    def get_route_handler(self):
+        handler, model = super().get_route_handler(), self.body_field.type_
+
+        async def route(request: Request) -> Response:
+            async with database.async_session_maker() as db:
+                request.state.api_key = await authenticate_api_key(request, db)
+            return await handler(_OffLoopJson(request, model))
+        return route

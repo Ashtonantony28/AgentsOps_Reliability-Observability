@@ -1,3 +1,4 @@
+import asyncio
 import re
 import secrets
 from datetime import datetime, timedelta
@@ -46,7 +47,8 @@ async def register_user(
     if existing:
         raise ValueError("email_exists")
 
-    user = User(email=email, password_hash=hash_password(password), full_name=full_name or email.split("@")[0])
+    password_hash = await asyncio.to_thread(hash_password, password)  # bcrypt, 0.3 s
+    user = User(email=email, password_hash=password_hash, full_name=full_name or email.split("@")[0])
     db.add(user)
     await db.flush()
 
@@ -70,7 +72,7 @@ async def login(
     db: AsyncSession, email: str, password: str, user_agent: str = "", ip: str = ""
 ) -> Tuple[User, Organization, str, str, str]:
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    if not user or not verify_password(password, user.password_hash) or not user.is_active:
+    if not user or not await asyncio.to_thread(verify_password, password, user.password_hash) or not user.is_active:
         raise ValueError("invalid_credentials")
 
     membership = (await db.execute(
