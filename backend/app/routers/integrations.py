@@ -12,8 +12,12 @@ from app.middleware.auth import AuthContext, get_current_user, require_role
 from app.models import Integration
 from app.schemas.integration import (
     IntegrationCreate,
+    IntegrationCreatedOut,
     IntegrationOut,
     IntegrationUpdate,
+    SigningSecretOut,
+    SlackOAuthCallbackOut,
+    SlackOAuthStartOut,
     TestConnectionResult,
 )
 
@@ -35,7 +39,7 @@ async def list_integrations(ctx: AuthContext = Depends(get_current_user), db: As
     return out
 
 
-@router.post("", response_model=IntegrationOut)
+@router.post("", response_model=IntegrationCreatedOut)
 async def create_integration(
     req: IntegrationCreate,
     ctx: AuthContext = Depends(require_role("admin")),
@@ -45,7 +49,7 @@ async def create_integration(
     db.add(i)
     await db.commit()
     await db.refresh(i)
-    return IntegrationOut.model_validate(i)
+    return IntegrationCreatedOut.model_validate(i)
 
 
 @router.patch("/{int_id}", response_model=IntegrationOut)
@@ -69,6 +73,11 @@ async def delete_integration(int_id: str, ctx: AuthContext = Depends(require_rol
     await db.delete(i)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/{int_id}/signing-secret", response_model=SigningSecretOut)
+async def rotate_signing_secret(int_id: str, ctx: AuthContext = Depends(require_role("admin"))):
+    raise HTTPException(status_code=501, detail="not_implemented")  # SG-P1
 
 
 @router.post("/{int_id}/test", response_model=TestConnectionResult)
@@ -141,7 +150,7 @@ async def receive_webhook(kind: str, org_id: str, payload: dict, db: AsyncSessio
     return {"ok": True}
 
 
-@router.get("/oauth/slack/start")
+@router.get("/oauth/slack/start", response_model=SlackOAuthStartOut)
 async def slack_oauth_start(ctx: AuthContext = Depends(require_role("admin"))):
     if not settings.SLACK_CLIENT_ID:
         raise HTTPException(400, "slack_oauth_not_configured")
@@ -152,7 +161,7 @@ async def slack_oauth_start(ctx: AuthContext = Depends(require_role("admin"))):
     return {"url": url}
 
 
-@router.get("/oauth/slack/callback")
+@router.get("/oauth/slack/callback", response_model=SlackOAuthCallbackOut)
 async def slack_oauth_callback(code: str, state: str, db: AsyncSession = Depends(get_db)):
     """Complete Slack OAuth exchange and persist webhook URL."""
     if not (settings.SLACK_CLIENT_ID and settings.SLACK_CLIENT_SECRET):

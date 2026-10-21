@@ -1,6 +1,23 @@
 from datetime import datetime
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from typing import Annotated, List, Literal, Optional, Dict, Any, Union
+from pydantic import BaseModel, Field
+
+
+class WebhookRunner(BaseModel):
+    """POST each case to `url`; the 2xx JSON body's `output` string is the case's output."""
+    type: Literal["webhook"]
+    url: str = Field(min_length=1, max_length=2048, pattern=r"^https?://")
+    timeout_s: float = Field(default=10.0, gt=0, le=60)
+
+
+class TracesRunner(BaseModel):
+    """The output of the newest trace of the run's agent whose input matches the case's."""
+    type: Literal["traces"]
+    match: Literal["exact", "contains"] = "exact"
+    lookback_days: int = Field(default=7, ge=1, le=90)
+
+
+EvalRunner = Annotated[Union[WebhookRunner, TracesRunner], Field(discriminator="type")]
 
 
 class CaseIn(BaseModel):
@@ -15,6 +32,7 @@ class EvalSetCreate(BaseModel):
     description: str = ""
     evaluators: List[str] = ["exact", "semantic"]
     schedule_cron: Optional[str] = None
+    runner: Optional[EvalRunner] = None
     cases: List[CaseIn] = []
 
 
@@ -23,6 +41,7 @@ class EvalSetUpdate(BaseModel):
     description: Optional[str] = None
     evaluators: Optional[List[str]] = None
     schedule_cron: Optional[str] = None
+    runner: Optional[EvalRunner] = None  # an explicit null removes it
 
 
 class CaseOut(BaseModel):
@@ -43,6 +62,7 @@ class EvalSetOut(BaseModel):
     description: str
     evaluators: List[str]
     schedule_cron: Optional[str]
+    runner: Optional[EvalRunner]
     created_at: datetime
     case_count: int = 0
 

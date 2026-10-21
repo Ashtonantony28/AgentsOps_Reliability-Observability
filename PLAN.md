@@ -523,10 +523,11 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 The audits above covered the policy layer and its API/SDK paths. The platform from `7766898` (auth, integrations, evaluations, alerts, retention) was never audited, and a read of it at `4d30c50` found the gaps below. Same rules as above: P0 merges before P1/P2 start, each item gets a failing test first, contract changes are stop-and-report unless the reviewing thread approves them under the Rules line.
 
 ### SG-P0 Platform contracts
-- **Owner:** unassigned · **Status:** proposed · **Blocks:** SG-P1, SG-P2
+- **Owner:** SG-P0 thread · **Status:** done · **Blocks:** SG-P1, SG-P2
 - **Scope:** freeze, as schemas and stub routes (501) with tests: an invite token flow (`POST /api/auth/invite` returns no password; `POST /api/auth/accept-invite {token, password}`; `POST /api/auth/password` for a signed-in user); a per-integration signing secret for `POST /api/integrations/webhooks/{kind}/{org_id}` (HMAC-SHA256 of the body in `X-AgentOps-Signature`); a server-stored OAuth `state` nonce for Slack; an evaluation runner hook (`EvaluationSet.runner`: `webhook` URL called per case, or `traces` matching; no runner means a case without output fails, never passes). Document each in `docs/` and under **Interface contracts**.
 - **Acceptance:** every new route imports and returns 501 behind its auth; schema round-trip tests; OpenAPI and `frontend/src/types` agree (`tests/api/test_frontend_contract.py` extended); migration `0007` upgrades and downgrades on Postgres.
 - **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api` · `alembic upgrade head && alembic downgrade -1 && alembic upgrade head` · `cd frontend && npx tsc --noEmit`
+- **Result:** contracts under **Interface contracts → Platform**, in full in `docs/platform-contracts.md`. New routes 501 behind their auth: `POST /api/auth/accept-invite` (token in the body), `POST /api/auth/password` (any member), `POST /api/integrations/{id}/signing-secret` (admin). `POST /api/auth/invite` keeps its old behaviour (the Settings page invites through it, so a 501 would break the app); `InviteOut` is frozen as the shape SG-P1 switches it to. `POST /api/integrations` returns `IntegrationCreatedOut` (`signing_secret` null until SG-P1); the Slack routes gained response models, behaviour unchanged. `EvaluationSet.runner` is stored and returned now (create, update, get, list), run by SG-P2. Migration `0007_platform_contracts`: `invites`, `oauth_states`, `integrations.signing_secret`, `evaluation_sets.runner`. Found here: creating or reading one eval set was a 500 (`EvalSetDetailOut.model_validate` read the lazy `cases` relationship); fixed, since the runner is reached through those routes. Tests: `tests/api/test_platform_contracts.py` (stubs vs 401/403 callers, body bounds, schema round trips, runner through the API, storage), `test_frontend_contract.py` mirrors the new TS types (unrouted `InviteOut` from its model), `test_migration.py` at `0007` plus a SQLite round trip. `TEST_DB=postgres` not run (the shared test database is another session's); the alembic round trip ran on a separate Postgres 16 database.
 
 ### SG-P1 Platform security (each a failing test first)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** SG-P0
@@ -651,6 +652,21 @@ client.check(name: str, *, kind="tool", input=None, **attrs) -> CheckResult(allo
 await async_client.acheck(...)
 ```
 
+### Platform (SG-P0, migration `0007_platform_contracts`; full text in `docs/platform-contracts.md`)
+
+| Method | Path | Auth | Body → Response |
+|---|---|---|---|
+| POST | `/api/auth/invite` | jwt admin | `InviteRequest` → `InviteOut {email, role, status: added\|pending, invite_id?, expires_at?}`, never a password or token (SG-P1; returns `MemberOut` until then) |
+| POST | `/api/auth/accept-invite` | token in body | `{token, password}` → `TokenPair`; 400 `invalid_invite`, 409 `email_exists` |
+| POST | `/api/auth/password` | jwt | `{current_password, new_password}` → `TokenPair`; 400 `wrong_password`; revokes the user's sessions |
+| POST | `/api/integrations` | jwt admin | → `IntegrationCreatedOut` = `IntegrationOut` + `signing_secret` (shown once) |
+| POST | `/api/integrations/{id}/signing-secret` | jwt admin | → `{signing_secret}` (rotates) |
+| POST | `/api/integrations/webhooks/{kind}/{org_id}` | `X-AgentOps-Signature: sha256=<hex HMAC-SHA256 of the raw body>` | 401 `invalid_signature` for a bad or missing signature, unknown org or kind |
+| GET | `/api/integrations/oauth/slack/start`, `/callback` | jwt admin; `state` | `state` is a single-use nonce (10 min) bound to the admin and org; 400 `invalid_state` |
+
+- Storage: `invites (id, org_id, email, role, token_hash unique, invited_by?, created_at, expires_at, accepted_at?)`, index `(org_id, email)`, token SHA-256 only, 72 h; `oauth_states (id, provider, state_hash unique, org_id, user_id, created_at, expires_at, used_at?)`; `integrations.signing_secret VARCHAR(64) NULL` (`token_hex(32)`, never in `IntegrationOut`); `evaluation_sets.runner JSON NULL`.
+- `EvaluationSet.runner`: `{type: "webhook", url, timeout_s = 10}` (POST per case, output from the response's `output`) or `{type: "traces", match: exact|contains = exact, lookback_days = 7}`; null means no output source. A case without output fails (score 0, reason `no_runner`, `runner_error: …`, `no_matching_trace` or `no_output`), never passes. TS mirrors in `frontend/src/types/{auth,integration,evaluation}.ts`.
+
 ### SG0 contract notes
 
 Decided while turning the contract into code; frozen with the rest.
@@ -709,3 +725,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-21: SG-A13.1 done (A13-1: a history keeps its newest prefix checkpoint and an org's checkpoint bytes are bounded; A13-4: a resumed check reads one checkpoint; A13-5: a stored-trace rebuild in `/check` runs once at a time and stops, resumably, at the deadline or when its request is gone).
 - 2026-10-21: SG-A13.2 done (A13-2: bodies over 16 MiB are a 413 before they are read; `/check` and ingest authenticate before parsing and parse off the event loop; login and registration hash passwords off the loop).
 - 2026-10-21: SG-A13.3 done (A13-3: registration, which makes an org, is limited to 5 per client address per hour, 429 past it; the new limit is for the thread's approval).
+- 2026-10-21: SG-P0 done (platform contracts: invite tokens, password change, webhook signing secrets, Slack OAuth state, eval runner; migration `0007`; new routes 501, `/invite` keeps its behaviour until SG-P1).

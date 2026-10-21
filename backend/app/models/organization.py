@@ -55,3 +55,22 @@ class ApiKey(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     organization = relationship("Organization", back_populates="api_keys")
+
+
+class Invite(Base):
+    """A pending org invite (SG-P0 contract; SG-P1 issues and accepts them). Only the token's SHA-256 is stored."""
+    __tablename__ = "invites"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    invited_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_invite_org_email", "org_id", "email"),
+    )

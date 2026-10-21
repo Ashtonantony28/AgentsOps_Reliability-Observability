@@ -39,6 +39,11 @@ def _set_out(s: EvaluationSet, case_count: int) -> EvalSetOut:
     return out
 
 
+def _detail_out(s: EvaluationSet, cases) -> EvalSetDetailOut:
+    # not model_validate(s): that reads the lazy `cases` relationship, which async sessions can't load
+    return EvalSetDetailOut(**_set_out(s, len(cases)).model_dump(), cases=[CaseOut.model_validate(c) for c in cases])
+
+
 @router.get("/sets", response_model=List[EvalSetOut])
 async def list_sets(ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(
@@ -62,6 +67,7 @@ async def create_set(
     s = EvaluationSet(
         org_id=ctx.org_id, name=req.name, description=req.description,
         evaluators=req.evaluators, schedule_cron=req.schedule_cron,
+        runner=req.runner.model_dump(mode="json") if req.runner else None,
     )
     db.add(s)
     await db.flush()
@@ -73,10 +79,7 @@ async def create_set(
     db.add_all(cases)
     await db.commit()
     await db.refresh(s)
-    detail = EvalSetDetailOut.model_validate(s)
-    detail.case_count = len(cases)
-    detail.cases = [CaseOut.model_validate(c) for c in cases]
-    return detail
+    return _detail_out(s, cases)
 
 
 @router.get("/sets/{set_id}", response_model=EvalSetDetailOut)
@@ -87,10 +90,7 @@ async def get_set(set_id: str, ctx: AuthContext = Depends(get_current_user), db:
     if not s:
         raise HTTPException(404, "set_not_found")
     cases = (await db.execute(select(EvaluationCase).where(EvaluationCase.set_id == set_id))).scalars().all()
-    out = EvalSetDetailOut.model_validate(s)
-    out.case_count = len(cases)
-    out.cases = [CaseOut.model_validate(c) for c in cases]
-    return out
+    return _detail_out(s, cases)
 
 
 @router.patch("/sets/{set_id}", response_model=EvalSetOut)
@@ -100,8 +100,10 @@ async def update_set(set_id: str, req: EvalSetUpdate,
     s = (await db.execute(select(EvaluationSet).where(EvaluationSet.id == set_id, EvaluationSet.org_id == ctx.org_id))).scalar_one_or_none()
     if not s:
         raise HTTPException(404, "set_not_found")
-    for k, v in req.model_dump(exclude_none=True).items():
+    for k, v in req.model_dump(exclude_none=True, exclude={"runner"}).items():
         setattr(s, k, v)
+    if "runner" in req.model_fields_set:
+        s.runner = req.runner.model_dump(mode="json") if req.runner else None
     await db.commit()
     return _set_out(s, 0)
 

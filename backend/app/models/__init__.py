@@ -1,4 +1,4 @@
-from app.models.organization import Organization, OrgMembership, ApiKey
+from app.models.organization import Organization, OrgMembership, ApiKey, Invite
 from app.models.user import User, Session
 from app.models.agent import Agent, AgentVersion, AgentDependency
 from app.models.trace import Trace, Span
@@ -10,7 +10,7 @@ from app.models.evaluation import (
 )
 from app.models.alert import AlertRule, AlertEvent
 from app.models.incident import Incident
-from app.models.integration import Integration
+from app.models.integration import Integration, OAuthState
 from app.models.audit_log import AuditLog, PolicyRule
 from app.models.policy import TracePolicy, TracePolicyViolation
 
@@ -18,6 +18,7 @@ __all__ = [
     "Organization",
     "OrgMembership",
     "ApiKey",
+    "Invite",
     "User",
     "Session",
     "Agent",
@@ -33,6 +34,7 @@ __all__ = [
     "AlertEvent",
     "Incident",
     "Integration",
+    "OAuthState",
     "AuditLog",
     "PolicyRule",
     "TracePolicy",
