@@ -473,6 +473,24 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd sdk && pytest -q`
 - **Result:** `trace.loop_lock` keeps one `asyncio.Lock` per running loop (`WeakKeyDictionary`) for the guard queue (`Trace._guard_alocks`) and the async push (`Trace._alocks`); calls in different loops still exclude each other through the shared threading `_guard_lock`, so the sync/async sharing of #47 holds. `test_audit_12.py` passes unmarked; `tests/test_guard_loops.py` adds the per-loop lock and an async guarded call waiting for a sync one in another thread (kills AUDIT-12's surviving `guard.py` one-poll mutant). Open low: async pushes of one trace from two loops running at once in different threads no longer exclude each other (before, the second loop raised `RuntimeError`).
 
+### SG-A13.1 Prefix checkpoints bounded in Redis (AUDIT-13 A13-1 high; A13-4, A13-5 ride along)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-13
+- **Problem:** since #55 every slice of a long `/check` stores a checkpoint for an hour (70 MB per 10 000-event history at the org cap; one org added 292 MB in two minutes against the real app, 4 MB before #55) in the Redis that holds the broker and every org's state, with no memory cap; a resumed check reads every checkpoint of its history (A13-4); stored-trace rebuilds in `/check` are repeated after a 5 s lock wait and never stopped (A13-5).
+- **Acceptance:** `test_a_long_check_keeps_about_one_checkpoint`, `test_a_resumed_check_reads_about_one_checkpoint` and `test_concurrent_checks_rebuild_a_stored_trace_once` pass unmarked on SQLite and Postgres; `tests/api/test_policy_work.py` and `test_audit_12.py` unchanged (resume, in-flight waits, takeover, 503); checkpoint bytes per org bounded; precheck and ingest bench rows met.
+- **Verify:** `cd backend && pytest -q tests/audit/test_audit_13.py -k "checkpoint or rebuild" tests/api/test_policy_work.py tests/audit/test_audit_12.py && TEST_DB=postgres pytest -q tests/audit/test_audit_13.py -k "checkpoint or rebuild"` · `python backend/scripts/bench_policy.py --path precheck --assert-budget`
+
+### SG-A13.2 No unauthenticated work on the event loop (AUDIT-13 A13-2 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-13
+- **Problem:** request bodies of any size are parsed and validated on the loop before `/check` or ingest authenticates (20 MB: 2.4 to 4 s stall, then 401), and login and registration run bcrypt (0.3 s) on the loop; within the caps, 16 of one org's 10 000-event checks pushed another org's guarded calls past the SDK's 2 s timeout.
+- **Acceptance:** `test_unauthenticated_requests_do_not_stall_the_event_loop` passes unmarked (both cases); a body over the largest valid request is a 413 before it is read; the SDK and contract tests unchanged.
+- **Verify:** `cd backend && pytest -q tests/audit/test_audit_13.py -k unauthenticated tests/test_auth.py tests/api/test_sdk_contract.py tests/api/test_ingest_hardening.py`
+
+### SG-A13.3 Org creation bounded (AUDIT-13 A13-3 high)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-13 · coordinate with SG-P1 (auth)
+- **Problem:** registration is open, unverified and not rate limited, so per-org fairness (SG-A11.1), rate limits and caps scale with the number of orgs an attacker registers: with 24 orgs a victim's check waited 21.5 of their slices per slice of its own, as before SG-A11.1.
+- **Acceptance:** `test_one_client_cannot_make_orgs_without_bound` passes unmarked (a per-client bound on registrations; 429 past it); `tests/test_auth.py` unchanged except for the new bound. A verified-email requirement, if chosen instead, is a contract change approved under the Rules line.
+- **Verify:** `cd backend && pytest -q tests/audit/test_audit_13.py -k orgs tests/test_auth.py`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -491,6 +509,33 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A10 | Round 4: API/SDK consistency, contracts, security and test quality; done, see `AUDIT-10.md`: 2 high → SG-A10.1, SG-A10.2 | Read-through of the round-3 changes, tests against the real app with the real SDK, the work bound measured at the real caps, 30 mutants of the round-3 fixes. |
 | A11 | Round 5: checker correctness, performance and security; done, see `AUDIT-11.md`: 3 high → SG-A11.1, SG-A11.2 | Round-4 changes re-checked, property tests at 5 000 examples, checkpoint key review, glob fast paths against the reference matcher, cost per unit on new shapes, two orgs against the real app sharing the policy pool, batch queue, compile cache and event loop. |
 | A12 | Round 5: API/SDK contracts, SDK and test quality; done, see `AUDIT-12.md`: 1 high → SG-A12.1; 1 medium → SG-A12.2 | Read-through of the round-4 changes, overlapping and abandoned checks measured at the org caps, tests against the real app and both SDK clients, 28 mutants of the round-4 fixes. |
+| A13 | Round 6: checker correctness, performance and security; done, see `AUDIT-13.md`: 3 high → SG-A13.1 to SG-A13.3 | Round-5 changes re-checked (per-org scheduling, compile cache, checkpoints), property tests at 5 000 examples including resumed and in-flight checkpoints, two orgs at the caps against the real app (and against `3010a70`), self-registered orgs against the fair turns. |
+| A14 | Round 6: API/SDK contracts, SDK and test quality; in progress | Read-through of the round-5 changes, overlapping checks and both SDK clients against the real app, mutants of the round-5 fixes. |
+
+## Platform track (approved 2026-10-19: after round 6 of the audits)
+
+The audits above covered the policy layer and its API/SDK paths. The platform from `7766898` (auth, integrations, evaluations, alerts, retention) was never audited, and a read of it at `4d30c50` found the gaps below. Same rules as above: P0 merges before P1/P2 start, each item gets a failing test first, contract changes are stop-and-report unless the reviewing thread approves them under the Rules line.
+
+### SG-P0 Platform contracts
+- **Owner:** unassigned · **Status:** proposed · **Blocks:** SG-P1, SG-P2
+- **Scope:** freeze, as schemas and stub routes (501) with tests: an invite token flow (`POST /api/auth/invite` returns no password; `POST /api/auth/accept-invite {token, password}`; `POST /api/auth/password` for a signed-in user); a per-integration signing secret for `POST /api/integrations/webhooks/{kind}/{org_id}` (HMAC-SHA256 of the body in `X-AgentOps-Signature`); a server-stored OAuth `state` nonce for Slack; an evaluation runner hook (`EvaluationSet.runner`: `webhook` URL called per case, or `traces` matching; no runner means a case without output fails, never passes). Document each in `docs/` and under **Interface contracts**.
+- **Acceptance:** every new route imports and returns 501 behind its auth; schema round-trip tests; OpenAPI and `frontend/src/types` agree (`tests/api/test_frontend_contract.py` extended); migration `0007` upgrades and downgrades on Postgres.
+- **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api` · `alembic upgrade head && alembic downgrade -1 && alembic upgrade head` · `cd frontend && npx tsc --noEmit`
+
+### SG-P1 Platform security (each a failing test first)
+- **Owner:** unassigned · **Status:** proposed · **Depends:** SG-P0
+- **Scope:** (1) invites never set a known password (`routers/auth.py:109`); (2) the webhook receiver rejects unsigned or wrongly signed bodies and unknown orgs (`routers/integrations.py:132`); (3) Slack OAuth checks a single-use `state` bound to the starting admin's org (`integrations.py:150`, `:156`); (4) outbound URLs from integrations and alert channels refuse private, loopback and link-local addresses after DNS resolution (`test_connection`, `notification_service`); (5) `/ws/traces` requires an access token and a current membership (AUDIT-6 A6-11, still xfail); (6) the app refuses to start outside `development` with the default `JWT_SECRET`/`APP_SECRET`; (7) refresh keeps the org the session was issued for (`auth_service.refresh_tokens`).
+- **Acceptance:** one failing-then-passing test per item; A6-11 unmarked; full backend suite green on SQLite and Postgres.
+- **Verify:** `cd backend && pytest -q tests/api/test_platform_security.py tests/audit/test_audit_6.py && pytest -q && TEST_DB=postgres pytest -q tests/api`
+
+### SG-P2 Platform features match the README
+- **Owner:** unassigned · **Status:** proposed · **Depends:** SG-P0
+- **Scope:** evaluations run through the P0 runner and a case with no output fails (`evaluation_service.py:96`); `schedule_cron` is honoured and scheduled runs use the set's agent (`tasks/evaluation_tasks.py`); `cost_per_day` sums a day, not the rule window (`alert_service.py:45`, `alert_tasks.py:28`, one shared implementation); periodic metric alerts open incidents like violation alerts do, or the README stops saying so; a beat task enforces `retention_days`; the SDK quick start works as written (`import agentops` is a module or the docs say `agentops_sdk`; buffer path in the README matches `utils.disk_buffer_path`); integrations that only store config are labelled as such in the README.
+- **Acceptance:** one test per item; `sdk/demo.py` imports in CI; README claims each traceable to a test or removed.
+- **Verify:** `cd backend && pytest -q && TEST_DB=postgres pytest -q tests/api` · `cd sdk && pytest -q && python -c "import ast,sys; ast.parse(open('demo.py').read())"`
+
+### Audit P1 (after SG-P1 and SG-P2)
+A fresh session that wrote none of the platform code: auth and tenancy (every route's org scoping), outbound requests, the eval and alert paths, and tests that cannot fail. Findings in `AUDIT-15.md`, critical and high back here as `SG-AP1.<k>`.
 
 ## Interface contracts
 
@@ -653,3 +698,5 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: SG-A11.2 done: policies compile off the event loop, failures cached, unused tags count toward the org cap; A11-4 huge integers are a parse error.
 - 2026-10-15: SG-A11.1 done (A11-1: policy pool slices and span rebuilds taken in turn by org; A11-2: batch checks taken from per-org lists in turn by org).
 - 2026-10-19: SG-A12.1 done (A12-1: a long `/check` prefix saves each checkpoint as its slice is stepped and resumes from the newest before every slice; a slice another check is stepping is waited for while its pieces move; a check whose request is gone or past 30 s stops with 503 `check_timeout`).
+- 2026-10-19: Completeness check: not complete. SG-A11.1 (PR #53, open) and SG-A12.1 open; round 6 of both audits still owed; platform track SG-P0 to SG-P2 and its audit proposed. User chose both tracks; SG-A11.1 (#53) and SG-A12.1 (#55) merged 2026-10-20; round-6 audits A13/A14 started.
+- 2026-10-20: Audit A13 (round 6, checker correctness, performance and security) done: 0 critical, 3 high, 2 medium, 2 low in AUDIT-13.md; SG-A13.1 to SG-A13.3 proposed. Checker sound at 5 000 examples; the highs are Redis growth from per-slice checkpoints, unauthenticated work on the event loop, and orgs registered to undo per-org fairness.
