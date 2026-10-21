@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
+from app.middleware.body_limit import BodyLimit
 from app.redis import close_redis, get_redis
 from app.routers import (
     agents,
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AgentOps API", version="1.0.0", lifespan=lifespan)
 
+app.add_middleware(BodyLimit)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -98,6 +100,7 @@ async def health():
 
 app.include_router(auth.router)
 app.include_router(agents.router)
+app.include_router(traces.ingest_router)
 app.include_router(traces.router)
 app.include_router(evaluations.router)
 app.include_router(alerts.router)
@@ -106,4 +109,5 @@ app.include_router(integrations.router)
 app.include_router(governance.router)
 app.include_router(reports.router)
 app.include_router(trace_policies.router)
+app.include_router(trace_policies.check_router)
 app.include_router(ws.router)

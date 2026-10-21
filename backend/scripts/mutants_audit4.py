@@ -49,9 +49,9 @@ MUTANTS = [
     ("A4-5", "backend/app/policy/checker.py", "        elif deadline is not None:\n            log.warning(",
      "        elif deadline is None:\n            log.warning(", "backend", BACKEND_TESTS),
     ("A4-8", "backend/app/routers/trace_policies.py",
-     "    org, _api_key = await authenticate_api_key(request, db)\n"
+     "    org, _api_key = request.state.api_key\n"
      "    await enforce_rate_limit(f\"check:{org.id}\", org.rate_limit_per_min)\n    try:\n        return await precheck(",
-     "    org, _api_key = await authenticate_api_key(request, db)\n    try:\n        return await precheck(",
+     "    org, _api_key = request.state.api_key\n    try:\n        return await precheck(",
      "backend", BACKEND_TESTS),
 ]
 

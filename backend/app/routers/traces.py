@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import numpy as np
 
 from app.database import get_db
-from app.middleware.auth import AuthContext, authenticate_api_key, get_current_user
+from app.middleware.auth import ApiKeyRoute, AuthContext, get_current_user
 from app.middleware.rate_limit import enforce_rate_limit
 from app.models import Organization, Trace, Span, Agent, TracePolicyViolation
 from app.schemas.policy import EventsAppendIn, EventsAppendOut, ViolationOut
@@ -28,12 +28,13 @@ from app.services.report_service import traces_to_csv
 from app.services.trace_service import PolicyViolation, TraceConflict, append_events as append_trace_events, ingest_trace
 
 router = APIRouter(prefix="/api/traces", tags=["traces"])
+ingest_router = APIRouter(prefix="/api/traces", tags=["traces"], route_class=ApiKeyRoute)
 
 
 # ---- Ingestion (API-key authed) ----
-@router.post("/ingest", status_code=202)
+@ingest_router.post("/ingest", status_code=202)
 async def ingest_one(req: TraceIn, request: Request, db: AsyncSession = Depends(get_db)):
-    org, api_key = await authenticate_api_key(request, db)
+    org, api_key = request.state.api_key
     await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
     try:
         trace = await ingest_trace(db, org.id, req)
@@ -46,11 +47,11 @@ async def ingest_one(req: TraceIn, request: Request, db: AsyncSession = Depends(
     return {"id": trace.id, "trace_uid": trace.trace_uid}
 
 
-@router.post("/ingest/bulk", status_code=202)
+@ingest_router.post("/ingest/bulk", status_code=202)
 async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Depends(get_db)):
-    org, api_key = await authenticate_api_key(request, db)
+    org, api_key = request.state.api_key
     await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
-    org_id = org.id  # a policy block rolls the session back and expires `org`
+    org_id = org.id
     accepted, rejected, room = [], [], [tps.MAX_REQUEST_WORK]  # the policy work left to this request
     for i, raw in enumerate(req.traces):
         try:
@@ -71,10 +72,10 @@ async def ingest_bulk(req: TraceBulkIn, request: Request, db: AsyncSession = Dep
     return {"accepted": accepted, "rejected": rejected}
 
 
-@router.post("/{trace_uid}/events", response_model=EventsAppendOut, status_code=202)
+@ingest_router.post("/{trace_uid}/events", response_model=EventsAppendOut, status_code=202)
 async def append_events(trace_uid: Annotated[str, Path(max_length=128)], req: EventsAppendIn, request: Request,
                         db: AsyncSession = Depends(get_db)):
-    org, api_key = await authenticate_api_key(request, db)
+    org, api_key = request.state.api_key
     await enforce_rate_limit(f"org:{org.id}", org.rate_limit_per_min)
     try:
         _trace, rows = await append_trace_events(db, org.id, trace_uid, req)
