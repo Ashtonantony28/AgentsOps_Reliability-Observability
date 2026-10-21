@@ -1,15 +1,17 @@
-from fastapi import HTTPException, Request
+import time
+
+from fastapi import HTTPException
 
 from app.redis import get_redis
 
 
-async def enforce_rate_limit(key: str, limit_per_min: int) -> None:
-    if limit_per_min <= 0:
+async def enforce_rate_limit(key: str, limit: int, window_s: int = 60) -> None:
+    if limit <= 0:
         return
     r = get_redis()
-    bucket = f"rl:{key}:{int(__import__('time').time() // 60)}"
+    bucket = f"rl:{key}:{int(time.time() // window_s)}"
     count = await r.incr(bucket)
     if count == 1:
-        await r.expire(bucket, 70)
-    if count > limit_per_min:
+        await r.expire(bucket, window_s + 10)
+    if count > limit:
         raise HTTPException(status_code=429, detail="rate_limited")
