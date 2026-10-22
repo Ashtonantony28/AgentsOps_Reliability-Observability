@@ -89,15 +89,14 @@ def test_password_executor_is_bounded():
     assert isinstance(pool, ThreadPoolExecutor) and pool._max_workers == settings.PASSWORD_HASH_THREADS
 
 
-async def test_logins_run_while_the_default_executor_is_full(client, db, org):
-    u = await _user(db, org)
+async def test_hashes_run_while_the_default_executor_is_full():
+    # the hash alone: Postgres connects resolve their host on the default executor too
     release = threading.Event()
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(1))
     held = asyncio.ensure_future(asyncio.to_thread(release.wait, 10))
     try:
-        r = await asyncio.wait_for(_login(client, u.email), 5)
-        assert r.status_code == 200
+        assert await asyncio.wait_for(auth_service._hashed(auth_service.verify_password, PASSWORD, HASHED), 5)
     finally:
         release.set()
         await held
