@@ -40,8 +40,6 @@ def net(monkeypatch):
 
 # --- A16-1 (high): one rule that raises in the check phase drops every org's pages ---
 
-@pytest.mark.xfail(strict=True, reason="A16-1: a rule whose check raises (window_minutes past datetime's range) ends "
-                                       "the tick before any page is sent, and dedup then suppresses the fired alerts")
 async def test_one_orgs_failing_rule_does_not_drop_another_orgs_page(client, db, session_maker, org, auth_headers,
                                                                      net):
     other = Organization(name="B", slug=f"b-{uuid.uuid4().hex[:8]}")

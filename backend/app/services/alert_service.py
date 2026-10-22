@@ -5,11 +5,11 @@ from datetime import datetime, timedelta
 from itertools import zip_longest
 from typing import Optional, get_args
 
-import numpy as np
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicy, TracePolicyViolation
+from app.schemas.alert import MAX_WINDOW_MINUTES
 from app.schemas.policy import PolicySeverity
 from app.services.notification_service import dispatch_alert
 
@@ -19,6 +19,7 @@ SEVERITIES = get_args(PolicySeverity)  # ascending
 ALERTING_ACTIONS = ("alert", "block")  # `log` policies record violations without paging anyone
 DISPATCH_CONCURRENCY = 20  # rules paging at once in one tick
 DISPATCH_DEADLINE_S = 45.0  # the tick runs every minute
+CHECK_DEADLINE_S = 180.0  # checks stop here, so the pages fired so far go out inside the task's 300 s limit
 
 
 def severities_at_least(rule: AlertRule) -> tuple[str, ...]:
@@ -34,8 +35,14 @@ def policy_violations_query(rule: AlertRule, since: datetime):
     return q.where(TracePolicyViolation.agent_id == rule.agent_id) if rule.agent_id else q
 
 
+def _traces(rule: AlertRule, since: datetime, *columns):
+    q = select(*columns).where(Trace.org_id == rule.org_id, Trace.created_at >= since)
+    return q.where(Trace.agent_id == rule.agent_id) if rule.agent_id else q
+
+
 async def compute_metric_value(db: AsyncSession, rule: AlertRule) -> float:
-    window = datetime.utcnow() - timedelta(minutes=rule.window_minutes or 15)
+    in_bound = 1 <= (rule.window_minutes or 0) <= MAX_WINDOW_MINUTES  # rows stored before the API checked may not be
+    window = datetime.utcnow() - timedelta(minutes=rule.window_minutes if in_bound else 15)
     if rule.metric == "policy_violations":
         return float((await db.execute(policy_violations_query(rule, window))).scalar_one())
     if rule.metric == "cost_per_day":  # the last 24 h, whatever the rule's window
@@ -44,21 +51,23 @@ async def compute_metric_value(db: AsyncSession, rule: AlertRule) -> float:
         if rule.agent_id:
             q = q.where(Trace.agent_id == rule.agent_id)
         return float((await db.execute(q)).scalar_one())
-    q = select(Trace).where(Trace.created_at >= window, Trace.org_id == rule.org_id)
-    if rule.agent_id:
-        q = q.where(Trace.agent_id == rule.agent_id)
-    rows = (await db.execute(q)).scalars().all()
-    if not rows:
-        return 0.0
     if rule.metric == "error_rate":
-        errors = sum(1 for r in rows if r.status != "success")
-        return round(errors / len(rows), 4)
-    if rule.metric == "latency_p95":
-        return float(np.percentile([r.latency_ms for r in rows], 95))
+        total, errors = (await db.execute(_traces(
+            rule, window, func.count(), func.count().filter(Trace.status != "success")))).one()
+        return round(errors / total, 4) if total else 0.0
+    if rule.metric == "latency_p95":  # numpy's linear percentile, from the two values around it
+        total = (await db.execute(_traces(rule, window, func.count()))).scalar_one()
+        if not total:
+            return 0.0
+        pos = 0.95 * (total - 1)
+        near = (await db.execute(_traces(rule, window, Trace.latency_ms).order_by(Trace.latency_ms)
+                                 .offset(int(pos)).limit(2))).scalars().all()
+        return float(near[0] + (near[-1] - near[0]) * (pos - int(pos)))
     if rule.metric == "latency_avg":
-        return float(np.mean([r.latency_ms for r in rows]))
+        return float((await db.execute(_traces(rule, window, func.avg(Trace.latency_ms)))).scalar_one() or 0.0)
     if rule.metric == "token_usage":
-        return float(sum((r.tokens_input + r.tokens_output) for r in rows))
+        return float((await db.execute(_traces(
+            rule, window, func.sum(Trace.tokens_input + Trace.tokens_output)))).scalar_one() or 0)
     return 0.0
 
 
@@ -142,23 +151,38 @@ async def _dispatch_all(pages: list[tuple]) -> None:
                     DISPATCH_DEADLINE_S)
 
 
-async def evaluate_metric_rules(db: AsyncSession) -> dict:
-    """The periodic check of every enabled metric rule (policy_violations rules fire as violations are stored).
-    Every rule is checked before any is paged, so no org's channels hold up another org's rules."""
-    summary = {"checked": 0, "fired": 0}
-    pages = []
+async def _check_all(db: AsyncSession, summary: dict, pages: list) -> None:
     rules = (await db.execute(select(AlertRule).where(
         AlertRule.enabled.is_(True), AlertRule.metric != "policy_violations").order_by(AlertRule.created_at))).scalars().all()
+    db.expunge_all()  # a rollback after a failed check would expire the rules still to check
     for rule in rules:
         summary["checked"] += 1
-        value = await compute_metric_value(db, rule)
-        if not compare(value, rule.operator, rule.threshold) or await already_firing(db, rule):
+        try:
+            value = await compute_metric_value(db, rule)
+            if not compare(value, rule.operator, rule.threshold) or await already_firing(db, rule):
+                continue
+            event = await fire_alert(db, rule, value)
+        except Exception:
+            log.exception("alert rule %s check failed, skipped", rule.id)
+            await db.rollback()
             continue
-        event = await fire_alert(db, rule, value)
         summary["fired"] += 1
         if rule.channels:
             pages.append((rule.org_id, rule.channels, f"{rule.name}: {event.message}", rule.severity))
-    await _dispatch_all(pages)
+
+
+async def evaluate_metric_rules(db: AsyncSession) -> dict:
+    """The periodic check of every enabled metric rule (policy_violations rules fire as violations are stored).
+    Every rule is checked before any is paged, so no org's channels hold up another org's rules; a rule whose check
+    raises is skipped, and the pages fired so far are sent however the check phase ends."""
+    summary = {"checked": 0, "fired": 0}
+    pages = []
+    try:
+        await asyncio.wait_for(_check_all(db, summary, pages), CHECK_DEADLINE_S)
+    except asyncio.TimeoutError:
+        log.warning("alert checks stopped at the %ss deadline after %d rule(s)", CHECK_DEADLINE_S, summary["checked"])
+    finally:
+        await _dispatch_all(pages)
     return summary
 
 
