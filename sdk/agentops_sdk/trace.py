@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import weakref
@@ -210,7 +211,14 @@ class Trace:
         if outcome == "ok":
             self._sent = max(self._sent, start + n)
             return self._sent < len(self.events) and (self._sent < self._split or final or bool(self._max_batch))
-        if isinstance(outcome, tuple):  # too much policy work for one append: send fewer
+        if isinstance(outcome, tuple) and outcome[0] == "max_bytes":  # a body over the limit: send fewer
+            if n > 1:
+                self._max_batch = n // 2
+                return True
+            if n and (outcome[1] is None or len(json.dumps(sent[0], ensure_ascii=False, default=str)) > outcome[1]):
+                log.warning("agentops dropped event %d of trace %s: over the server's body limit", start, self.trace_id)
+                outcome = "refused"  # alone over it; else the trace's own fields are, which no split fixes
+        if isinstance(outcome, tuple) and outcome[0] == "max_events":  # too much policy work for one append
             self._max_batch = max(1, min(outcome[1], n - 1))
             return True
         if isinstance(outcome, int) and start < outcome <= len(self.events):

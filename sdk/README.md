@@ -78,8 +78,9 @@ call the server and follows the failure policy below (`error="trace events not d
 refuses the event a `block` policy forbids: it is dropped from `t.events`, later events are renumbered, and
 streaming goes on (a refused batch of several events is resent one event at a time to find it). A `413
 policy_work_too_large` (too much policy work for one append) resends the batch in appends of the `max_events` it
-names. Any other
-rejection (`409 seq_conflict`, `413 trace_too_long`, `422`, ...) drops that batch, logs a warning and stops
+names; a `413 request_too_large` (the server's 16 MiB body limit) resends it in halves, and an event over the
+limit alone is dropped like a refused one (the stream goes on unless the trace's own fields are over it). Any other
+rejection (`409 seq_conflict`, `413 trace_too_long`, a proxy's 413, `422`, ...) drops that batch, logs a warning and stops
 streaming that trace; later checks still go to the server, which judges them on the events it holds followed
 by the ones it lacks (sent as the check's `prefix`; a trace at the event cap is checked too), and with
 `fail_closed=True` they fail instead. The first push carries the trace's `environment`, `input`,
