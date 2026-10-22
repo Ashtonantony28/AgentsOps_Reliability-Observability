@@ -116,6 +116,7 @@ async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
     eval_set = (await db.execute(select(EvaluationSet).where(EvaluationSet.id == run.set_id))).scalar_one()
     agent = (await db.execute(select(Agent).where(Agent.id == run.agent_id))).scalar_one()
     cases = (await db.execute(select(EvaluationCase).where(EvaluationCase.set_id == eval_set.id))).scalars().all()
+    outbound.org.set(eval_set.org_id)
 
     run.status = "running"
     await db.commit()

@@ -99,6 +99,7 @@ async def test_connection(int_id: str, ctx: AuthContext = Depends(get_current_us
     i = (await db.execute(select(Integration).where(Integration.id == int_id, Integration.org_id == ctx.org_id))).scalar_one_or_none()
     if not i:
         raise HTTPException(404, "integration_not_found")
+    outbound.org.set(ctx.org_id)
     cfg = i.config or {}
     ok, message, details = False, "unknown", {}
     try:

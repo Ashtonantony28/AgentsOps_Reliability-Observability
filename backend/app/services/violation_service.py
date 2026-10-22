@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AlertRule, TracePolicy, TracePolicyViolation
 from app.redis import get_redis
 from app.schemas.policy import ViolationOut
-from app.services import trace_policy_service as tps
+from app.services import outbound, trace_policy_service as tps
 from app.services.alert_service import ALERTING_ACTIONS, already_firing, compare, compute_metric_value, fire_alert, severities_at_least
 from app.services.notification_service import dispatch_alert
 
@@ -43,6 +43,7 @@ async def evaluate_violation_alerts(db: AsyncSession, rows: Sequence[TracePolicy
     rows = [r for r in rows if r.policy_id in alerting]
     if not rows:
         return
+    outbound.org.set(rows[0].org_id)  # the channels' sends below inherit it
     rules = (await db.execute(select(AlertRule).where(
         AlertRule.org_id == rows[0].org_id, AlertRule.enabled == True,  # noqa: E712
         AlertRule.metric == "policy_violations",
