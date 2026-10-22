@@ -71,8 +71,6 @@ async def test_one_orgs_failing_rule_does_not_drop_another_orgs_page(client, db,
 
 # --- A16-2 (high): outbound lookups hold the default executor past their deadline ---
 
-@pytest.mark.xfail(strict=True, reason="A16-2: outbound resolves names with loop.getaddrinfo on the default executor; "
-                                       "the deadline cancels the wait, not the thread, so ingest parsing waits behind it")
 async def test_a_slow_outbound_lookup_does_not_delay_another_orgs_ingest(client, auth_headers, agent, api_key_headers,
                                                                          monkeypatch):
     real = socket.getaddrinfo
