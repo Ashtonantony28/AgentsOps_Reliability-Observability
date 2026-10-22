@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import async_session_maker
 from app.middleware.auth import decode_token
-from app.models import OrgMembership, ApiKey, Organization
+from app.models import OrgMembership, ApiKey, Organization, User
 from app.middleware.auth import hash_api_key
 from app.middleware.rate_limit import enforce_rate_limit
 from app.redis import get_redis
@@ -20,16 +20,34 @@ from app.schemas.trace import TraceIn
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+FEED_RECHECK_S = 20  # heartbeat and membership re-check of /ws/traces
+
+
+async def _is_member(user_id: str, org_id: str) -> bool:
+    async with async_session_maker() as db:
+        return (await db.execute(
+            select(OrgMembership.id).join(User, User.id == OrgMembership.user_id)
+            .where(OrgMembership.user_id == user_id, OrgMembership.org_id == org_id, User.is_active.is_(True))
+        )).first() is not None
+
+
+async def _feed_identity(token: str | None) -> tuple[str, str] | None:
+    """(user_id, org_id) of an access token whose user is an active member of its org."""
+    try:
+        payload = decode_token(token) if token else {}
+    except HTTPException:
+        return None
+    user_id, org_id = payload.get("sub"), payload.get("org_id")
+    if payload.get("type") != "access" or not user_id or not org_id or not await _is_member(user_id, org_id):
+        return None
+    return user_id, org_id
 
 
 async def _authenticate_ws(token: str | None, api_key: str | None) -> tuple[str | None, str | None]:
     """Returns (org_id, mode) where mode in {"jwt","api_key"}."""
     if token:
-        try:
-            payload = decode_token(token)
-            return payload.get("org_id"), "jwt"
-        except Exception:
-            return None, None
+        identity = await _feed_identity(token)
+        return (identity[1], "jwt") if identity else (None, None)
     if api_key:
         h = hash_api_key(api_key)
         async with async_session_maker() as db:
@@ -44,27 +62,30 @@ async def ws_traces_feed(
     websocket: WebSocket,
     token: str | None = Query(default=None),
 ):
-    """Live trace feed (JWT-authed). Streams the org's trace and policy-violation pubsub messages."""
-    org_id, _mode = await _authenticate_ws(token, None)
-    if not org_id:
+    """Live trace feed (JWT-authed). Streams the org's trace and policy-violation pubsub messages while the user stays
+    a member of the org."""
+    identity = await _feed_identity(token)
+    if not identity:
         await websocket.close(code=4401)
         return
+    user_id, org_id = identity
     pubsub = get_redis().pubsub()
     channels = {f"traces:{org_id}": "trace", f"violations:{org_id}": "violation"}
     try:
         await pubsub.subscribe(*channels)  # before accept, so nothing published after the handshake is missed
         await websocket.accept()
-        # heartbeat task
-        async def heartbeat():
+
+        async def heartbeat():  # also re-checks the membership: True when it has ended
             while True:
-                await asyncio.sleep(20)
+                await asyncio.sleep(FEED_RECHECK_S)
+                if not await _is_member(user_id, org_id):
+                    return True
                 try:
                     await websocket.send_json({"type": "ping"})
                 except Exception:
-                    break
+                    return False
 
-        hb = asyncio.create_task(heartbeat())
-        try:
+        async def forward():
             async for msg in pubsub.listen():
                 if msg.get("type") != "message":
                     continue
@@ -74,8 +95,18 @@ async def ws_traces_feed(
                 if isinstance(data, bytes):
                     data = data.decode()
                 await websocket.send_text(json.dumps({"type": channels[channel], "data": json.loads(data)}))
+
+        hb, fw = asyncio.create_task(heartbeat()), asyncio.create_task(forward())
+        try:
+            done, _ = await asyncio.wait({hb, fw}, return_when=asyncio.FIRST_COMPLETED)
+            if hb in done:
+                if hb.result():
+                    await websocket.close(code=4401)
+            else:
+                fw.result()
         finally:
             hb.cancel()
+            fw.cancel()
     except WebSocketDisconnect:
         pass
     finally:

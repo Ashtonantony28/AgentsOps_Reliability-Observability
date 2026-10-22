@@ -14,6 +14,7 @@ from app.schemas.auth import (
     AcceptInviteRequest,
     ApiKeyCreate,
     ApiKeyOut,
+    InviteOut,
     InviteRequest,
     LoginRequest,
     MeResponse,
@@ -26,7 +27,7 @@ from app.schemas.auth import (
     TokenPair,
     UserOut,
 )
-from app.services import auth_service
+from app.services import auth_service, notification_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -104,38 +105,57 @@ async def list_members(ctx: AuthContext = Depends(get_current_user), db: AsyncSe
     ]
 
 
-@router.post("/invite", response_model=MemberOut)
+@router.post("/invite", response_model=InviteOut)
 async def invite_member(
     req: InviteRequest,
     ctx: AuthContext = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    user = (await db.execute(select(User).where(User.email == req.email))).scalar_one_or_none()
-    if not user:
-        user = User(email=req.email, password_hash=auth_service.hash_password("ChangeMe1234!"), full_name="")
-        db.add(user)
-        await db.flush()
-    existing = (await db.execute(
-        select(OrgMembership).where(
-            OrgMembership.org_id == ctx.org_id, OrgMembership.user_id == user.id
+    try:
+        out, token = await auth_service.invite(db, ctx.org_id, ctx.user, ctx.role, req.email, req.role)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if token:
+        link = f"{settings.FRONTEND_URL.rstrip('/')}/accept-invite?token={token}"
+        await notification_service.send_email(
+            req.email, "You're invited to AgentOps",
+            f"You have been invited to join an AgentOps organization as {req.role}.\n"
+            f"Accept within {auth_service.INVITE_TTL_HOURS} hours: {link}\n",
         )
-    )).scalar_one_or_none()
-    if existing:
-        existing.role = req.role
-    else:
-        db.add(OrgMembership(org_id=ctx.org_id, user_id=user.id, role=req.role))
-    await db.commit()
-    return MemberOut(user_id=user.id, email=user.email, full_name=user.full_name, role=req.role)
+    return out
 
 
 @router.post("/accept-invite", response_model=TokenPair)
-async def accept_invite(req: AcceptInviteRequest, db: AsyncSession = Depends(get_db)):
-    raise HTTPException(status_code=501, detail="not_implemented")  # SG-P1
+async def accept_invite(req: AcceptInviteRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    try:
+        access, refresh = await auth_service.accept_invite(
+            db, req.token, req.password,
+            user_agent=request.headers.get("user-agent", ""),
+            ip=request.client.host if request.client else "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return TokenPair(access_token=access, refresh_token=refresh)
 
 
 @router.post("/password", response_model=TokenPair)
-async def change_password(req: PasswordChangeRequest, ctx: AuthContext = Depends(get_current_user)):
-    raise HTTPException(status_code=501, detail="not_implemented")  # SG-P1
+async def change_password(
+    req: PasswordChangeRequest,
+    request: Request,
+    ctx: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        access, refresh = await auth_service.change_password(
+            db, ctx.user, ctx.org_id, ctx.role, req.current_password, req.new_password,
+            user_agent=request.headers.get("user-agent", ""),
+            ip=request.client.host if request.client else "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return TokenPair(access_token=access, refresh_token=refresh)
 
 
 @router.get("/sessions", response_model=List[SessionOut])

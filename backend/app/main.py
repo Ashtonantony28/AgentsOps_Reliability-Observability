@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.config import settings
+from app.config import check_secrets, settings
 from app.middleware.body_limit import BodyLimit
 from app.redis import close_redis, get_redis
 from app.routers import (
@@ -31,6 +31,7 @@ log = logging.getLogger("agentops")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    check_secrets(settings)
     log.info("AgentOps starting in %s mode", settings.APP_ENV)
     try:
         await get_redis().ping()
