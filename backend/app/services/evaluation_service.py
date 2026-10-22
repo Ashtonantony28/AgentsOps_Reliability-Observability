@@ -84,6 +84,7 @@ async def _trace_output(db: AsyncSession, runner: TracesRunner, eval_set: Evalua
     want = case.input.strip()
     rows = await db.stream(select(Trace.input, Trace.output).where(
         Trace.org_id == eval_set.org_id, Trace.agent_id == run.agent_id,
+        Trace.agent_version == run.agent_version,
         Trace.created_at >= datetime.utcnow() - timedelta(days=runner.lookback_days),
         Trace.input.contains(want, autoescape=True),  # a prefilter: LIKE ignores case on SQLite
     ).order_by(Trace.created_at.desc()).execution_options(yield_per=100))
