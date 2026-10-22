@@ -8,6 +8,7 @@ import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.celery_app import celery
 from app.models import (
@@ -200,9 +201,9 @@ async def eval_run(db, org):
 
 
 @pytest.fixture
-def worker(monkeypatch, tmp_path, session_maker):
+def worker(monkeypatch, engine, session_maker):
     """execute_run's sessions on the test database; case outputs from `outputs` (an exception is raised)."""
-    eng = create_engine(f"sqlite:///{tmp_path}/test.db")
+    eng = create_engine(engine.url.set(drivername=engine.url.get_backend_name()), poolclass=NullPool)
     monkeypatch.setattr(evaluation_tasks, "SyncSession", sessionmaker(eng, expire_on_commit=False))
     monkeypatch.setattr(evaluation_tasks, "async_sessionmaker", lambda *a, **k: session_maker)
     outputs = []
