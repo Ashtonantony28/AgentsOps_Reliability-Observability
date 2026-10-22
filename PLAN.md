@@ -473,6 +473,12 @@ SG1 and SG2 merged, the differential suite green at 5 000 cases, and the batch b
 - **Verify:** `cd sdk && pytest -q`
 - **Result:** `trace.loop_lock` keeps one `asyncio.Lock` per running loop (`WeakKeyDictionary`) for the guard queue (`Trace._guard_alocks`) and the async push (`Trace._alocks`); calls in different loops still exclude each other through the shared threading `_guard_lock`, so the sync/async sharing of #47 holds. `test_audit_12.py` passes unmarked; `tests/test_guard_loops.py` adds the per-loop lock and an async guarded call waiting for a sync one in another thread (kills AUDIT-12's surviving `guard.py` one-poll mutant). Open low: async pushes of one trace from two loops running at once in different threads no longer exclude each other (before, the second loop raised `RuntimeError`).
 
+### SG-A14.1 A streamed backlog over the body limit is split, not dropped (AUDIT-14 A14-2 medium)
+- **Owner:** — · **Status:** proposed · **Depends:** AUDIT-14, SG-A13.2
+- **Scope:** an append answered 413 `request_too_large` (SG-A13.2's 16 MiB body limit) is sent again in smaller appends by both clients (halved, or sized from `max_bytes`), as a `policy_work_too_large` one is by `max_events`; only a one-event append over the limit is dropped, and the stream goes on, so the rest of the trace and its final status still reach the server. SG-A13.2's known gap (a bulk batch over the limit never drains) may ride along. SDK only, unless the server adds a field (a contract change approved under the Rules line if sound).
+- **Acceptance:** `sdk/tests/test_audit_14.py::test_backlog_over_the_body_limit_is_split_not_dropped` passes unmarked, and a new test covers the async client; a proxy's 413 (no `request_too_large` code) still stops the stream (`test_other_413_on_append_stops_streaming`); `tests/test_stream.py` otherwise unchanged.
+- **Verify:** `cd sdk && pytest -q`
+
 ## Audits (after SG5b; SG6 included if built)
 
 Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT-<n>.md`, ranked critical/high/medium/low, each with a repro or failing test. Critical and high findings become new `SG-A<n>.<k>` entries here and go through the same build-and-verify loop. Audit rounds repeat until one full round has no critical or high findings.
@@ -492,7 +498,7 @@ Each audit is a fresh session that wrote none of the code. Findings go to `AUDIT
 | A11 | Round 5: checker correctness, performance and security; done, see `AUDIT-11.md`: 3 high → SG-A11.1, SG-A11.2 | Round-4 changes re-checked, property tests at 5 000 examples, checkpoint key review, glob fast paths against the reference matcher, cost per unit on new shapes, two orgs against the real app sharing the policy pool, batch queue, compile cache and event loop. |
 | A12 | Round 5: API/SDK contracts, SDK and test quality; done, see `AUDIT-12.md`: 1 high → SG-A12.1; 1 medium → SG-A12.2 | Read-through of the round-4 changes, overlapping and abandoned checks measured at the org caps, tests against the real app and both SDK clients, 28 mutants of the round-4 fixes. |
 | A13 | Round 6: checker correctness, performance and security; in progress | Round-5 changes re-checked (per-org scheduling, compile cache, checkpoints), property tests at 5 000 examples, two orgs at the caps. |
-| A14 | Round 6: API/SDK contracts, SDK and test quality; in progress | Read-through of the round-5 changes, overlapping checks and both SDK clients against the real app, mutants of the round-5 fixes. |
+| A14 | Round 6: API/SDK contracts, SDK and test quality; done, see `AUDIT-14.md`: 2 medium (A14-1 already fixed by SG-A13.1; A14-2 → SG-A14.1), 3 low | Read-through of the round-5 changes, overlapping and abandoned checks through uvicorn and both SDK clients, the SDK on 503 `check_timeout` and on SG-A13.2's 413, 29 mutants of the round-5 fixes. |
 
 ## Platform track (approved 2026-10-19: after round 6 of the audits)
 
@@ -681,3 +687,4 @@ Decided while turning the contract into code; frozen with the rest.
 - 2026-10-15: SG-A11.1 done (A11-1: policy pool slices and span rebuilds taken in turn by org; A11-2: batch checks taken from per-org lists in turn by org).
 - 2026-10-19: SG-A12.1 done (A12-1: a long `/check` prefix saves each checkpoint as its slice is stepped and resumes from the newest before every slice; a slice another check is stepping is waited for while its pieces move; a check whose request is gone or past 30 s stops with 503 `check_timeout`).
 - 2026-10-19: Completeness check: not complete. SG-A11.1 (PR #53, open) and SG-A12.1 open; round 6 of both audits still owed; platform track SG-P0 to SG-P2 and its audit proposed. User chose both tracks; SG-A11.1 (#53) and SG-A12.1 (#55) merged 2026-10-20; round-6 audits A13/A14 started.
+- 2026-10-20: Audit A14 (round 6, API/SDK and tests) done: 0 critical, 0 high, 2 medium, 3 low in AUDIT-14.md; A14-1 (a check's span rebuild neither resumes nor stops) was found in parallel as A13-5 and is fixed by SG-A13.1 (#57); SG-A14.1 proposed for A14-2 (a stream backlog over SG-A13.2's body limit ends the stream).

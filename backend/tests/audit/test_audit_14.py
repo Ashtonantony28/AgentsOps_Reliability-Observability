@@ -48,7 +48,7 @@ def _count(monkeypatch, *names) -> dict:
 # A14-1: SG-A12.1 made a long /check prefix resume from what an earlier, still running or abandoned, check stepped;
 # the stored-trace half of a check is a span rebuild that a later check waits 5 s for (the rebuild lock's
 # blocking_timeout) and then does again from scratch
-@pytest.mark.xfail(strict=True, reason="A14-1: SG-A14.1")
+@pytest.mark.xfail(strict=True, reason="A14-1: fixed on the default branch by SG-A13.1 (#57); unmark on merge")
 async def test_check_of_a_stored_trace_resumes_from_a_rebuild_still_running(client, db, org, agent, api_key_headers,
                                                                             monkeypatch):
     await _stale_streamed_trace(client, db, org, agent, api_key_headers)
@@ -57,9 +57,9 @@ async def test_check_of_a_stored_trace_resumes_from_a_rebuild_still_running(clie
 
     def step(m, events):
         first or first.append(m)
-        if m is first[0] and stepped.get(id(m), 0) >= N // 2:  # the first check's rebuild is half done
+        if m is first[0] and stepped.get(id(m), 0) >= N // 2 and not paused.is_set():  # its rebuild is half done
             paused.set()
-            release.wait(10)  # a fix that makes the second check wait for this one still ends
+            release.wait(7)  # past the old 5 s lock wait; a fix that makes the second check wait still ends
         stepped[id(m)] = stepped.get(id(m), 0) + len(events)
         return real(m, events)
 
@@ -83,7 +83,7 @@ async def test_check_of_a_stored_trace_resumes_from_a_rebuild_still_running(clie
 
 # A14-1: a check stops between slices once its request is gone (503 check_timeout), but not while it rebuilds the
 # stored trace: that runs to the end for a client that left, past CHECK_DEADLINE_S too
-@pytest.mark.xfail(strict=True, reason="A14-1: SG-A14.1")
+@pytest.mark.xfail(strict=True, reason="A14-1: fixed on the default branch by SG-A13.1 (#57); unmark on merge")
 async def test_a_checks_rebuild_stops_once_its_request_is_gone(client, db, org, agent, api_key_headers, monkeypatch):
     await _stale_streamed_trace(client, db, org, agent, api_key_headers)
     stepped = _count(monkeypatch, "_steps", "_step_inputs")
