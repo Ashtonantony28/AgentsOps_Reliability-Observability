@@ -182,9 +182,9 @@ async def get_run(run_id: str, ctx: AuthContext = Depends(get_current_user), db:
     if not s:
         raise HTTPException(404, "run_not_found")
     results = (await db.execute(select(EvaluationResult).where(EvaluationResult.run_id == run.id))).scalars().all()
-    out = EvalRunDetailOut.model_validate(run)
-    out.results = [EvalResultOut.model_validate(r) for r in results]
-    return out
+    # not model_validate(run): that reads the lazy `results` relationship (as in _detail_out)
+    return EvalRunDetailOut(**EvalRunOut.model_validate(run).model_dump(),
+                            results=[EvalResultOut.model_validate(r) for r in results])
 
 
 @router.post("/diff", response_model=EvalDiffOut)

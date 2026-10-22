@@ -1,13 +1,18 @@
 import asyncio
+import logging
+from datetime import datetime
 
-from sqlalchemy import select, and_
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.celery_app import celery
 from app.config import settings
-from app.models import EvaluationRun, EvaluationSet
+from app.models import Agent, EvaluationRun, EvaluationSet
+from app.services import cron
 from app.services.evaluation_service import run_evaluation
 from app.tasks._sync_db import SyncSession
+
+log = logging.getLogger(__name__)
 
 
 def _async_run(run_id: str) -> None:
@@ -31,20 +36,35 @@ def execute_run(run_id: str) -> str:
 
 @celery.task(name="app.tasks.evaluation_tasks.run_scheduled_evaluations")
 def run_scheduled_evaluations() -> dict:
-    """Look for eval sets with schedule_cron; trigger runs against agents tagged with them.
-    For simplicity, treat schedule_cron as 'every-5-minutes' marker."""
-    spawned = 0
+    return {"spawned": schedule_due_runs(datetime.utcnow())}
+
+
+def schedule_due_runs(now: datetime) -> int:
+    """Start a run of each set whose `schedule_cron` fell due since its last scheduled run (or its creation), against
+    the agent of the set's latest run at that agent's current version; a set never run has no agent and waits."""
+    due = []
     with SyncSession() as db:
         sets = db.execute(select(EvaluationSet).where(EvaluationSet.schedule_cron.isnot(None))).scalars().all()
         for s in sets:
-            from app.models import Agent
-            agents = db.execute(select(Agent).where(Agent.org_id == s.org_id)).scalars().all()
-            for a in agents[:1]:
-                run = EvaluationRun(set_id=s.id, agent_id=a.id, agent_version=a.current_version,
-                                    triggered_by="scheduled")
-                db.add(run)
-                db.flush()
-                spawned += 1
-                execute_run.delay(run.id)
-        db.commit()
-    return {"spawned": spawned}
+            try:
+                expr = cron.parse(s.schedule_cron)
+            except ValueError as e:
+                log.warning("eval set %s: schedule_cron %r skipped: %s", s.id, s.schedule_cron, e)
+                continue
+            runs = select(EvaluationRun).where(EvaluationRun.set_id == s.id)
+            last = db.execute(runs.where(EvaluationRun.triggered_by == "scheduled").with_only_columns(
+                func.max(EvaluationRun.created_at))).scalar_one()
+            if cron.due(expr, last or s.created_at, now) is None:
+                continue
+            latest = db.execute(runs.order_by(EvaluationRun.created_at.desc()).limit(1)).scalar_one_or_none()
+            agent = latest and db.get(Agent, latest.agent_id)
+            if agent is None:
+                continue
+            run = EvaluationRun(set_id=s.id, agent_id=agent.id, agent_version=agent.current_version,
+                                triggered_by="scheduled", created_at=now)
+            db.add(run)
+            due.append(run)
+        db.commit()  # before the worker looks the runs up
+    for run in due:
+        execute_run.delay(run.id)
+    return len(due)

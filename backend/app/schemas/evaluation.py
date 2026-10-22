@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.services import cron
 
 
 class WebhookRunner(BaseModel):
@@ -27,6 +29,12 @@ class CaseIn(BaseModel):
     weight: float = 1.0
 
 
+def _valid_cron(v: Optional[str]) -> Optional[str]:
+    if v is not None:
+        cron.parse(v)
+    return v
+
+
 class EvalSetCreate(BaseModel):
     name: str
     description: str = ""
@@ -35,6 +43,8 @@ class EvalSetCreate(BaseModel):
     runner: Optional[EvalRunner] = None
     cases: List[CaseIn] = []
 
+    _cron = field_validator("schedule_cron")(_valid_cron)
+
 
 class EvalSetUpdate(BaseModel):
     name: Optional[str] = None
@@ -42,6 +52,8 @@ class EvalSetUpdate(BaseModel):
     evaluators: Optional[List[str]] = None
     schedule_cron: Optional[str] = None
     runner: Optional[EvalRunner] = None  # an explicit null removes it
+
+    _cron = field_validator("schedule_cron")(_valid_cron)
 
 
 class CaseOut(BaseModel):

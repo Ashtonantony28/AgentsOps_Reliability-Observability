@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicy, TracePolicyViolation
 from app.schemas.policy import PolicySeverity
+from app.services.notification_service import dispatch_alert
 
 SEVERITIES = get_args(PolicySeverity)  # ascending
 ALERTING_ACTIONS = ("alert", "block")  # `log` policies record violations without paging anyone
@@ -29,6 +30,12 @@ async def compute_metric_value(db: AsyncSession, rule: AlertRule) -> float:
     window = datetime.utcnow() - timedelta(minutes=rule.window_minutes or 15)
     if rule.metric == "policy_violations":
         return float((await db.execute(policy_violations_query(rule, window))).scalar_one())
+    if rule.metric == "cost_per_day":  # the last 24 h, whatever the rule's window
+        q = select(func.coalesce(func.sum(Trace.cost_usd), 0.0)).where(
+            Trace.org_id == rule.org_id, Trace.created_at >= datetime.utcnow() - timedelta(days=1))
+        if rule.agent_id:
+            q = q.where(Trace.agent_id == rule.agent_id)
+        return float((await db.execute(q)).scalar_one())
     q = select(Trace).where(Trace.created_at >= window, Trace.org_id == rule.org_id)
     if rule.agent_id:
         q = q.where(Trace.agent_id == rule.agent_id)
@@ -42,10 +49,6 @@ async def compute_metric_value(db: AsyncSession, rule: AlertRule) -> float:
         return float(np.percentile([r.latency_ms for r in rows], 95))
     if rule.metric == "latency_avg":
         return float(np.mean([r.latency_ms for r in rows]))
-    if rule.metric == "cost_per_day":
-        day = datetime.utcnow() - timedelta(days=1)
-        cost_rows = [r.cost_usd for r in rows if r.created_at >= day]
-        return float(sum(cost_rows))
     if rule.metric == "token_usage":
         return float(sum((r.tokens_input + r.tokens_output) for r in rows))
     return 0.0
@@ -101,6 +104,23 @@ async def fire_alert(db: AsyncSession, rule: AlertRule, value: float, context: O
         db.add(inc)
     await db.commit()
     return event
+
+
+async def evaluate_metric_rules(db: AsyncSession) -> dict:
+    """The periodic check of every enabled metric rule (policy_violations rules fire as violations are stored)."""
+    summary = {"checked": 0, "fired": 0}
+    rules = (await db.execute(select(AlertRule).where(
+        AlertRule.enabled.is_(True), AlertRule.metric != "policy_violations").order_by(AlertRule.created_at))).scalars().all()
+    for rule in rules:
+        summary["checked"] += 1
+        value = await compute_metric_value(db, rule)
+        if not compare(value, rule.operator, rule.threshold) or await already_firing(db, rule):
+            continue
+        event = await fire_alert(db, rule, value)
+        summary["fired"] += 1
+        if rule.channels:
+            await dispatch_alert(rule.channels, f"{rule.name}: {event.message}", rule.severity)
+    return summary
 
 
 async def build_incident_narrative(db: AsyncSession, incident: Incident) -> str:

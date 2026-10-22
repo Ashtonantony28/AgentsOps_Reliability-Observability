@@ -186,12 +186,12 @@ async def seed():
         # Eval sets + runs
         es1 = EvaluationSet(
             org_id=org.id, name="Refund accuracy", description="Refund Bot core eval",
-            evaluators=["exact", "semantic", "llm_judge"],
+            evaluators=["exact", "semantic", "llm_judge"], runner={"type": "traces", "match": "contains"},
         )
         es2 = EvaluationSet(
             org_id=org.id, name="Triage routing", description="Support Triage routing accuracy",
             evaluators=["semantic", "latency", "cost"],
-            schedule_cron="*/5 * * * *",
+            schedule_cron="*/5 * * * *", runner={"type": "traces", "match": "contains"},
         )
         db.add_all([es1, es2])
         await db.flush()
@@ -216,7 +216,11 @@ async def seed():
             summary={"evaluators": ["exact", "semantic", "llm_judge"]},
             completed_at=datetime.utcnow(),
         )
-        db.add(run)
+        triage_agent = next(a for a in agents if a.name == "Support Triage")
+        db.add_all([run, EvaluationRun(  # the agent the scheduled set runs against
+            set_id=es2.id, agent_id=triage_agent.id, agent_version="1.0.0", status="completed", score=0.0,
+            failed=2, total=2, summary={"evaluators": es2.evaluators}, completed_at=datetime.utcnow(),
+        )])
         await db.flush()
         for c in cases1:
             ok = random.random() > 0.33

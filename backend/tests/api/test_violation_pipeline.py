@@ -4,12 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 from starlette.testclient import TestClient
 
 from app.celery_app import celery
-from app.database import Base
 from app.middleware.auth import make_access_token
 from app.models import (
     Agent, AlertEvent, AlertRule, Incident, Organization, OrgMembership, Trace, TracePolicy, TracePolicyViolation, User,
@@ -354,19 +352,10 @@ async def test_metric_counts_window_severity_and_agent(db, org, agent):
     assert await compute_metric_value(db, rule(context={}, agent_id="nobody")) == 0
 
 
-def test_periodic_alert_task_leaves_policy_violation_rules_to_ingest(tmp_path, monkeypatch):
-    eng = create_engine(f"sqlite:///{tmp_path}/a.db")
-    Base.metadata.create_all(eng)
-    Session = sessionmaker(eng)
-    with Session() as s:
-        o = Organization(name="o", slug="o")
-        s.add(o)
-        s.flush()
-        s.add(AlertRule(org_id=o.id, name="pv", metric="policy_violations", operator=">=", threshold=0))
-        s.commit()
-    monkeypatch.setattr(alert_tasks, "SyncSession", Session)
-    assert alert_tasks.evaluate_alert_rules.run() == {"checked": 0, "fired": 0}
-    eng.dispose()
+async def test_periodic_alert_task_leaves_policy_violation_rules_to_ingest(session_maker, db, org, monkeypatch):
+    await _add(db, AlertRule(org_id=org.id, name="pv", metric="policy_violations", operator=">=", threshold=0))
+    monkeypatch.setattr(alert_tasks, "async_sessionmaker", lambda *a, **k: session_maker)
+    assert await asyncio.to_thread(alert_tasks.evaluate_alert_rules.run) == {"checked": 0, "fired": 0}
 
 
 async def test_trace_violations_endpoint(client, db, org, agent, api_key_headers, auth_headers):
