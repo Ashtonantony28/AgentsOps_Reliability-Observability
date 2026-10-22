@@ -196,7 +196,7 @@ async def promote(
     src = (await db.execute(
         select(AgentVersion).where(
             AgentVersion.agent_id == agent_id, AgentVersion.version == req.version
-        )
+        ).order_by(AgentVersion.created_at.desc()).limit(1)  # each promotion adds a row; the newest is the source
     )).scalar_one_or_none()
     if not src:
         raise HTTPException(404, "version_not_found")

@@ -61,6 +61,13 @@ async def test_force_and_non_prod_targets_skip_the_gate(client, auth_headers, ag
     assert (await _promote(client, auth_headers, agent, "1.0.0", env="staging")).status_code == 200
 
 
+
+async def test_a_version_promotes_dev_to_staging_to_prod(client, auth_headers, agent, versions):
+    await versions("2.0.0", 0.9, 0)
+    for env in ("staging", "prod"):
+        r = await _promote(client, auth_headers, agent, "2.0.0", env=env)
+        assert r.status_code == 200 and r.json()["environment"] == env, r.text
+
 async def _run(client, headers, agent, cases, version=None):
     body = {"name": "s", "evaluators": ["exact"], "cases": cases, "runner": {"type": "traces"}}
     sid = (await client.post("/api/evaluations/sets", headers=headers, json=body)).json()["id"]
