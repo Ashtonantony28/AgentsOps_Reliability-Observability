@@ -1,4 +1,3 @@
-import asyncio
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -61,10 +60,10 @@ async def _webhook_output(runner: WebhookRunner, run: EvaluationRun, case: Evalu
     body = {"run_id": run.id, "set_id": run.set_id, "case_id": case.id, "agent_id": run.agent_id,
             "agent_version": run.agent_version, "input": case.input}
     try:
-        r = await asyncio.wait_for(outbound.post(runner.url, json=body, timeout=runner.timeout_s), runner.timeout_s)
-    except outbound.BlockedURL as e:
+        r = await outbound.post(runner.url, json=body, timeout=runner.timeout_s)
+    except (outbound.BlockedURL, outbound.ReplyTooLarge) as e:
         return None, f"runner_error: {e}"
-    except (asyncio.TimeoutError, httpx.TimeoutException):
+    except httpx.TimeoutException:
         return None, "runner_error: timeout"
     except httpx.HTTPError as e:
         return None, f"runner_error: {type(e).__name__}"
