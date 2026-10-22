@@ -172,7 +172,7 @@ async def test_the_sdk_follows_fail_closed_on_a_body_limit_413(client, api_key_h
     r = await client.post(PATHS[3], json=sdk.events_request(agent.id, [sdk.event_dict(0, "tool", "s", input=big)],
                                                             False), headers=api_key_headers)
     _too_large(r, small_limit)
-    assert sdk.push_outcome(r) == "fatal"
+    assert sdk.push_outcome(r) == ("max_bytes", small_limit)  # SG-A14.1: split, not stopped
 
 
 @pytest.fixture
