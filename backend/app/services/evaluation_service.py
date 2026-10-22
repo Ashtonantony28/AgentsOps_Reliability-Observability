@@ -150,6 +150,7 @@ async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
             failed += 1
             db.add(EvaluationResult(run_id=run.id, case_id=case.id, actual_output="", passed=False, score=0.0,
                                     scores_by_evaluator={}, reason=why, latency_ms=latency_ms))
+            await db.commit()  # each case as it is scored, so a run stopped part way keeps them
             continue
 
         scores: Dict[str, float] = {}
@@ -195,6 +196,7 @@ async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
             reason="; ".join(reasons),
             latency_ms=latency_ms,
         ))
+        await db.commit()
 
     run.score = round((total_score / weight_sum) if weight_sum else 0.0, 3)
     run.passed = passed

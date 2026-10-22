@@ -1,4 +1,8 @@
+import asyncio
+import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
+from itertools import zip_longest
 from typing import Optional, get_args
 
 import numpy as np
@@ -9,8 +13,12 @@ from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicy, Trac
 from app.schemas.policy import PolicySeverity
 from app.services.notification_service import dispatch_alert
 
+log = logging.getLogger(__name__)
+
 SEVERITIES = get_args(PolicySeverity)  # ascending
 ALERTING_ACTIONS = ("alert", "block")  # `log` policies record violations without paging anyone
+DISPATCH_CONCURRENCY = 20  # rules paging at once in one tick
+DISPATCH_DEADLINE_S = 45.0  # the tick runs every minute
 
 
 def severities_at_least(rule: AlertRule) -> tuple[str, ...]:
@@ -65,7 +73,8 @@ def compare(value: float, op: str, threshold: float) -> bool:
 
 
 async def already_firing(db: AsyncSession, rule: AlertRule) -> bool:
-    dedup = datetime.utcnow() - timedelta(minutes=rule.dedup_minutes or 30)
+    minutes = rule.dedup_minutes if (rule.dedup_minutes or 0) >= 1 else 30  # rows stored before the API checked
+    dedup = datetime.utcnow() - timedelta(minutes=minutes)
     existing = (await db.execute(
         select(AlertEvent).where(
             AlertEvent.rule_id == rule.id,
@@ -106,9 +115,38 @@ async def fire_alert(db: AsyncSession, rule: AlertRule, value: float, context: O
     return event
 
 
+async def _dispatch_all(pages: list[tuple]) -> None:
+    """Sends each (org_id, channels, message, severity) page, a bounded number at once taking turns by org, and
+    cancels what is still sending at the deadline."""
+    by_org = defaultdict(list)
+    for org_id, *page in pages:
+        by_org[org_id].append(page)
+    gate = asyncio.Semaphore(DISPATCH_CONCURRENCY)
+
+    async def send(page):
+        async with gate:
+            try:
+                await dispatch_alert(*page)
+            except Exception:
+                log.exception("alert dispatch failed")
+
+    tasks = [asyncio.create_task(send(p)) for turn in zip_longest(*by_org.values()) for p in turn if p is not None]
+    if not tasks:
+        return
+    _, pending = await asyncio.wait(tasks, timeout=DISPATCH_DEADLINE_S)
+    for t in pending:
+        t.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+        log.warning("%d alert dispatch(es) still sending at the %ss deadline were cancelled", len(pending),
+                    DISPATCH_DEADLINE_S)
+
+
 async def evaluate_metric_rules(db: AsyncSession) -> dict:
-    """The periodic check of every enabled metric rule (policy_violations rules fire as violations are stored)."""
+    """The periodic check of every enabled metric rule (policy_violations rules fire as violations are stored).
+    Every rule is checked before any is paged, so no org's channels hold up another org's rules."""
     summary = {"checked": 0, "fired": 0}
+    pages = []
     rules = (await db.execute(select(AlertRule).where(
         AlertRule.enabled.is_(True), AlertRule.metric != "policy_violations").order_by(AlertRule.created_at))).scalars().all()
     for rule in rules:
@@ -119,7 +157,8 @@ async def evaluate_metric_rules(db: AsyncSession) -> dict:
         event = await fire_alert(db, rule, value)
         summary["fired"] += 1
         if rule.channels:
-            await dispatch_alert(rule.channels, f"{rule.name}: {event.message}", rule.severity)
+            pages.append((rule.org_id, rule.channels, f"{rule.name}: {event.message}", rule.severity))
+    await _dispatch_all(pages)
     return summary
 
 
