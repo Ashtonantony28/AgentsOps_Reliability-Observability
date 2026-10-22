@@ -6,10 +6,10 @@ export type TokenPair = {
 
 export type InviteRequest = {
   email: string;
-  role?: string;
+  role?: "viewer" | "developer" | "admin";
 };
 
-// POST /api/auth/invite from SG-P1 on; carries no password or token
+// POST /api/auth/invite; carries no password or token (the token goes to the invitee by email)
 export type Invite = {
   email: string;
   role: string;

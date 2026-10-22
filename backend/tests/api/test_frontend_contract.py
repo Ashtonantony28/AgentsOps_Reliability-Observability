@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from app.main import app
-from app.schemas.auth import InviteOut
 
 FRONTEND = Path(__file__).resolve().parents[3] / "frontend" / "src"
 CALL = re.compile(r"api\.(get|post|put|patch|delete)(?:<[^>]*>)?\(\s*[\"`]([^\"`]+)[\"`]")
@@ -22,7 +21,6 @@ MIRRORS = {"EventIn": "EventIn", "TracePolicyCreate": "TracePolicyCreate", "Trac
            "SlackOAuthStart": "SlackOAuthStartOut",
            "WebhookRunner": "WebhookRunner", "TracesRunner": "TracesRunner"}
 OUTPUTS = {"TokenPair"}  # output schemas whose names don't end in Out
-UNROUTED = {"InviteOut": InviteOut}  # frozen before a route returns it (SG-P1 switches /invite to it)
 
 
 def _calls():
@@ -58,7 +56,7 @@ def test_every_api_call_matches_an_openapi_route():
 @pytest.mark.parametrize("ts,schema", MIRRORS.items())
 def test_policy_types_mirror_the_schema(ts, schema):
     schemas = app.openapi()["components"]["schemas"]
-    spec = UNROUTED[schema].model_json_schema() if schema in UNROUTED else schemas[schema]
+    spec = schemas[schema]
     required = set(spec.get("required", []))
     # a field with a default is optional on input and always present on output
     output = schema.endswith("Out") or schema in OUTPUTS

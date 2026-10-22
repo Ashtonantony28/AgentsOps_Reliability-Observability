@@ -1,7 +1,7 @@
 # Platform contracts (SG-P0)
 
-Frozen by SG-P0 as schemas, storage (migration `0007_platform_contracts`) and stub routes. SG-P1 implements the
-auth, webhook and OAuth parts, SG-P2 the evaluation runner. Changes go through the Rules line in `PLAN.md`.
+Frozen by SG-P0 as schemas, storage (migration `0007_platform_contracts`) and stub routes. SG-P1 implemented the
+auth, webhook and OAuth parts (tests in `backend/tests/api/test_platform_security.py`), SG-P2 the evaluation runner. Changes go through the Rules line in `PLAN.md`.
 
 ## Invite tokens and password change
 
@@ -10,19 +10,17 @@ Schemas in `app/schemas/auth.py`, storage `invites` (`app/models/organization.py
 
 | Method | Path | Auth | Body → Response | Now |
 |---|---|---|---|---|
-| POST | `/api/auth/invite` | jwt admin | `InviteRequest {email, role}` → `InviteOut` | old behaviour, see below |
-| POST | `/api/auth/accept-invite` | the token in the body | `AcceptInviteRequest {token, password}` → `TokenPair` | 501 |
-| POST | `/api/auth/password` | jwt, any role | `PasswordChangeRequest {current_password, new_password}` → `TokenPair` | 501 |
+| POST | `/api/auth/invite` | jwt admin | `InviteRequest {email, role}` → `InviteOut` | SG-P1 |
+| POST | `/api/auth/accept-invite` | the token in the body | `AcceptInviteRequest {token, password}` → `TokenPair` | SG-P1 |
+| POST | `/api/auth/password` | jwt, any role | `PasswordChangeRequest {current_password, new_password}` → `TokenPair` | SG-P1 |
 
 - `InviteOut = {email, role, status: "added" | "pending", invite_id, expires_at}`. It never carries a password or the
   token. `added`: the email already has an account, which is now a member with `role` (or has its role changed), and
   `invite_id`/`expires_at` are null. `pending`: no account; an `invites` row is stored and the token is sent to the
   email only (`notification_service.send_email`, logged in dry-run), as a link to the frontend's
-  `/accept-invite?token=…` page.
-- Until SG-P1 the route keeps its old behaviour (it creates a user with a fixed password and returns `MemberOut`),
-  because the Settings page invites through it and a 501 would break that. SG-P1 switches its `response_model` to
-  `InviteOut`. `role` is one of `viewer | developer | admin` from SG-P1 on (422 otherwise), so an admin cannot
-  invite an owner.
+  `/accept-invite?token=…` page (`FRONTEND_URL`, default `http://localhost:3000`).
+- `role` is one of `viewer | developer | admin` (422 otherwise), so an admin cannot invite an owner; nor can an admin
+  change an existing owner's role this way (403 `insufficient_role`; an owner can).
 - Token: `secrets.token_urlsafe(32)`; `invites.token_hash` is its SHA-256 hex (unique). An invite expires 72 h after
   it is made and is used once (`accepted_at`). Inviting an email with a pending invite in the same org replaces it,
   so the old token stops working.
@@ -37,9 +35,9 @@ Schemas in `app/schemas/auth.py`, storage `invites` (`app/models/organization.py
 
 | Method | Path | Auth | Body → Response | Now |
 |---|---|---|---|---|
-| POST | `/api/integrations` | jwt admin | `IntegrationCreate` → `IntegrationCreatedOut` | stored, `signing_secret` null |
-| POST | `/api/integrations/{id}/signing-secret` | jwt admin | → `SigningSecretOut {signing_secret}` | 501 |
-| POST | `/api/integrations/webhooks/{kind}/{org_id}` | `X-AgentOps-Signature` | JSON object → `{ok: true}` | old behaviour (unsigned) |
+| POST | `/api/integrations` | jwt admin | `IntegrationCreate` → `IntegrationCreatedOut` | SG-P1 |
+| POST | `/api/integrations/{id}/signing-secret` | jwt admin | → `SigningSecretOut {signing_secret}` | SG-P1 |
+| POST | `/api/integrations/webhooks/{kind}/{org_id}` | `X-AgentOps-Signature` | JSON object → `{ok: true}` | SG-P1 |
 
 - The secret lives in `integrations.signing_secret` (`VARCHAR(64) NULL`): `secrets.token_hex(32)`, made for every
   integration on create and returned once, in `IntegrationCreatedOut.signing_secret`. The rotate route replaces it and
@@ -81,6 +79,6 @@ returns it; this is stored now, and SG-P2 runs it.
 - No runner (null), a webhook error (non-2xx, timeout, bad JSON, no string `output`), no matching trace, or an empty
   output: the case fails with score 0 and `reason` `no_runner`, `runner_error: …`, `no_matching_trace` or
   `no_output`, whatever the evaluators. A case never passes on the expected output standing in for the actual one.
-- The webhook URL goes through SG-P1's outbound URL check (no private, loopback or link-local addresses). The
-  request is unsigned in v1.
+- The webhook URL goes through SG-P1's outbound URL check (`app/services/outbound.py: post`: no private, loopback or
+  link-local addresses; the request goes to the address that was checked). The request is unsigned in v1.
 - Sets that exist before `0007` have no runner, so from SG-P2 on their runs fail every case until one is set.

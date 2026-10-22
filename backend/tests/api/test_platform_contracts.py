@@ -9,7 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 from app.main import app
 from app.middleware.auth import make_access_token, make_refresh_token
 from app.models import EvaluationSet, Integration, Invite, OAuthState, Organization
-from app.schemas.auth import AcceptInviteRequest, InviteOut, MemberOut, PasswordChangeRequest
+from app.schemas.auth import AcceptInviteRequest, InviteOut, PasswordChangeRequest
 from app.schemas.evaluation import (
     EvalRunner,
     EvalSetCreate,
@@ -59,12 +59,12 @@ async def integration(db, org):
     return i
 
 
-# --- stub routes: 501 behind their auth ---
+# --- the routes behind their auth (behaviour in test_platform_security.py) ---
 
-async def test_accept_invite_is_a_stub_behind_its_token(client):
-    # the token in the body is the only credential; a valid body reaches the stub
+async def test_accept_invite_takes_only_the_token_in_its_body(client):
+    # the token in the body is the only credential; a valid body reaches the route
     r = await client.post("/api/auth/accept-invite", json=ACCEPT)
-    assert r.status_code == 501 and _err(r) == "not_implemented"
+    assert r.status_code == 400 and _err(r) == "invalid_invite"
 
 
 @pytest.mark.parametrize("body", [
@@ -82,7 +82,7 @@ async def test_password_change_requires_a_signed_in_user(client, org, admin_user
     assert _err(await client.post("/api/auth/password", json=PASSWORD)) == "missing_auth"
     r = await client.post("/api/auth/password", json=PASSWORD, headers=api_key_headers)
     assert r.status_code == 401
-    refresh, _ = make_refresh_token(admin_user.id)
+    refresh, _ = make_refresh_token(admin_user.id, org.id)
     r = await client.post("/api/auth/password", json=PASSWORD, headers={"Authorization": f"Bearer {refresh}"})
     assert r.status_code == 401 and _err(r) == "invalid_token_type"
     r = await client.post("/api/auth/password", json=PASSWORD, headers=outsider_headers)
@@ -92,11 +92,11 @@ async def test_password_change_requires_a_signed_in_user(client, org, admin_user
 
 
 @pytest.mark.parametrize("role", ["viewer", "developer", "admin", "owner"])
-async def test_password_change_is_a_stub_for_any_member(client, db, org, role):
+async def test_password_change_is_open_to_any_member(client, db, org, role):
     u = await _member(db, org, role)
     headers = {"Authorization": f"Bearer {make_access_token(u.id, org.id, role)}"}
     r = await client.post("/api/auth/password", json=PASSWORD, headers=headers)
-    assert r.status_code == 501 and _err(r) == "not_implemented"
+    assert r.status_code == 400 and _err(r) == "wrong_password"
 
 
 @pytest.mark.parametrize("body", [
@@ -109,7 +109,7 @@ async def test_password_change_validates_its_body(client, auth_headers, body):
     assert (await client.post("/api/auth/password", json=body, headers=auth_headers)).status_code == 422
 
 
-async def test_signing_secret_rotation_is_an_admin_stub(client, integration, viewer_headers, developer_headers,
+async def test_signing_secret_rotation_is_admin_only(client, integration, viewer_headers, developer_headers,
                                                         auth_headers, api_key_headers, outsider_headers):
     path = f"/api/integrations/{integration.id}/signing-secret"
     assert (await client.post(path)).status_code == 401
@@ -119,16 +119,16 @@ async def test_signing_secret_rotation_is_an_admin_stub(client, integration, vie
         r = await client.post(path, headers=headers)
         assert r.status_code == 403 and _err(r) == "insufficient_role"
     r = await client.post(path, headers=auth_headers)
-    assert r.status_code == 501 and _err(r) == "not_implemented"
+    assert r.status_code == 200 and len(r.json()["signing_secret"]) == 64
 
 
-# --- existing routes keep their behaviour; new response shapes frozen ---
+# --- response shapes ---
 
 async def test_invite_route_returns_no_password(client, auth_headers):
     r = await client.post("/api/auth/invite", json={"email": "new@example.com", "role": "viewer"},
                           headers=auth_headers)
     assert r.status_code == 200
-    assert set(r.json()) == set(MemberOut.model_fields)
+    assert set(r.json()) == set(InviteOut.model_fields)
     assert not any("password" in k or "token" in k for k in r.json())
 
 
@@ -140,7 +140,7 @@ async def test_created_integration_has_a_signing_secret_slot_and_lists_never_do(
     r = await client.post("/api/integrations", json={"kind": "webhook", "name": "H", "config": {}},
                           headers=auth_headers)
     assert r.status_code == 200
-    assert r.json()["signing_secret"] is None  # generated from SG-P1 on
+    assert len(r.json()["signing_secret"]) == 64
     listed = (await client.get("/api/integrations", headers=auth_headers)).json()
     assert listed and all("signing_secret" not in i for i in listed)
 

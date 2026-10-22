@@ -55,7 +55,7 @@ class MemberOut(BaseModel):
 
 class InviteRequest(BaseModel):
     email: EmailStr
-    role: str = "developer"
+    role: Literal["viewer", "developer", "admin"] = "developer"
 
 
 class InviteOut(BaseModel):

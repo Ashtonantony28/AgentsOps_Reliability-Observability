@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import secrets
 import json
 from datetime import datetime, timedelta
 from typing import Any, Optional, Tuple
@@ -28,9 +29,9 @@ def make_access_token(sub: str, org_id: str, role: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def make_refresh_token(sub: str) -> Tuple[str, datetime]:
+def make_refresh_token(sub: str, org_id: str) -> Tuple[str, datetime]:
     exp = datetime.utcnow() + timedelta(days=settings.JWT_REFRESH_TTL_DAYS)
-    payload = {"sub": sub, "exp": exp, "type": "refresh"}
+    payload = {"sub": sub, "org_id": org_id, "exp": exp, "type": "refresh", "jti": secrets.token_hex(8)}
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM), exp
 
 
