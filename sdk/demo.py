@@ -7,7 +7,7 @@ import os
 import random
 import time
 
-import agentops
+import agentops_sdk as agentops
 
 
 def fake_agent(question: str) -> str:

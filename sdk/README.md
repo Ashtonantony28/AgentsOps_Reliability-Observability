@@ -3,7 +3,7 @@
 Instrument any Python AI agent in 3 lines:
 
 ```python
-import agentops
+import agentops_sdk as agentops
 
 agentops.init(api_key="aop_...", agent_id="agent-uuid", environment="prod",
               base_url="http://localhost:8000")
@@ -17,7 +17,7 @@ with agentops.trace(input=user_input) as t:
 ## Async usage
 
 ```python
-import agentops
+import agentops_sdk as agentops
 agentops.init(api_key="aop_...", agent_id="agent-uuid")
 
 async with agentops.trace(input=q) as t:
