@@ -123,8 +123,6 @@ async def test_failed_logins_do_not_delay_another_orgs_ingest(client, db, org, a
 
 # --- A15-3 (high): outbound responses are read whole ---
 
-@pytest.mark.xfail(strict=True, reason="A15-3: outbound.post reads the whole response body into memory, so a "
-                                       "configured URL can make the API process buffer any amount")
 async def test_connection_test_does_not_buffer_an_unbounded_response(client, db, org, auth_headers, net):
     handlers, _ = net
     sent = [0]
@@ -252,8 +250,6 @@ async def test_a_sets_schedule_can_be_removed(client, auth_headers):
 
 # --- A15-9 (medium): NAT64 addresses pass the public-address check ---
 
-@pytest.mark.xfail(strict=True, reason="A15-9: is_public accepts 64:ff9b::/96 (NAT64), which reaches the embedded "
-                                       "IPv4 address, private ones included, on a NAT64 network")
 async def test_outbound_refuses_nat64_addresses_of_private_ipv4(monkeypatch):
     answer = []
 

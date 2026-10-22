@@ -83,7 +83,7 @@ m.MUTANTS = [
                                                                           "in ips):", *P),
     ("probe", OUT, 'extensions = {"sni_hostname": u.raw_host.decode("ascii")} if u.scheme == "https" else {}',
      "extensions = {}", *P),
-    ("probe", OUT, 'headers={"Host": u.netloc.decode("ascii")}', "headers={}", *P),
+    ("probe", OUT, '"Host": u.netloc.decode("ascii"), ', "", *P),
     # SG-P1 (5) /ws/traces
     ("probe", WS, "                if not await _is_member(user_id, org_id):\n                    return True",
      "                if False:\n                    return True", *P),
@@ -95,8 +95,8 @@ m.MUTANTS = [
      "        Trace.agent_id == run.agent_id,", *P),
     ("probe", EVAL, "        Trace.created_at >= datetime.utcnow() - timedelta(days=runner.lookback_days),\n", "", *P),
     ("probe", EVAL, '(got.strip() == want) if runner.match == "exact" else (want in got)', "(want in got)", *P),
-    ("probe", EVAL, "outbound.post(runner.url, json=body, timeout=runner.timeout_s), runner.timeout_s)",
-     "outbound.post(runner.url, json=body, timeout=runner.timeout_s), None)", *P),
+    ("probe", EVAL, "outbound.post(runner.url, json=body, timeout=runner.timeout_s)",
+     "outbound.post(runner.url, json=body)", *P),
     # SG-P2 (2) cron and scheduled runs
     ("probe", CRON, "    return day or weekday  # both restricted", "    return day and weekday  # both restricted", *P),
     ("probe", CRON, "    stop = max(last, now - LOOKBACK)", "    stop = now - LOOKBACK", *P),
