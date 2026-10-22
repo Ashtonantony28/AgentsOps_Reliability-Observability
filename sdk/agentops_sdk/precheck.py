@@ -91,7 +91,8 @@ def _error(r: httpx.Response) -> dict:
 def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, int, tuple]:
     """'ok', 'retry' (keep pending events), 'refused' (a policy blocked the batch; the trace goes on without it),
     'fatal' (drop the batch and stop streaming the trace, also when a policy blocked the trace's text), the server's expected seq on a seq conflict,
-    so a batch stored before a lost reply can be resynced, or ('max_events', n) when the batch was too much policy work."""
+    so a batch stored before a lost reply can be resynced, ('max_events', n) when the batch was too much policy work,
+    or ('max_bytes', n or None) when its body was over the server's limit (SG-A13.2)."""
     if isinstance(outcome, BaseException):
         return "retry"
     if outcome.is_success:
@@ -108,6 +109,10 @@ def push_outcome(outcome: Union[httpx.Response, BaseException]) -> Union[str, in
     fit = (err.get("details") or {}).get("max_events") if err.get("code") == "policy_work_too_large" else None
     if isinstance(fit, int) and not isinstance(fit, bool) and fit > 0:
         return "max_events", fit
+    if err.get("code") == "request_too_large":  # the server's, not a proxy's
+        limit = (err.get("details") or {}).get("max_bytes")
+        log.warning("agentops append over the server's body limit; sending it in smaller appends")
+        return "max_bytes", limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
     expected = (err.get("details") or {}).get("expected_seq") if err.get("code") == "seq_conflict" else None
     if isinstance(expected, int) and not isinstance(expected, bool):
         return expected
