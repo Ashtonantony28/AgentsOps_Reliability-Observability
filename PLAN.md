@@ -599,6 +599,7 @@ A fresh session that wrote none of the platform code: SG-AP1.1 to SG-AP1.4 (aler
 - **Problem:** `evaluate_metric_rules` has no per-rule error handling and, since SG-AP1.1, sends pages only after every rule is checked. A rule whose check raises (`window_minutes` 2 000 000 000 is accepted and overflows `utcnow() - timedelta`) ends the tick: rules that fired before it are recorded and never paged (dedup then skips them), and later rules are never checked. A tick killed by the time limit or memory during the check phase drops pages the same way, and each metric check loads its window's full trace rows.
 - **Acceptance:** `test_one_orgs_failing_rule_does_not_drop_another_orgs_page` passes unmarked; a rule that raises is logged and skipped; pages already fired are sent even if the check phase stops; `window_minutes` bounded on create and update (422, a contract addition for the reviewing thread), with stored rows outside the bound checked with the default; metric values aggregated in SQL; `tests/api/test_alert_tick.py` unchanged except for new tests.
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_16.py -k rule --runxfail tests/api/test_alert_tick.py tests/api/test_platform_features.py`
+- **Contract addition (approved 2026-10-22 by the reviewing thread under the Rules line):** `window_minutes` is 1 to 43 200 (30 days) on create and update, 422 otherwise.
 
 ### SG-AP2.2 Outbound lookups off the default executor (AUDIT-16 A16-2 high)
 - **Owner:** unassigned · **Status:** proposed · **Depends:** AUDIT-16
@@ -611,6 +612,7 @@ A fresh session that wrote none of the platform code: SG-AP1.1 to SG-AP1.4 (aler
 - **Problem:** `POST /api/auth/password` has no limit and verifies `current_password` through `_hashed`, whose 16-place queue every login, register and accept-invite of the process shares: one signed-in member's wrong-password changes in flight make every login 429. The per-email login bound counts every address's attempts, so one address can keep any account's sign-in refused (A16-5).
 - **Acceptance:** `test_password_changes_do_not_refuse_another_users_login` and `test_wrong_logins_from_one_address_do_not_lock_the_owner_out` pass unmarked; `/password` limited per user (429 `rate_limited`, the code already approved for it); no single user or address can hold more than a bounded share of the hash queue; the per-email bound keyed so another address's right password is not refused (a contract change of SG-AP1.2's approved limit, for the reviewing thread); `tests/api/test_auth_hardening.py` and `tests/test_auth.py` unchanged except for the new limits.
 - **Verify:** `cd backend && pytest -q tests/audit/test_audit_16.py -k "password or lock" --runxfail tests/api/test_auth_hardening.py tests/test_auth.py tests/api/test_platform_security.py`
+- **Contract change (approved 2026-10-22 by the reviewing thread under the Rules line):** the per-email login bound is keyed by email and client address together (the per-address bound stays), and `/api/auth/password` is limited per user with 429 `rate_limited`.
 
 ## Interface contracts
 
