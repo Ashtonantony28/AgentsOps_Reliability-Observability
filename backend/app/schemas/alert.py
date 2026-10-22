@@ -1,8 +1,10 @@
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.policy import PolicySeverity
+
+MAX_CHANNELS = 10  # per rule
 
 
 class AlertChannel(BaseModel):
@@ -23,9 +25,9 @@ class AlertRuleCreate(BaseModel):
     threshold: float
     window_minutes: int = 15
     severity: str = "warning"
-    channels: List[AlertChannel] = []
+    channels: List[AlertChannel] = Field([], max_length=MAX_CHANNELS)
     runbook_url: str = ""
-    dedup_minutes: int = 30
+    dedup_minutes: int = Field(30, ge=1)
     enabled: bool = True
     context: AlertRuleContext = AlertRuleContext()
 
@@ -36,9 +38,9 @@ class AlertRuleUpdate(BaseModel):
     operator: Optional[str] = None
     window_minutes: Optional[int] = None
     severity: Optional[str] = None
-    channels: Optional[List[AlertChannel]] = None
+    channels: Optional[List[AlertChannel]] = Field(None, max_length=MAX_CHANNELS)
     runbook_url: Optional[str] = None
-    dedup_minutes: Optional[int] = None
+    dedup_minutes: Optional[int] = Field(None, ge=1)
     enabled: Optional[bool] = None
     context: Optional[AlertRuleContext] = None
 
