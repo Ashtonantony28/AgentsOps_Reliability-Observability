@@ -1,6 +1,7 @@
 import asyncio
 import re
 import secrets
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Tuple, Optional
@@ -27,6 +28,7 @@ DUMMY_HASH = "$2b$12$Bh/X4IdrjqNhsQ0H767bU.AZ2JW9E05IPzfBnY/f5AjIsltNJQ7O."  # v
 # bcrypt (0.3 s a hash) gets its own threads, so logins never wait in the pool ingest and checks share
 _hash_pool = ThreadPoolExecutor(settings.PASSWORD_HASH_THREADS, thread_name_prefix="password-hash")
 _hashes_in_flight = 0
+_caller_hashes: Counter = Counter()
 
 
 def _slug(name: str) -> str:
@@ -45,15 +47,22 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-async def _hashed(fn, *args):
+async def _hashed(fn, *args, caller: Optional[str] = None):
+    """`caller` (a user or client address) holds at most PASSWORD_HASH_PER_CALLER of the queue's places."""
     global _hashes_in_flight
     if _hashes_in_flight >= settings.PASSWORD_HASH_QUEUE:
         raise HTTPException(status_code=429, detail="rate_limited")
+    if caller is not None and _caller_hashes[caller] >= settings.PASSWORD_HASH_PER_CALLER:
+        raise HTTPException(status_code=429, detail="rate_limited")
     _hashes_in_flight += 1
+    _caller_hashes[caller] += 1
     try:
         return await asyncio.get_running_loop().run_in_executor(_hash_pool, fn, *args)
     finally:
         _hashes_in_flight -= 1
+        _caller_hashes[caller] -= 1
+        if not _caller_hashes[caller]:
+            del _caller_hashes[caller]
 
 
 async def register_user(
@@ -62,12 +71,13 @@ async def register_user(
     password: str,
     full_name: str = "",
     org_name: Optional[str] = None,
+    ip: str = "",
 ) -> Tuple[User, Organization]:
     existing = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if existing:
         raise ValueError("email_exists")
 
-    password_hash = await _hashed(hash_password, password)
+    password_hash = await _hashed(hash_password, password, caller=f"ip:{ip}")
     user = User(email=email, password_hash=password_hash, full_name=full_name or email.split("@")[0])
     db.add(user)
     await db.flush()
@@ -92,7 +102,7 @@ async def login(
     db: AsyncSession, email: str, password: str, user_agent: str = "", ip: str = ""
 ) -> Tuple[User, Organization, str, str, str]:
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    ok = await _hashed(verify_password, password, user.password_hash if user else DUMMY_HASH)
+    ok = await _hashed(verify_password, password, user.password_hash if user else DUMMY_HASH, caller=f"ip:{ip}")
     if not user or not ok or not user.is_active:
         raise ValueError("invalid_credentials")
 
@@ -195,7 +205,7 @@ async def accept_invite(db: AsyncSession, token: str, password: str, user_agent:
         raise ValueError("invalid_invite")
     if (await db.execute(select(User.id).where(User.email == inv.email))).first():
         raise LookupError("email_exists")
-    password_hash = await _hashed(hash_password, password)
+    password_hash = await _hashed(hash_password, password, caller=f"ip:{ip}")
     # single use: of two concurrent accepts, one updates the row
     used = await db.execute(update(Invite).where(Invite.id == inv.id, Invite.accepted_at.is_(None))
                             .values(accepted_at=datetime.utcnow()))
@@ -218,9 +228,9 @@ async def accept_invite(db: AsyncSession, token: str, password: str, user_agent:
 
 async def change_password(db: AsyncSession, user: User, org_id: str, role: str, current: str, new: str,
                           user_agent: str = "", ip: str = "") -> Tuple[str, str]:
-    if not await _hashed(verify_password, current, user.password_hash):
+    if not await _hashed(verify_password, current, user.password_hash, caller=f"user:{user.id}"):
         raise ValueError("wrong_password")
-    user.password_hash = await _hashed(hash_password, new)
+    user.password_hash = await _hashed(hash_password, new, caller=f"user:{user.id}")
     await db.execute(update(Session).where(Session.user_id == user.id, Session.revoked_at.is_(None))
                      .values(revoked_at=datetime.utcnow()))
     pair = _issue(db, user.id, org_id, role, user_agent, ip)

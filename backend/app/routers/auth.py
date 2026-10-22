@@ -38,7 +38,7 @@ async def register(req: RegisterRequest, request: Request, db: AsyncSession = De
     await enforce_rate_limit(f"register:{ip}", settings.REGISTER_LIMIT_PER_HOUR, 3600)
     try:
         user, org = await auth_service.register_user(
-            db, req.email, req.password, req.full_name, req.org_name
+            db, req.email, req.password, req.full_name, req.org_name, ip=ip
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -54,7 +54,7 @@ async def register(req: RegisterRequest, request: Request, db: AsyncSession = De
 async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     ip = request.client.host if request.client else ""
     await enforce_rate_limit(f"login:ip:{ip}", settings.LOGIN_LIMIT_PER_MIN)
-    await enforce_rate_limit(f"login:email:{req.email.lower()}", settings.LOGIN_LIMIT_PER_MIN)
+    await enforce_rate_limit(f"login:email:{req.email.lower()}:{ip}", settings.LOGIN_LIMIT_PER_MIN)
     try:
         user, org, access, refresh, _ = await auth_service.login(
             db, req.email, req.password,
@@ -150,6 +150,7 @@ async def change_password(
     ctx: AuthContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    await enforce_rate_limit(f"password:{ctx.user.id}", settings.PASSWORD_CHANGE_LIMIT_PER_MIN)
     try:
         access, refresh = await auth_service.change_password(
             db, ctx.user, ctx.org_id, ctx.role, req.current_password, req.new_password,

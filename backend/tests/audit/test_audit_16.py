@@ -104,8 +104,6 @@ async def test_a_slow_outbound_lookup_does_not_delay_another_orgs_ingest(client,
 
 # --- A16-3 (high): password changes fill the hash queue, and every login is refused ---
 
-@pytest.mark.xfail(strict=True, reason="A16-3: /api/auth/password is not limited and shares the 16-place hash queue, so "
-                                       "one signed-in user's wrong-password changes make every login 429")
 async def test_password_changes_do_not_refuse_another_users_login(client, db, org, auth_headers, viewer_user,
                                                                   monkeypatch):
     def slow_verify(pw, hashed):  # stands in for bcrypt
@@ -118,7 +116,7 @@ async def test_password_changes_do_not_refuse_another_users_login(client, db, or
     changes = [asyncio.create_task(client.post("/api/auth/password", headers=auth_headers, json=change))
                for _ in range(16)]
     deadline = time.monotonic() + 10
-    while auth_service._hashes_in_flight < 16 and time.monotonic() < deadline:  # a slow runner takes a while to queue them
+    while auth_service._hashes_in_flight + sum(t.done() for t in changes) < 16 and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     r = await client.post("/api/auth/login", json=login)
     await asyncio.gather(*changes)
@@ -151,8 +149,6 @@ async def test_latency_evaluator_reads_the_runs_version(client, db, org, auth_he
 
 # --- A16-5 (medium): one address's wrong logins lock an email out for everyone ---
 
-@pytest.mark.xfail(strict=True, reason="A16-5: the per-email login bound counts every address's attempts, so anyone "
-                                       "can keep any account's sign-in refused, whatever the password")
 async def test_wrong_logins_from_one_address_do_not_lock_the_owner_out(app_, db, viewer_user, monkeypatch):
     monkeypatch.setattr(auth_service, "verify_password", lambda pw, hashed: pw == "right-password")
 

@@ -165,21 +165,30 @@ async def test_logins_are_limited_per_client_address(client, app_, db, org, cloc
     assert (await _login(client, u.email)).status_code == 200
 
 
-async def test_logins_are_limited_per_email(app_, db, org, clock, hashed_in):
+async def test_logins_are_limited_per_email_and_address(app_, db, org, clock, hashed_in):
     u, other = await _user(db, org), await _user(db, org)
     n = settings.LOGIN_LIMIT_PER_MIN
-    codes = []
-    for i in range(n):
-        async with _from(app_, f"10.1.0.{i}") as c:
-            codes.append((await _login(c, u.email.upper() if i % 2 else u.email, "wrong")).status_code)
-    assert codes == [401] * n
-    async with _from(app_, "10.2.0.1") as c:
+    async with _from(app_, "10.1.0.1") as c:
+        codes = [(await _login(c, u.email.upper() if i % 2 else u.email, "wrong")).status_code for i in range(n)]
+        assert codes == [401] * n
         r = await _login(c, u.email)
-        assert r.status_code == 429 and _err(r) == "rate_limited"  # a new address, the same email
-        assert len(hashed_in) == n
-        assert (await _login(c, other.email)).status_code == 200  # another email from that address
-    clock[0] += 60
+        assert r.status_code == 429 and _err(r) == "rate_limited"
+    assert len(hashed_in) == n
     async with _from(app_, "10.2.0.1") as c:
+        assert (await _login(c, u.email)).status_code == 200  # the same email from another address
+        assert (await _login(c, other.email)).status_code == 200
+    clock[0] += 60
+    async with _from(app_, "10.1.0.1") as c:
+        assert (await _login(c, u.email)).status_code == 200
+
+
+async def test_wrong_logins_from_many_addresses_do_not_lock_the_email(app_, db, org, clock):
+    u = await _user(db, org)
+    for i in range(3):
+        async with _from(app_, f"10.3.0.{i}") as c:
+            for _ in range(settings.LOGIN_LIMIT_PER_MIN):
+                assert (await _login(c, u.email, "wrong")).status_code == 401
+    async with _from(app_, "10.4.0.1") as c:
         assert (await _login(c, u.email)).status_code == 200
 
 
@@ -204,6 +213,134 @@ async def test_registration_does_not_spend_the_login_limit(client, clock):
     assert (await client.post("/api/auth/register", json=creds)).status_code == 200
     for _ in range(settings.LOGIN_LIMIT_PER_MIN):
         assert (await client.post("/api/auth/login", json=creds)).status_code == 200
+
+
+# --- password changes ---
+
+def _change(client, headers, current="wrong"):
+    return client.post("/api/auth/password", headers=headers,
+                       json={"current_password": current, "new_password": "New-pass1234"})
+
+
+def _auth(u, org):
+    return {"Authorization": f"Bearer {make_access_token(u.id, org.id, 'admin')}"}
+
+
+async def test_password_changes_are_limited_per_user(client, db, org, clock, hashed_in):
+    u, other = await _user(db, org), await _user(db, org)
+    n = settings.PASSWORD_CHANGE_LIMIT_PER_MIN
+    codes = [(await _change(client, _auth(u, org))).status_code for _ in range(n + 1)]
+    assert codes == [400] * n + [429]
+    r = await _change(client, _auth(u, org), PASSWORD)
+    assert r.status_code == 429 and _err(r) == "rate_limited"  # the right password too
+    assert len(hashed_in) == n  # counted before the verify
+    assert (await _change(client, _auth(other, org), PASSWORD)).status_code == 200  # another user, same address
+    assert (await _login(client, u.email)).status_code == 200  # the user's logins are not spent
+    clock[0] += 59
+    assert (await _change(client, _auth(u, org), PASSWORD)).status_code == 429
+    clock[0] += 1
+    assert (await _change(client, _auth(u, org), PASSWORD)).status_code == 200
+
+
+async def test_password_change_limit_is_configurable(client, db, org, clock, monkeypatch):
+    u = await _user(db, org)
+    monkeypatch.setattr(settings, "PASSWORD_CHANGE_LIMIT_PER_MIN", 1)
+    assert [(await _change(client, _auth(u, org))).status_code for _ in range(2)] == [400, 429]
+    monkeypatch.setattr(settings, "PASSWORD_CHANGE_LIMIT_PER_MIN", 0)  # 0 turns it off
+    assert (await _change(client, _auth(u, org))).status_code == 400
+
+
+# --- each caller's share of the hash queue ---
+
+@pytest.fixture
+def blocked(monkeypatch):
+    """Verifies wait for the event it yields."""
+    release = threading.Event()
+
+    def verify(pw, hashed):
+        release.wait(10)
+        return pw == PASSWORD
+    monkeypatch.setattr(auth_service, "verify_password", verify)
+    monkeypatch.setattr(settings, "LOGIN_LIMIT_PER_MIN", 0)
+    monkeypatch.setattr(settings, "PASSWORD_CHANGE_LIMIT_PER_MIN", 0)
+    yield release
+    release.set()
+
+
+async def _held(n):
+    for _ in range(500):
+        if auth_service._hashes_in_flight == n:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{auth_service._hashes_in_flight} hashes in flight, waiting for {n}")
+
+
+async def test_one_users_password_changes_hold_a_bounded_share_of_the_queue(client, db, org, blocked):
+    u, other = await _user(db, org), await _user(db, org)
+    n = settings.PASSWORD_HASH_PER_CALLER
+    held = [asyncio.create_task(_change(client, _auth(u, org))) for _ in range(n)]
+    await _held(n)
+    r = await _change(client, _auth(u, org))
+    assert r.status_code == 429 and _err(r) == "rate_limited"
+    assert auth_service._hashes_in_flight == n  # the refused one took no place
+    others = [asyncio.create_task(_change(client, _auth(other, org))),  # another user, the same address
+              asyncio.create_task(_login(client, other.email))]
+    await _held(n + 2)
+    blocked.set()
+    assert [r.status_code for r in await asyncio.gather(*held)] == [400] * n
+    assert [r.status_code for r in await asyncio.gather(*others)] == [400, 200]
+    assert not auth_service._caller_hashes  # every place given back
+    assert (await _change(client, _auth(u, org), PASSWORD)).status_code == 200
+
+
+async def test_one_addresss_logins_hold_a_bounded_share_of_the_queue(app_, db, org, blocked):
+    u = await _user(db, org)
+    n = settings.PASSWORD_HASH_PER_CALLER
+    async with _from(app_, "10.5.0.1") as c, _from(app_, "10.5.0.2") as owner:
+        held = [asyncio.create_task(_login(c, f"nobody-{i}@example.com")) for i in range(n)]
+        await _held(n)
+        r = await _login(c, u.email)
+        assert r.status_code == 429 and _err(r) == "rate_limited"
+        mine = asyncio.create_task(_login(owner, u.email))
+        await _held(n + 1)
+        blocked.set()
+        assert [r.status_code for r in await asyncio.gather(*held)] == [401] * n
+        assert (await mine).status_code == 200
+        assert (await _login(c, u.email)).status_code == 200  # places given back
+
+
+async def test_per_caller_share_is_configurable(client, db, org, blocked, monkeypatch):
+    monkeypatch.setattr(settings, "PASSWORD_HASH_PER_CALLER", 1)
+    u = await _user(db, org)
+    held = asyncio.create_task(_login(client, u.email))
+    await _held(1)
+    assert (await _login(client, u.email)).status_code == 429
+    blocked.set()
+    assert (await held).status_code == 200
+
+
+async def test_every_hash_is_charged_to_its_caller(app_, db, org, monkeypatch):
+    callers, real = [], auth_service._hashed
+
+    async def hashed(fn, *args, caller=None):
+        callers.append(caller)
+        return await real(fn, *args, caller=caller)
+    monkeypatch.setattr(auth_service, "_hashed", hashed)
+    async with _from(app_, "10.6.0.1") as c:
+        creds = {"email": "charged@example.com", "password": PASSWORD}
+        r = await c.post("/api/auth/register", json=creds)
+        assert r.status_code == 200
+        uid = (await c.get("/api/auth/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"})
+               ).json()["user"]["id"]
+        assert (await c.post("/api/auth/password", headers={"Authorization": f"Bearer {r.json()['access_token']}"},
+                             json={"current_password": PASSWORD, "new_password": "New-pass1234"})).status_code == 200
+        token = secrets.token_urlsafe(32)
+        db.add(Invite(org_id=org.id, email="charged-invite@example.com", role="viewer",
+                      token_hash=hash_token(token), expires_at=datetime.utcnow() + timedelta(hours=1)))
+        await db.commit()
+        assert (await c.post("/api/auth/accept-invite", json={"token": token, "password": PASSWORD})).status_code == 200
+    ip, user = "ip:10.6.0.1", f"user:{uid}"
+    assert callers == [ip, ip, user, user, ip]  # register, its login, the change's verify and hash, accept-invite
 
 
 # --- unknown emails ---
