@@ -14,6 +14,7 @@ celery = Celery(
         "app.tasks.evaluation_tasks",
         "app.tasks.report_tasks",
         "app.tasks.policy_tasks",
+        "app.tasks.retention_tasks",
     ],
 )
 
@@ -46,8 +47,12 @@ celery.conf.beat_schedule = {
         "task": "app.tasks.policy_tasks.close_idle_streams",
         "schedule": 300.0,
     },
-    "scheduled-evaluations": {
+    "scheduled-evaluations": {  # every minute; each set's schedule_cron decides whether it runs
         "task": "app.tasks.evaluation_tasks.run_scheduled_evaluations",
-        "schedule": 300.0,
+        "schedule": 60.0,
+    },
+    "retention-hourly": {
+        "task": "app.tasks.retention_tasks.enforce_retention",
+        "schedule": crontab(minute=17),
     },
 }

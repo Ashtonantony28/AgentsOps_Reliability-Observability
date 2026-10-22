@@ -46,7 +46,8 @@ The first time the backend container starts it runs Alembic migrations and seeds
                                             │  + beat schedule │
                                             │  (anomaly,       │
                                             │   alerts, evals, │
-                                            │   reports)       │
+                                            │   reports,       │
+                                            │   retention)     │
                                             └──────────────────┘
 ```
 
@@ -54,12 +55,12 @@ The first time the backend container starts it runs Alembic migrations and seeds
 
 - **Authentication & multi-tenancy** — JWT + refresh tokens, org invites, RBAC (owner/admin/developer/viewer), API keys (hashed), device/session tracking.
 - **Agent registry** — CRUD, versioning, dev→staging→prod promotion (gated on eval score), health (healthy/degraded/down), dependency graph.
-- **Telemetry ingestion** — REST + WebSocket ingest, bulk ingest, span-level tool-call tracing, rate-limited per API key, configurable retention.
+- **Telemetry ingestion** — REST + WebSocket ingest, bulk ingest, span-level tool-call tracing, rate-limited per API key, per-org retention (`retention_days`, default 90; older traces are deleted hourly by a beat task).
 - **Real-time monitoring** — live trace feed (Redis pub/sub), time-series charts (success/error/latency/tokens/cost) with 1h/6h/24h/7d/30d selectors, cost-burn projection, agent comparison.
-- **Evaluations** — eval sets with cases, on-demand or scheduled runs, evaluators (exact / semantic / LLM-judge / latency-regression / cost-regression), A/B diff reports, prod-promotion gate.
+- **Evaluations** — eval sets with cases whose outputs come from the set's runner (a webhook called per case, or the agent's newest matching trace; a case with no output fails), on-demand or scheduled runs (`schedule_cron`, five-field UTC cron, against the agent and current version of the set's latest run), evaluators (exact / semantic / LLM-judge / latency-regression / cost-regression), A/B diff reports, prod-promotion gate.
 - **Security & governance** — PII masking, prompt-injection scanner (regex), policy engine (block/warn/log), least-privilege report, immutable audit log (CSV/JSON export), org scorecard.
-- **Alerting & incidents** — rule engine (error_rate / latency_p95 / cost / tokens), Slack / PagerDuty / email / webhook channels, dedup, auto-incidents with narrative.
-- **Integrations** — Slack (OAuth2), PagerDuty, Datadog, Grafana, New Relic, OpenAI/Anthropic/Cohere/Azure (key validation), GitHub Actions, GitLab CI, generic webhooks, webhook receiver.
+- **Alerting & incidents** — rule engine (error_rate / latency_p95 / latency_avg / cost_per_day (last 24 h) / token_usage, checked every minute; policy_violations as violations are stored), Slack / PagerDuty / email / webhook channels, dedup, incidents for critical rules and critical policy violations, with narrative.
+- **Integrations** — Slack (OAuth2 install; the connection test posts to its webhook), Datadog (API key validated with Datadog), generic webhooks (the connection test posts to the URL), and a signed webhook receiver. Keys are checked for presence only: OpenAI, Anthropic, Cohere and PagerDuty. These store their config only, and nothing calls them yet: Azure OpenAI, Microsoft Teams, Grafana, New Relic, GitHub Actions and GitLab CI. Alert notifications go through each rule's channels, not through integrations.
 - **Reporting** — exec summary, PDF + CSV exports, weekly digest email job.
 - **Python SDK** — context-manager API (`with agentops.trace(...) as t:`), async support, auto error capture, batched flush with disk fallback.
 
@@ -87,9 +88,9 @@ pip install -e ./sdk
 ```
 
 ```python
-import agentops
+import agentops_sdk as agentops
 
-agentops.init(api_key="aop_…", agent_id="<agent-uuid>",
+agentops.init(api_key="aop_...", agent_id="<agent-uuid>",
               base_url="http://localhost:8000", environment="prod")
 
 with agentops.trace(input=user_msg) as t:
@@ -107,7 +108,7 @@ async with agentops.trace(input=q) as t:
     t.set_output(ans)
 ```
 
-Exceptions inside the block automatically mark the trace `status=error`. Traces are batched and flushed in the background; if the API is unreachable they are written to a disk buffer (`/tmp/agentops_sdk/`) and replayed on the next process start.
+Exceptions inside the block automatically mark the trace `status=error`. Traces are batched and flushed in the background; if the API is unreachable they are written to a disk buffer (`<tempdir>/agentops_sdk-<uid>/buffer-<key prefix>.jsonl`, private to the user) and replayed on the next process start.
 
 ## Development
 

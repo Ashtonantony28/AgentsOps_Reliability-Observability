@@ -1,8 +1,11 @@
-import os
-from datetime import datetime
-from typing import Dict, List, Tuple
+import asyncio
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import select, func
+import httpx
+from pydantic import TypeAdapter
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -14,7 +17,11 @@ from app.models import (
     EvaluationSet,
     Trace,
 )
+from app.schemas.evaluation import EvalRunner, TracesRunner, WebhookRunner
+from app.services import outbound
 from app.services.security_service import cosine_similarity
+
+_runner = TypeAdapter(EvalRunner)
 
 
 async def claude_judge(prompt: str, expected: str, actual: str) -> Tuple[float, str]:
@@ -50,6 +57,60 @@ async def claude_judge(prompt: str, expected: str, actual: str) -> Tuple[float, 
         return sim, f"judge_error_fallback: {e!s} sim={sim:.2f}"
 
 
+async def _webhook_output(runner: WebhookRunner, run: EvaluationRun, case: EvaluationCase) -> Tuple[Optional[str], str]:
+    body = {"run_id": run.id, "set_id": run.set_id, "case_id": case.id, "agent_id": run.agent_id,
+            "agent_version": run.agent_version, "input": case.input}
+    try:
+        r = await asyncio.wait_for(outbound.post(runner.url, json=body, timeout=runner.timeout_s), runner.timeout_s)
+    except outbound.BlockedURL as e:
+        return None, f"runner_error: {e}"
+    except (asyncio.TimeoutError, httpx.TimeoutException):
+        return None, "runner_error: timeout"
+    except httpx.HTTPError as e:
+        return None, f"runner_error: {type(e).__name__}"
+    if not r.is_success:
+        return None, f"runner_error: status {r.status_code}"
+    try:
+        data = r.json()
+    except ValueError:
+        return None, "runner_error: invalid_json"
+    if not isinstance(data, dict) or not isinstance(data.get("output"), str):
+        return None, "runner_error: no output string"
+    return data["output"], ""
+
+
+async def _trace_output(db: AsyncSession, runner: TracesRunner, eval_set: EvaluationSet, run: EvaluationRun,
+                        case: EvaluationCase) -> Tuple[Optional[str], str]:
+    want = case.input.strip()
+    rows = await db.stream(select(Trace.input, Trace.output).where(
+        Trace.org_id == eval_set.org_id, Trace.agent_id == run.agent_id,
+        Trace.created_at >= datetime.utcnow() - timedelta(days=runner.lookback_days),
+        Trace.input.contains(want, autoescape=True),  # a prefilter: LIKE ignores case on SQLite
+    ).order_by(Trace.created_at.desc()).execution_options(yield_per=100))
+    async for got, output in rows:
+        if (got.strip() == want) if runner.match == "exact" else (want in got):
+            await rows.close()
+            return output, ""
+    return None, "no_matching_trace"
+
+
+async def case_output(db: AsyncSession, eval_set: EvaluationSet, run: EvaluationRun,
+                      case: EvaluationCase) -> Tuple[Optional[str], str, int]:
+    """(the case's output, or None with why it has none; the runner's latency in ms)."""
+    if not eval_set.runner:
+        return None, "no_runner", 0
+    runner = _runner.validate_python(eval_set.runner)
+    t0 = time.perf_counter()
+    if isinstance(runner, WebhookRunner):
+        output, why = await _webhook_output(runner, run, case)
+    else:
+        output, why = await _trace_output(db, runner, eval_set, run, case)
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    if output is not None and not output.strip():
+        return None, "no_output", latency_ms
+    return output, why, latency_ms
+
+
 async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
     run = (await db.execute(select(EvaluationRun).where(EvaluationRun.id == run_id))).scalar_one()
     eval_set = (await db.execute(select(EvaluationSet).where(EvaluationSet.id == run.set_id))).scalar_one()
@@ -81,19 +142,14 @@ async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
         avg_cost = float(np.mean(cst))
 
     for case in cases:
-        # Simulate agent run: we use the case's expected_output as actual when no live runner is wired.
-        # If the agent has any real traces with similar input, use the latest matching output.
-        actual = ""
-        match = (await db.execute(
-            select(Trace).where(
-                Trace.agent_id == agent.id,
-                Trace.input.like(f"%{case.input[:60]}%"),
-            ).order_by(Trace.created_at.desc()).limit(1)
-        )).scalar_one_or_none()
-        if match:
-            actual = match.output
-        else:
-            actual = case.expected_output  # noop pass; in real system this would invoke the agent
+        weight = case.weight or 1.0
+        weight_sum += weight
+        actual, why, latency_ms = await case_output(db, eval_set, run, case)
+        if actual is None:
+            failed += 1
+            db.add(EvaluationResult(run_id=run.id, case_id=case.id, actual_output="", passed=False, score=0.0,
+                                    scores_by_evaluator={}, reason=why, latency_ms=latency_ms))
+            continue
 
         scores: Dict[str, float] = {}
         reasons: List[str] = []
@@ -126,8 +182,7 @@ async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
             passed += 1
         else:
             failed += 1
-        total_score += score * (case.weight or 1.0)
-        weight_sum += case.weight or 1.0
+        total_score += score * weight
 
         db.add(EvaluationResult(
             run_id=run.id,
@@ -137,6 +192,7 @@ async def run_evaluation(db: AsyncSession, run_id: str) -> EvaluationRun:
             score=round(score, 3),
             scores_by_evaluator=scores,
             reason="; ".join(reasons),
+            latency_ms=latency_ms,
         ))
 
     run.score = round((total_score / weight_sum) if weight_sum else 0.0, 3)

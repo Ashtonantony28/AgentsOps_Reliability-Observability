@@ -74,6 +74,8 @@ jobs:
           python-version: "3.11"
       - run: pip install -e sdk pytest pytest-cov
       - run: cd sdk && pytest -q --cov=agentops_sdk --cov-branch --cov-fail-under=80
+      - name: demo parses and imports
+        run: cd sdk && python -c "import ast; ast.parse(open('demo.py').read()); import demo"
 
   frontend:
     runs-on: ubuntu-latest
