@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field, model_validator
 
 INT32_MAX = 2**31 - 1  # Postgres INTEGER
 MAX_TRACE_EVENTS = 10_000  # bounds the batch policy check (AUDIT-2 A2-2)
+# a request body, as uvicorn's ws_max_size already bounds an /ws/ingest message of the same payloads (AUDIT-13 A13-2)
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 
 class ToolCallIn(BaseModel):

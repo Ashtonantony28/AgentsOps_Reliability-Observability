@@ -1,6 +1,7 @@
 """AUDIT-12 mutation probe of the round-4 API and SDK fixes (PRs #45, #47, #48, #49), replayed like AUDIT-4's:
-python backend/scripts/mutants_audit12.py [probe | A12-8 | A12-1]. The "probe" rows were killed when AUDIT-12 ran;
-the A12-8 rows survived it (AUDIT-12.md A12-8); the A12-1 rows are SG-A12.1's, killed by its tests."""
+python backend/scripts/mutants_audit12.py [probe | A12-8 | A12-1 | A13-1]. The "probe" rows were killed when AUDIT-12
+ran; the A12-8 rows survived it (AUDIT-12.md A12-8); the A12-1 rows are SG-A12.1's and the A13-1 rows SG-A13.1's,
+killed by their tests."""
 import sys
 
 import mutants_audit4 as m
@@ -40,15 +41,27 @@ m.MUTANTS = [
     ("A12-8", TPS, 'f"{org_id}|{trace_id}|{next_seq}|{plans}"', 'f"{org_id}|{plans}"', *B),
     ("A12-8", TPS, "json.dumps([e.kind, e.name, e.status, e.attrs]", "json.dumps([e.kind, e.name, e.attrs]", *B),
     ("A12-8", TPS, "json.dumps([e.kind, e.name, e.status, e.attrs]", "json.dumps([e.kind, e.name, e.status]", *B),
-    ("probe", TPS, "await self.r.set(key, s.blob, ex=PREFIX_TTL_S)", "None", *B),
+    ("probe", TPS, "redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)", "", *B),
     ("probe", TPS, "await asyncio.to_thread(_step_inputs, m, prefix[len(keys) * k:])", "None", *B),
-    ("A12-8", TPS, "for i in range(len(blobs), 0, -1):", "for i in range(1, len(blobs) + 1):", *B),
+    ("A12-8", TPS, "for i = #KEYS, 1, -1 do", "for i = 1, #KEYS do", *B),
     # SG-A12.1: a check resumes from, or waits for, what another check of the same prefix steps; it stops when gone
     ("A12-1", TPS, "if j < len(keys) and (s := self.running.get(keys[j])):", "if False:", *B),
     ("A12-1", TPS, "return s is None or s.moved is not None and", "return s is None and", *B),
-    ("A12-1", TPS, "if time.monotonic() > deadline or (gone is not None and await gone()):", "if False:", *B),
-    ("A12-1", TPS, "if time.monotonic() > deadline or", "if", *B),
+    ("A12-1", TPS, "return time.monotonic() > deadline or (gone is not None and await gone())", "return False", *B),
+    ("A12-1", TPS, "return time.monotonic() > deadline or", "return", *B),
     ("A12-1", TPS, "            s.done.set()", "            pass", *B),
+    # SG-A13.1: a history keeps its newest checkpoint, an org's are bounded in bytes, a resumed check reads one; a
+    # stored trace's precheck rebuild runs once at a time, stops with its check and is resumed by the next
+    ("A13-1", TPS, "drop(KEYS[2])\n", "", *B),
+    ("A13-1", TPS, "if size > max then return 0 end", "", *B),
+    ("A13-1", TPS, "  drop(oldest)\n", "  break\n", *B),
+    ("A13-1", TPS, "(await self.r.mget(keys[j + i - 1:j + i]))[0]", "(await self.r.mget(keys[j:]))[i - 1]", *B),
+    ("A13-1", TPS, "compiled, next_seq, stopped):", "compiled, next_seq, lambda: asyncio.sleep(0, False)):", *B),
+    ("A13-1", TPS, "    if not await lock.acquire():\n        return None", "    await lock.acquire()", *B),
+    ("A13-1", TPS, "compiled, next_seq, True) or Monitor(compiled)", "compiled, next_seq) or Monitor(compiled)", *B),
+    ("A13-1", TPS, "                await lock.reacquire()", "                pass", *B),
+    ("A13-1", TPS, "        if m.next_seq < next_seq:\n            await _replay(",
+     "        if True:\n            await _replay(", *B),
     # backend: long work sliced on its own pool (#48), busy batch retried (#49), org cap in cost units (#45)
     ("A12-8", TPS, "if cost * len(items) <= WORK_SLICE:", "if True:", *B),
     ("probe", TPS, "raise TraceBusy(trace_id)", "locked = False", *B),

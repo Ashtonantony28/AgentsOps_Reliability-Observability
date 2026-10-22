@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { ReactNode, useEffect } from "react";
 import Layout from "@/components/layout/Layout";
 import Login from "@/pages/Login";
+import AcceptInvite from "@/pages/AcceptInvite";
 import Dashboard from "@/pages/Dashboard";
 import Agents from "@/pages/Agents";
 import AgentDetail from "@/pages/AgentDetail";
@@ -40,6 +41,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route
         path="/"
         element={

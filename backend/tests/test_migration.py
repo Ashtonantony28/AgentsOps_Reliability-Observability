@@ -15,7 +15,7 @@ from app.database import Base
 
 BACKEND = Path(__file__).resolve().parents[1]
 TEST_DB = "agentops_migration_test"
-NEW_TABLES = {"trace_policies", "policy_violations"}
+NEW_TABLES = {"trace_policies", "policy_violations", "invites", "oauth_states"}
 
 
 def _url(host: str, database: str) -> sa.engine.URL:
@@ -91,7 +91,7 @@ def test_migration_0002_roundtrip(pg):
         assert p0[:2] == ("medium", "log") and p0[2] and v0[:2] == ([], "") and v0[2] and v0[3] == "none"
         assert _seqs(c, "t1") == [("first", 0), ("second", 1), ("third", 2)]
         assert _seqs(c, "t2") == [("tie_a", 0), ("tie_b", 1)]
-        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0006_counterexample_status"
+        assert c.execute(sa.text("SELECT version_num FROM alembic_version")).scalar() == "0007_platform_contracts"
     insp = sa.inspect(pg)
     assert NEW_TABLES <= set(insp.get_table_names())
     span_cols = {col["name"]: col for col in insp.get_columns("spans")}
@@ -108,11 +108,12 @@ def test_migration_0002_roundtrip(pg):
 
     with pg.connect() as c:
         diff = compare_metadata(MigrationContext.configure(c), Base.metadata)
-    touched = NEW_TABLES | {"spans", "alert_rules"}
+    touched = NEW_TABLES | {"spans", "alert_rules", "integrations", "evaluation_sets"}
     structural = [d for d in diff if not isinstance(d, list) and _diff_table(d) in touched]
     assert structural == [], structural
     ours = lambda t, col: (t in NEW_TABLES or (t == "spans" and col in ("seq", "attrs"))
-                           or (t, col) == ("alert_rules", "context"))
+                           or (t, col) in {("alert_rules", "context"), ("integrations", "signing_secret"),
+                                           ("evaluation_sets", "runner")})
     nullable = [m[2:4] for d in diff if isinstance(d, list) for m in d if m[0] == "modify_nullable" and ours(*m[2:4])]
     assert nullable == [], nullable
 
@@ -244,4 +245,37 @@ def test_migration_0006_on_sqlite(tmp_path, monkeypatch):
         ("v1", "pending"), ("v2", "minimal"), ("v3", "minimal"), ("v4", "none"), ("v5", "none")]
     command.downgrade(cfg, "0005_policy_archive")
     assert "counterexample_status" not in {col["name"] for col in sa.inspect(eng).get_columns("policy_violations")}
+    eng.dispose()
+
+
+def test_migration_0007_on_sqlite(tmp_path, monkeypatch):
+    """SG-P0: invites and oauth_states tables, integrations.signing_secret and evaluation_sets.runner, both ways."""
+    url = f"sqlite:///{tmp_path}/m.db"
+    monkeypatch.setattr(type(settings), "db_url_sync", property(lambda _: url))
+    eng = sa.create_engine(url)
+    Base.metadata.create_all(eng)
+    cfg = Config()
+    cfg.set_main_option("script_location", str(BACKEND / "migrations"))
+    command.stamp(cfg, "head")
+    with eng.begin() as c:
+        c.execute(Organization.__table__.insert().values(id="o1", name="O", slug="o"))
+        c.execute(sa.text("INSERT INTO integrations (id, org_id, kind, name, config, enabled, last_status, error_count,"
+                          " last_error, created_at, signing_secret) VALUES ('i1', 'o1', 'webhook', 'H', '{}', 1,"
+                          " 'unknown', 0, '', :t, 's')"), {"t": datetime(2026, 1, 1)})
+    command.downgrade(cfg, "0006_counterexample_status")
+    insp = sa.inspect(eng)
+    assert not {"invites", "oauth_states"} & set(insp.get_table_names())
+    assert "signing_secret" not in {col["name"] for col in insp.get_columns("integrations")}
+    assert "runner" not in {col["name"] for col in insp.get_columns("evaluation_sets")}
+    with eng.connect() as c:
+        assert c.execute(sa.text("SELECT id FROM integrations")).scalars().all() == ["i1"]
+    command.upgrade(cfg, "head")
+    insp = sa.inspect(eng)
+    assert {"invites", "oauth_states"} <= set(insp.get_table_names())
+    cols = {col["name"]: col for col in insp.get_columns("integrations")}
+    assert cols["signing_secret"]["nullable"]
+    assert {col["name"] for col in insp.get_columns("evaluation_sets")} >= {"runner"}
+    assert {i["name"] for i in insp.get_indexes("invites")} >= {"ix_invite_org_email"}
+    with eng.connect() as c:
+        assert c.execute(sa.text("SELECT signing_secret FROM integrations")).scalar() is None
     eng.dispose()

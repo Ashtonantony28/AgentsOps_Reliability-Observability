@@ -32,6 +32,23 @@ class IntegrationOut(BaseModel):
         from_attributes = True
 
 
+class IntegrationCreatedOut(IntegrationOut):
+    signing_secret: Optional[str] = None  # shown once, on create; never listed
+
+
+class SigningSecretOut(BaseModel):
+    signing_secret: str
+
+
+class SlackOAuthStartOut(BaseModel):
+    url: str
+
+
+class SlackOAuthCallbackOut(BaseModel):
+    ok: bool
+    team: str
+
+
 class TestConnectionResult(BaseModel):
     ok: bool
     message: str

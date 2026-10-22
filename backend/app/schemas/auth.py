@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Literal, Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -55,7 +55,26 @@ class MemberOut(BaseModel):
 
 class InviteRequest(BaseModel):
     email: EmailStr
-    role: str = "developer"
+    role: Literal["viewer", "developer", "admin"] = "developer"
+
+
+class InviteOut(BaseModel):
+    """`POST /api/auth/invite` from SG-P1 on: never a password or token (the token goes to the invitee by email)."""
+    email: str
+    role: str
+    status: Literal["added", "pending"]  # added: the email has an account and is now a member; pending: invite sent
+    invite_id: Optional[str]  # pending only
+    expires_at: Optional[datetime]  # pending only
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class ApiKeyCreate(BaseModel):

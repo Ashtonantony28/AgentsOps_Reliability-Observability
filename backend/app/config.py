@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TTL_MIN: int = 60
     JWT_REFRESH_TTL_DAYS: int = 14
+    REGISTER_LIMIT_PER_HOUR: int = 5  # per client address; each registration makes an org
 
     POSTGRES_USER: str = "agentops"
     POSTGRES_PASSWORD: str = "agentops"
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
 
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    FRONTEND_URL: str = "http://localhost:3000"  # invite links point here
 
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
@@ -55,6 +57,20 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+
+# the defaults above and the values in .env.example: public, so never valid outside development
+PUBLIC_SECRETS = {
+    "", Settings.model_fields["APP_SECRET"].default, Settings.model_fields["JWT_SECRET"].default,
+    "change-me-please-32-bytes-minimum-secret-key", "change-me-too-please-32-bytes-minimum-jwt-key",
+}
+
+
+def check_secrets(s: Settings) -> None:
+    if s.APP_ENV != "development":
+        public = [k for k in ("APP_SECRET", "JWT_SECRET") if getattr(s, k) in PUBLIC_SECRETS]
+        if public:
+            raise RuntimeError(f"{' and '.join(public)} must be set outside development (APP_ENV={s.APP_ENV})")
 
 
 @lru_cache

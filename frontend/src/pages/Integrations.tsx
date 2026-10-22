@@ -27,13 +27,20 @@ export default function Integrations() {
   const [name, setName] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const kindDef = KINDS.find((k) => k.kind === selKind)!;
+  const [secret, setSecret] = useState<{ name: string; value: string } | null>(null);
   const create = useMutation({
     mutationFn: () => integrationsApi.create({ kind: selKind, name: name || kindDef.label, config }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["integrations"] });
       setName("");
       setConfig({});
+      if (data.signing_secret) setSecret({ name: data.name, value: data.signing_secret });
     },
+  });
+  const rotate = useMutation({
+    mutationFn: (i: { id: string; name: string }) =>
+      integrationsApi.rotateSigningSecret(i.id).then((r) => ({ name: i.name, value: r.signing_secret })),
+    onSuccess: setSecret,
   });
   const test = useMutation({
     mutationFn: (id: string) => integrationsApi.test(id),
@@ -75,6 +82,14 @@ export default function Integrations() {
         </button>
       </div>
 
+      {secret && (
+        <div className="text-xs bg-amber-500/10 border border-amber-700/30 text-amber-200 rounded p-2" data-testid="signing-secret">
+          Signing secret for {secret.name}; copy it now, it won't be shown again. Sign webhook bodies with
+          HMAC-SHA256 in <code className="font-mono">X-AgentOps-Signature: sha256=&lt;hex&gt;</code>:{" "}
+          <code className="font-mono break-all">{secret.value}</code>
+        </div>
+      )}
+
       {list.isLoading ? <Loading /> : (
         <div className="bg-ink-900 border border-ink-800 rounded overflow-x-auto">
           <table className="w-full text-sm">
@@ -100,6 +115,7 @@ export default function Integrations() {
                   <td className="px-4 py-2 text-ink-300">{i.error_count}</td>
                   <td className="px-4 py-2 text-right space-x-3">
                     <button onClick={() => test.mutate(i.id)} className="text-xs text-brand-300 hover:underline">test</button>
+                    <button onClick={() => rotate.mutate(i)} className="text-xs text-brand-300 hover:underline">new secret</button>
                     <button onClick={() => remove.mutate(i.id)} className="text-xs text-rose-300 hover:underline">delete</button>
                   </td>
                 </tr>

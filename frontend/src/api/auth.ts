@@ -1,4 +1,6 @@
 import { api } from "./client";
+import { AcceptInviteRequest, Invite, InviteRequest, PasswordChangeRequest, TokenPair } from "@/types/auth";
+import { IntegrationCreated, SigningSecret } from "@/types/integration";
 
 export const authApi = {
   register: (data: { email: string; password: string; full_name?: string; org_name?: string }) =>
@@ -11,7 +13,11 @@ export const authApi = {
     api.post("/api/auth/logout", { refresh_token }).then((r) => r.data),
   me: () => api.get("/api/auth/me").then((r) => r.data),
   members: () => api.get("/api/auth/members").then((r) => r.data),
-  invite: (email: string, role: string) => api.post("/api/auth/invite", { email, role }).then((r) => r.data),
+  invite: (data: InviteRequest) => api.post<Invite>("/api/auth/invite", data).then((r) => r.data),
+  acceptInvite: (data: AcceptInviteRequest) =>
+    api.post<TokenPair>("/api/auth/accept-invite", data).then((r) => r.data),
+  changePassword: (data: PasswordChangeRequest) =>
+    api.post<TokenPair>("/api/auth/password", data).then((r) => r.data),
   sessions: () => api.get("/api/auth/sessions").then((r) => r.data),
   revokeSession: (id: string) => api.delete(`/api/auth/sessions/${id}`).then((r) => r.data),
   listApiKeys: () => api.get("/api/auth/api-keys").then((r) => r.data),
@@ -21,10 +27,12 @@ export const authApi = {
 
 export const integrationsApi = {
   list: () => api.get("/api/integrations").then((r) => r.data),
-  create: (data: any) => api.post("/api/integrations", data).then((r) => r.data),
+  create: (data: any) => api.post<IntegrationCreated>("/api/integrations", data).then((r) => r.data),
   update: (id: string, data: any) => api.patch(`/api/integrations/${id}`, data).then((r) => r.data),
   remove: (id: string) => api.delete(`/api/integrations/${id}`).then((r) => r.data),
   test: (id: string) => api.post(`/api/integrations/${id}/test`).then((r) => r.data),
+  rotateSigningSecret: (id: string) =>
+    api.post<SigningSecret>(`/api/integrations/${id}/signing-secret`).then((r) => r.data),
 };
 
 export const governanceApi = {

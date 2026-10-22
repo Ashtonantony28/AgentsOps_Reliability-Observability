@@ -6,15 +6,15 @@ from typing import List
 import httpx
 
 from app.config import settings
+from app.services import outbound
 
 log = logging.getLogger(__name__)
 
 
 async def send_slack(webhook_url: str, text: str) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.post(webhook_url, json={"text": text})
-            return r.status_code < 400
+        r = await outbound.post(webhook_url, json={"text": text})
+        return r.status_code < 400
     except Exception as e:
         log.warning("slack send failed: %s", e)
         return False
@@ -41,9 +41,8 @@ async def send_pagerduty(routing_key: str, summary: str, severity: str = "warnin
 
 async def send_webhook(url: str, body: dict) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.post(url, json=body)
-            return r.status_code < 400
+        r = await outbound.post(url, json=body)
+        return r.status_code < 400
     except Exception as e:
         log.warning("webhook send failed: %s", e)
         return False

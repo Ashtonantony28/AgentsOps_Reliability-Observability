@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authApi } from "@/api/auth";
+import { useAuthStore } from "@/stores/authStore";
+import { Invite, InviteRequest } from "@/types/auth";
 import Loading from "@/components/common/Loading";
 import StatusBadge from "@/components/common/StatusBadge";
 import { errorMessage } from "@/api/client";
@@ -13,15 +15,36 @@ export default function Settings() {
   const sessions = useQuery({ queryKey: ["sessions"], queryFn: authApi.sessions });
 
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("developer");
+  const [inviteRole, setInviteRole] = useState<NonNullable<InviteRequest["role"]>>("developer");
   const [inviteErr, setInviteErr] = useState<string | null>(null);
+  const [invited, setInvited] = useState<Invite | null>(null);
   const invite = useMutation({
-    mutationFn: () => authApi.invite(inviteEmail, inviteRole),
-    onSuccess: () => {
+    mutationFn: () => authApi.invite({ email: inviteEmail, role: inviteRole }),
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["members"] });
       setInviteEmail("");
+      setInviteErr(null);
+      setInvited(data);
     },
-    onError: (e: any) => setInviteErr(errorMessage(e)),
+    onError: (e: any) => {
+      setInvited(null);
+      setInviteErr(errorMessage(e));
+    },
+  });
+
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [pwMsg, setPwMsg] = useState<string | null>(null);
+  const changePassword = useMutation({
+    mutationFn: () => authApi.changePassword({ current_password: currentPw, new_password: newPw }),
+    onSuccess: (data) => {
+      useAuthStore.getState().setTokens(data.access_token, data.refresh_token);
+      setCurrentPw("");
+      setNewPw("");
+      setPwMsg("Password changed; other sessions were signed out.");
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: (e: any) => setPwMsg(errorMessage(e)),
   });
 
   const [keyName, setKeyName] = useState("");
@@ -82,7 +105,7 @@ export default function Settings() {
                  placeholder="invite@example.com" value={inviteEmail}
                  onChange={(e) => setInviteEmail(e.target.value)} />
           <select className="bg-ink-950 border border-ink-700 rounded px-2 py-1"
-                  value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                  value={inviteRole} onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}>
             <option value="viewer">viewer</option>
             <option value="developer">developer</option>
             <option value="admin">admin</option>
@@ -93,6 +116,28 @@ export default function Settings() {
           </button>
         </div>
         {inviteErr && <div className="text-xs text-rose-300 mt-2">{inviteErr}</div>}
+        {invited && (
+          <div className="text-xs text-ink-300 mt-2" data-testid="invite-result">
+            {invited.status === "added"
+              ? `${invited.email} is now a ${invited.role}.`
+              : `Invite emailed to ${invited.email}; it expires ${new Date(invited.expires_at!).toLocaleString()}.`}
+          </div>
+        )}
+      </section>
+
+      <section className="bg-ink-900 border border-ink-800 rounded p-4">
+        <h2 className="text-sm uppercase text-ink-400 mb-2">Password</h2>
+        <div className="flex gap-2 text-sm">
+          <input type="password" className="bg-ink-950 border border-ink-700 rounded px-2 py-1 flex-1"
+                 placeholder="Current password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
+          <input type="password" className="bg-ink-950 border border-ink-700 rounded px-2 py-1 flex-1"
+                 placeholder="New password (8+ characters)" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          <button onClick={() => changePassword.mutate()} disabled={!currentPw || newPw.length < 8}
+                  className="bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white px-3 py-1 rounded">
+            Change
+          </button>
+        </div>
+        {pwMsg && <div className="text-xs text-ink-300 mt-2">{pwMsg}</div>}
       </section>
 
       <section className="bg-ink-900 border border-ink-800 rounded p-4">

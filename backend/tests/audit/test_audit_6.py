@@ -113,7 +113,6 @@ async def test_deeply_nested_policy_does_not_break_ingest(client, agent, api_key
 
 
 # A6-11: /ws/traces checks only the token's signature: a user removed from the org keeps the live feed
-@pytest.mark.xfail(strict=True, reason="A6-11: the websocket feed skips the membership and token-type checks")
 def test_ws_feed_requires_membership(app_, org, admin_user, session_maker):
     async def leave():
         async with session_maker() as s:
