@@ -76,12 +76,15 @@ def test_batch_work_sees_globs():
 ], ids=["wide-alphabet", "glob-list"])
 def test_counterexample_budget_holds_for_globs(monkeypatch, source, events):
     monkeypatch.setattr(counterexample, "BUDGET_S", 0.2)
-    counterexample.name_patterns.cache_clear()
-    counterexample.pattern_sizes.cache_clear()
     p = _compiled(source)
-    t = time.perf_counter()
-    counterexample.bounded_counterexample(p, events, events[-1].seq)
-    assert time.perf_counter() - t < 0.6
+    took = []
+    for _ in range(3):  # best of three cold runs, so a runner's pause is not read as the 3.7 s regression
+        counterexample.name_patterns.cache_clear()
+        counterexample.pattern_sizes.cache_clear()
+        t = time.perf_counter()
+        counterexample.bounded_counterexample(p, events, events[-1].seq)
+        took.append(time.perf_counter() - t)
+    assert min(took) < 0.6, took
 
 
 # A9-3: SG-A7.3's per-monitor bound on exact `count ... by` values is shared by every policy of the monitor, so

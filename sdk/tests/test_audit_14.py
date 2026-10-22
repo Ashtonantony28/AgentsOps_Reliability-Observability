@@ -1,6 +1,6 @@
 """AUDIT-14: the server's 503 check_timeout (SG-A12.1) as both clients and @guard see it; it follows fail_closed like
-the SDK's own timeout, never blocks a fail-open client nor allows a fail-closed one. A14-2 as a failing test,
-xfail(strict=True) until its sub-goal fixes it."""
+the SDK's own timeout, never blocks a fail-open client nor allows a fail-closed one. A14-2, a failing test
+fixed by SG-A14.1."""
 import asyncio
 
 import pytest
@@ -48,7 +48,6 @@ def seqs(server) -> list:
 # A14-2: since SG-A13.2 (#58) an append body over 16 MiB is 413 request_too_large; a stream's backlog (all pending
 # events go in one append) passes it after an outage with large payloads, and the SDK ends the stream on it: the rest
 # of the trace, its final status included, never reaches the server, where a split (as for max_events) delivers it
-@pytest.mark.xfail(strict=True, reason="A14-2: SG-A14.1")
 def test_backlog_over_the_body_limit_is_split_not_dropped(client, server):
     too_big = (413, {"error": {"code": "request_too_large", "message": "request body over 16777216 bytes",
                                "details": {"max_bytes": 16_777_216}}})

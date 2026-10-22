@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 import httpx
@@ -393,3 +394,141 @@ def test_other_413_on_append_stops_streaming(client, server):
     with client.trace(stream=True) as t:
         t.add_event("tool", "a")
     assert t._dead
+
+
+def too_large(limit=16_777_216, **details):
+    return 413, {"error": {"code": "request_too_large", "message": f"a request body is at most {limit} bytes",
+                           "details": {"error": "request_too_large", "max_bytes": limit, **details}}}
+
+
+def body_limit(server, limit):
+    """The server's body limit (SG-A13.2): an append over `limit` bytes is a 413; returns the appends taken."""
+    reply, taken = server.reply, []
+
+    def limited(request):
+        if len(request.content) > limit:
+            server.requests.append((request.url.path, json.loads(request.content), dict(request.headers)))
+            status, body = too_large(limit)
+            return httpx.Response(status, json=body)
+        r = reply(request)
+        if r.is_success:
+            taken.append(json.loads(request.content))
+        return r
+
+    server.reply = limited
+    return taken
+
+
+def delivered(taken):
+    return [(e["seq"], e["name"]) for b in taken for e in b["events"]]
+
+
+def test_backlog_over_the_body_limit_is_sent_in_halves(client, server):
+    """SG-A14.1: an append over the server's body limit is sent again in smaller appends, the stream going on."""
+    server.queue("events", (500, {}), (500, {}), (500, {}), too_large(), too_large())
+    with client.trace(stream=True) as t:
+        for name in "abcde":
+            t.add_event("tool", name)
+    assert seqs(server) == [[0], [0, 1], [0, 1, 2], [0, 1, 2, 3], [0, 1], [0], [1], [2], [3], [4], []]
+    assert finals(server)[-1] is True and t._sent == 5 and not t._dead and t._max_batch == 1
+
+
+def test_body_limit_without_max_bytes_still_splits(client, server):
+    server.queue("events", (500, {}), (413, {"error": {"code": "request_too_large"}}))
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert seqs(server) == [[0], [0, 1], [0], [1], []] and not t._dead
+
+
+@pytest.mark.parametrize("sizes", [[10, 10, 10, 10], [1, 5_000, 1, 1, 9_000, 1], [3_000] * 7, [9_000, 1, 1, 1, 1]])
+def test_stream_under_a_body_limit_delivers_all_but_oversized_events(client, server, sizes):
+    """Against a real byte limit: every event that fits is delivered once, in order and renumbered; one that alone
+    is over the limit is dropped as a refused one; the final status arrives."""
+    taken = body_limit(server, 4_000)
+    server.queue("events", *[(503, {})] * 3)  # an outage: the backlog grows past the limit
+    with client.trace(stream=True) as t:
+        for i, n in enumerate(sizes):
+            t.add_event("llm", f"e{i}", output={"text": "x" * n})
+    kept = [f"e{i}" for i, n in enumerate(sizes) if n < 4_000]
+    assert delivered(taken) == list(enumerate(kept)) and [e["name"] for e in t.events] == kept
+    assert taken[-1]["final"] is True and taken[-1]["status"] == "success" and [b["final"] for b in taken].count(True) == 1
+    assert not t._dead and t._refused == len(sizes) - len(kept)
+
+
+@pytest.mark.parametrize("sizes", [[1_000] * 9, [1, 5_000, 1, 1, 1]])
+def test_async_stream_under_a_body_limit_delivers_all_but_oversized_events(aclient, server, sizes):
+    taken = body_limit(server, 4_000)
+    server.queue("events", *[(503, {})] * 3)
+
+    async def run():
+        async with aclient.trace(stream=True) as t:
+            for i, n in enumerate(sizes):
+                t.add_event("llm", f"e{i}", output={"text": "x" * n})
+                await asyncio.sleep(0)
+        return t
+
+    t = asyncio.run(run())
+    kept = [f"e{i}" for i, n in enumerate(sizes) if n < 4_000]
+    assert delivered(taken) == list(enumerate(kept)) and [e["name"] for e in t.events] == kept
+    assert taken[-1]["final"] is True and not t._dead and t._refused == len(sizes) - len(kept)
+
+
+def test_async_backlog_over_the_body_limit_is_split(aclient, server):
+    """The A14-2 sequence through the async client."""
+    server.queue("events", (500, {}), (500, {}), (500, {}), too_large())
+
+    async def run():
+        async with aclient.trace(stream=True) as t:
+            for name in "abcde":
+                t.add_event("tool", name)
+                await asyncio.sleep(0.01)
+        return t
+
+    t = asyncio.run(run())
+    assert seqs(server) == [[0], [0, 1], [0, 1, 2], [0, 1, 2, 3], [0, 1], [2, 3], [4], []]
+    assert t._sent == 5 and not t._dead
+
+
+def test_single_event_over_the_body_limit_is_dropped(client, server, caplog):
+    taken = body_limit(server, 4_000)
+    with caplog.at_level(logging.WARNING, logger="agentops_sdk"):
+        with client.trace(stream=True) as t:
+            t.add_event("tool", "a")
+            t.add_event("tool", "big", input={"text": "x" * 5_000})
+            t.add_event("tool", "c")
+    assert seqs(server) == [[0], [1], [1], []] and delivered(taken) == [(0, "a"), (1, "c")]
+    assert taken[-1]["final"] is True and not t._dead and t._refused == 1
+    assert "over the server's body limit" in caplog.text
+
+
+@pytest.mark.parametrize("big", ["input", "output"])
+def test_trace_fields_over_the_body_limit_stop_the_stream(make_client, server, big):
+    """When the trace's own fields, not an event, pass the limit, no event is dropped for them: the stream stops."""
+    taken = body_limit(server, 4_000)
+    with make_client().trace(stream=True, **({"input": "x" * 5_000} if big == "input" else {})) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+        if big == "output":
+            t.set_output("x" * 5_000)
+    assert t._dead and [e["name"] for e in t.events] == ["a", "b"] and t._refused == 0
+    assert delivered(taken) == ([] if big == "input" else [(0, "a"), (1, "b")])
+
+
+def test_other_413_codes_on_append_stop_streaming(client, server):
+    server.queue("events", (413, {"error": {"code": "something_else", "details": {"max_bytes": 10}}}))
+    with client.trace(stream=True) as t:
+        t.add_event("tool", "a")
+        t.add_event("tool", "b")
+    assert t._dead and seqs(server) == [[0]]
+
+
+@pytest.mark.parametrize("details, expected", [
+    ({"max_bytes": 16_777_216}, ("max_bytes", 16_777_216)),
+    ({}, ("max_bytes", None)), ({"max_bytes": 0}, ("max_bytes", None)), ({"max_bytes": True}, ("max_bytes", None)),
+])
+def test_push_outcome_on_the_body_limit(details, expected):
+    from agentops_sdk.precheck import push_outcome
+    r = httpx.Response(413, json={"error": {"code": "request_too_large", "details": details}})
+    assert push_outcome(r) == expected
+    assert push_outcome(httpx.Response(413, text="<html>413</html>")) == "fatal"
