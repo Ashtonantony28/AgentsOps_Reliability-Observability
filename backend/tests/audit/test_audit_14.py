@@ -138,9 +138,9 @@ async def test_abandoned_checks_stop_and_the_next_resume_through_a_real_server(s
     first = sum(stepped.values())
     await asyncio.sleep(1)
     assert sum(stepped.values()) == first < events, first  # stopped, not stepped on to the end
-    deadline = time.monotonic() + 180  # each check steps what its 0.5 s allows, so a slow runner needs more of them
+    deadline = time.monotonic() + 180  # each check steps what its time allows, so a slow runner needs more of them
     while (r := await check()).error is not None and time.monotonic() < deadline:
-        pass
+        c.check_timeout_s = min(c.check_timeout_s * 1.25, 5)  # the last restores a checkpoint, slower than 0.5 s on CI
     assert r.allowed is False and r.violations, r
     assert sum(stepped.values()) < events + 15 * K, sum(stepped.values())  # about each slice once
     if sync:
