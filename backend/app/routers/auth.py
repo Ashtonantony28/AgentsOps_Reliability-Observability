@@ -52,11 +52,14 @@ async def register(req: RegisterRequest, request: Request, db: AsyncSession = De
 
 @router.post("/login", response_model=TokenPair)
 async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    ip = request.client.host if request.client else ""
+    await enforce_rate_limit(f"login:ip:{ip}", settings.LOGIN_LIMIT_PER_MIN)
+    await enforce_rate_limit(f"login:email:{req.email.lower()}", settings.LOGIN_LIMIT_PER_MIN)
     try:
         user, org, access, refresh, _ = await auth_service.login(
             db, req.email, req.password,
             user_agent=request.headers.get("user-agent", ""),
-            ip=request.client.host if request.client else "",
+            ip=ip,
         )
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid_credentials")

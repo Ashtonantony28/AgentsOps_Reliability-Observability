@@ -93,8 +93,6 @@ async def test_a_slow_alert_channel_of_one_org_does_not_hold_up_another_orgs_ale
 
 # --- A15-2 (high): unlimited logins hash passwords on the executor that ingest parsing shares ---
 
-@pytest.mark.xfail(strict=True, reason="A15-2: /api/auth/login has no rate limit and its bcrypt runs on the default "
-                                       "executor, so wrong-password logins delay every org's ingest parsing")
 async def test_failed_logins_do_not_delay_another_orgs_ingest(client, db, org, admin_user, agent, api_key_headers,
                                                               monkeypatch):
     def slow_verify(pw, hashed):  # stands in for bcrypt (0.3 s at the default cost)

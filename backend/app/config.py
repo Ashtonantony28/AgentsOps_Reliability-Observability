@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_TTL_MIN: int = 60
     JWT_REFRESH_TTL_DAYS: int = 14
     REGISTER_LIMIT_PER_HOUR: int = 5  # per client address; each registration makes an org
+    LOGIN_LIMIT_PER_MIN: int = 10  # per client address and per email
+    PASSWORD_HASH_THREADS: int = 2  # bcrypt's own executor
+    PASSWORD_HASH_QUEUE: int = 16  # hashes running or waiting for it; past it, 429
 
     POSTGRES_USER: str = "agentops"
     POSTGRES_PASSWORD: str = "agentops"
