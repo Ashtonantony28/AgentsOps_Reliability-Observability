@@ -13,7 +13,7 @@ class WebhookRunner(BaseModel):
 
 
 class TracesRunner(BaseModel):
-    """The output of the newest trace of the run's agent whose input matches the case's."""
+    """The output of the newest trace of the run's agent and version whose input matches the case's."""
     type: Literal["traces"]
     match: Literal["exact", "contains"] = "exact"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -26,7 +26,7 @@ class CaseIn(BaseModel):
     input: str
     expected_output: str = ""
     tags: List[str] = []
-    weight: float = 1.0
+    weight: float = Field(default=1.0, gt=0)
 
 
 def _valid_cron(v: Optional[str]) -> Optional[str]:
