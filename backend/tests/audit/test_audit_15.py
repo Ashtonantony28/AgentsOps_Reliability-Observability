@@ -152,8 +152,6 @@ async def test_connection_test_does_not_buffer_an_unbounded_response(client, db,
 
 # --- A15-4 (high): the prod promotion gate does not look at the version being promoted ---
 
-@pytest.mark.xfail(strict=True, reason="A15-4: promote's eval gate reads the agent's latest completed run of any "
-                                       "version, so a version that was never evaluated reaches prod without force")
 async def test_promotion_gate_needs_a_passing_run_of_the_promoted_version(client, db, org, auth_headers, agent, net):
     promote = {"target_environment": "prod", "version": "1.0.0"}
     r = await client.post(f"/api/agents/{agent.id}/promote", headers=auth_headers, json=promote)

@@ -178,11 +178,12 @@ async def promote(
     if req.target_environment not in {"dev", "staging", "prod"}:
         raise HTTPException(400, "invalid_environment")
 
-    # eval gate: require last completed run >= threshold
+    # eval gate: the promoted version's last completed run must reach the threshold
     if not req.force and req.target_environment == "prod":
         last = (await db.execute(
             select(EvaluationRun).where(
                 EvaluationRun.agent_id == agent_id,
+                EvaluationRun.agent_version == req.version,
                 EvaluationRun.status == "completed",
             ).order_by(EvaluationRun.created_at.desc()).limit(1)
         )).scalar_one_or_none()

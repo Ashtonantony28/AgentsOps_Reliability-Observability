@@ -9,6 +9,7 @@ from app.database import get_db
 from app.middleware.auth import AuthContext, get_current_user, require_role
 from app.models import (
     Agent,
+    AgentVersion,
     EvaluationCase,
     EvaluationResult,
     EvaluationRun,
@@ -140,9 +141,12 @@ async def run_set(
     )).scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "agent_not_found")
+    version = req.agent_version or agent.current_version
+    if version != agent.current_version and not (await db.execute(select(AgentVersion.id).where(
+            AgentVersion.agent_id == agent.id, AgentVersion.version == version).limit(1))).first():
+        raise HTTPException(404, "version_not_found")
     run = EvaluationRun(
-        set_id=set_id, agent_id=agent.id,
-        agent_version=req.agent_version or agent.current_version,
+        set_id=set_id, agent_id=agent.id, agent_version=version,
         triggered_by=ctx.user.id,
     )
     db.add(run)
