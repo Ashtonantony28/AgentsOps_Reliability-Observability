@@ -120,7 +120,7 @@ async def test_password_changes_do_not_refuse_another_users_login(client, db, or
     changes = [asyncio.create_task(client.post("/api/auth/password", headers=auth_headers, json=change))
                for _ in range(16)]
     deadline = time.monotonic() + 10
-    while auth_service._hashes_in_flight < 16 and time.monotonic() < deadline:  # a slow runner takes a while to queue them
+    while auth_service._hashes_in_flight + sum(t.done() for t in changes) < 16 and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     r = await client.post("/api/auth/login", json=login)
     await asyncio.gather(*changes)
