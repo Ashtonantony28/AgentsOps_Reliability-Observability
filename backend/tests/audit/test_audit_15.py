@@ -50,8 +50,6 @@ def net(monkeypatch):
 
 # --- A15-1 (high): one org's alert channels hold up every later org's periodic alerts ---
 
-@pytest.mark.xfail(strict=True, reason="A15-1: periodic alert rules of every org are checked in one serial loop that "
-                                       "awaits each firing rule's channels before the next org's rule is checked")
 async def test_a_slow_alert_channel_of_one_org_does_not_hold_up_another_orgs_alert(db, session_maker, org, net):
     handlers, seen = net
     other = Organization(name="B", slug=f"b-{uuid.uuid4().hex[:8]}")
@@ -272,9 +270,6 @@ async def test_outbound_refuses_nat64_addresses_of_private_ipv4(monkeypatch):
 
 # --- A15-10 (medium): scheduled evaluation runs share the alert worker's queue ---
 
-@pytest.mark.xfail(strict=True, reason="A15-10: evaluation runs go to the default queue with the alert tick, so one "
-                                       "org's scheduled runs (up to 300 s each, unbounded per org) delay every org's "
-                                       "alerts")
 def test_evaluation_runs_do_not_share_the_alert_queue():
     def queue(name):
         return celery.amqp.router.route({}, name)["queue"].name

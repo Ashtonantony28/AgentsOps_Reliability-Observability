@@ -1,5 +1,7 @@
 import asyncio
 import logging
+
+from celery.exceptions import SoftTimeLimitExceeded
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -7,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.celery_app import celery
 from app.config import settings
-from app.models import Agent, EvaluationRun, EvaluationSet
+from app.models import Agent, EvaluationResult, EvaluationRun, EvaluationSet
 from app.services import cron
 from app.services.evaluation_service import run_evaluation
 from app.tasks._sync_db import SyncSession
@@ -21,16 +23,39 @@ def _async_run(run_id: str) -> None:
     Session = async_sessionmaker(engine, expire_on_commit=False)
 
     async def _work():
-        async with Session() as db:
-            await run_evaluation(db, run_id)
-        await engine.dispose()
+        try:
+            async with Session() as db:
+                await run_evaluation(db, run_id)
+        finally:
+            await engine.dispose()
 
     asyncio.run(_work())
 
 
-@celery.task(name="app.tasks.evaluation_tasks.execute_run")
+def fail_run(run_id: str, error: str) -> None:
+    """Marks a run that stopped part way failed, with the cases it scored (each is committed as it is scored)."""
+    with SyncSession() as db:
+        run = db.get(EvaluationRun, run_id)
+        if run is None or run.status in ("completed", "failed"):
+            return
+        passed = db.execute(select(EvaluationResult.passed).where(EvaluationResult.run_id == run_id)).scalars().all()
+        run.passed, run.total = sum(passed), len(passed)
+        run.failed = run.total - run.passed
+        run.status, run.completed_at = "failed", datetime.utcnow()
+        run.summary = {**(run.summary or {}), "error": error}
+        db.commit()
+
+
+@celery.task(name="app.tasks.evaluation_tasks.execute_run", soft_time_limit=240, time_limit=300)
 def execute_run(run_id: str) -> str:
-    _async_run(run_id)
+    try:
+        _async_run(run_id)
+    except SoftTimeLimitExceeded:
+        log.error("eval run %s hit its soft time limit; marked failed", run_id)
+        fail_run(run_id, "time_limit")
+    except Exception as e:
+        fail_run(run_id, type(e).__name__)
+        raise
     return run_id
 
 

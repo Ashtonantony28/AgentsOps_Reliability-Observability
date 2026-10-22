@@ -6,6 +6,7 @@ from typing import List
 import httpx
 
 from app.config import settings
+from app.schemas.alert import MAX_CHANNELS
 from app.services import outbound
 
 log = logging.getLogger(__name__)
@@ -74,19 +75,20 @@ async def send_email(to_addr: str, subject: str, body: str) -> bool:
         return False
 
 
+async def _send(ch: dict, message: str, severity: str) -> bool:
+    kind = ch.get("type")
+    target = ch.get("target") or ch.get("url") or ch.get("email") or ""
+    if kind == "slack":
+        return await send_slack(target, message)
+    if kind == "pagerduty":
+        return await send_pagerduty(target, message, severity)
+    if kind == "webhook":
+        return await send_webhook(target, {"message": message, "severity": severity})
+    if kind == "email":
+        return await send_email(target, f"[AgentOps {severity}] alert", message)
+    return False
+
+
 async def dispatch_alert(channels: List[dict], message: str, severity: str) -> List[bool]:
-    results = []
-    for ch in channels or []:
-        kind = ch.get("type")
-        target = ch.get("target") or ch.get("url") or ch.get("email") or ""
-        ok = False
-        if kind == "slack":
-            ok = await send_slack(target, message)
-        elif kind == "pagerduty":
-            ok = await send_pagerduty(target, message, severity)
-        elif kind == "webhook":
-            ok = await send_webhook(target, {"message": message, "severity": severity})
-        elif kind == "email":
-            ok = await send_email(target, f"[AgentOps {severity}] alert", message)
-        results.append(ok)
-    return results
+    """Sends a rule's channels at once; a rule stored before the bound sends only its first MAX_CHANNELS."""
+    return list(await asyncio.gather(*(_send(ch, message, severity) for ch in (channels or [])[:MAX_CHANNELS])))
