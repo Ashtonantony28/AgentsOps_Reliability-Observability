@@ -40,8 +40,6 @@ def net(monkeypatch):
 
 # --- A16-1 (high): one rule that raises in the check phase drops every org's pages ---
 
-@pytest.mark.xfail(strict=True, reason="A16-1: a rule whose check raises (window_minutes past datetime's range) ends "
-                                       "the tick before any page is sent, and dedup then suppresses the fired alerts")
 async def test_one_orgs_failing_rule_does_not_drop_another_orgs_page(client, db, session_maker, org, auth_headers,
                                                                      net):
     other = Organization(name="B", slug=f"b-{uuid.uuid4().hex[:8]}")
@@ -71,8 +69,6 @@ async def test_one_orgs_failing_rule_does_not_drop_another_orgs_page(client, db,
 
 # --- A16-2 (high): outbound lookups hold the default executor past their deadline ---
 
-@pytest.mark.xfail(strict=True, reason="A16-2: outbound resolves names with loop.getaddrinfo on the default executor; "
-                                       "the deadline cancels the wait, not the thread, so ingest parsing waits behind it")
 async def test_a_slow_outbound_lookup_does_not_delay_another_orgs_ingest(client, auth_headers, agent, api_key_headers,
                                                                          monkeypatch):
     real = socket.getaddrinfo

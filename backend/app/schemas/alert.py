@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.schemas.policy import PolicySeverity
 
 MAX_CHANNELS = 10  # per rule
+MAX_WINDOW_MINUTES = 43_200  # 30 days
 
 
 class AlertChannel(BaseModel):
@@ -23,7 +24,7 @@ class AlertRuleCreate(BaseModel):
     metric: str
     operator: str = ">"
     threshold: float
-    window_minutes: int = 15
+    window_minutes: int = Field(15, ge=1, le=MAX_WINDOW_MINUTES)
     severity: str = "warning"
     channels: List[AlertChannel] = Field([], max_length=MAX_CHANNELS)
     runbook_url: str = ""
@@ -36,7 +37,7 @@ class AlertRuleUpdate(BaseModel):
     name: Optional[str] = None
     threshold: Optional[float] = None
     operator: Optional[str] = None
-    window_minutes: Optional[int] = None
+    window_minutes: Optional[int] = Field(None, ge=1, le=MAX_WINDOW_MINUTES)
     severity: Optional[str] = None
     channels: Optional[List[AlertChannel]] = Field(None, max_length=MAX_CHANNELS)
     runbook_url: Optional[str] = None
