@@ -397,6 +397,7 @@ async def test_the_integration_test_is_rate_limited_per_org(client, db, org, aut
     from app.config import settings
     from tests.audit.test_audit_17 import _org_with_admin
     assert settings.INTEGRATION_TEST_LIMIT_PER_MIN == 10
+    monkeypatch.setattr(time, "time", lambda: 7_200_000.0)  # one minute window, however slow the runner
     i = Integration(org_id=org.id, kind="openai", name="I", config={"api_key": "k"})
     other, other_headers = await _org_with_admin(db, "B")
     j = Integration(org_id=other.id, kind="openai", name="J", config={"api_key": "k"})
