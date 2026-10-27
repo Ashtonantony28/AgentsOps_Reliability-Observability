@@ -14,10 +14,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.celery_app import celery
+from app.middleware.auth import make_access_token
 from app.models import (
-    Agent, AlertEvent, AlertRule, EvaluationCase, EvaluationResult, EvaluationRun, EvaluationSet, Organization, Trace,
+    Agent, AlertEvent, AlertRule, EvaluationCase, EvaluationResult, EvaluationRun, EvaluationSet, Organization,
+    OrgMembership, Trace,
 )
-from app.schemas.alert import MAX_CHANNELS, MAX_WINDOW_MINUTES
+from app.schemas.alert import MAX_CHANNELS, MAX_ORG_RULES, MAX_WINDOW_MINUTES
 from app.services import alert_service, evaluation_service, notification_service
 from app.services.alert_service import compute_metric_value, evaluate_metric_rules
 from app.services.notification_service import dispatch_alert
@@ -427,3 +429,127 @@ async def test_metric_checks_do_not_load_trace_rows(db, engine, org, agent):
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", record)
     assert statements and not [s for s in statements if "traces.input" in s or "traces.output" in s]
+
+
+
+# --- SG-AP3.1: rules checked in turns by org from where the last tick stopped, rules per org bounded, fired once ---
+
+@pytest.fixture
+def checked(monkeypatch):
+    """Names of the rules whose checks started, in order; `hooks[name]` is an async callable awaited first."""
+    real, names, hooks = alert_service.compute_metric_value, [], {}
+
+    async def compute(db, rule):
+        names.append(rule.name)
+        if rule.name in hooks:
+            await hooks[rule.name](db)
+        return await real(db, rule)
+
+    monkeypatch.setattr(alert_service, "compute_metric_value", compute)
+    return names, hooks
+
+
+async def test_rules_are_checked_in_turns_by_org(db, org, dispatch, checked):
+    names, _ = checked
+    b, c = await _add(db, Organization(name="B", slug="b"), Organization(name="C", slug="c"))
+    for rule in (_firing(org, "a1"), _firing(org, "a2"), _firing(org, "a3"), _firing(c, "c1"), _firing(b, "b1"),
+                 _firing(c, "c2")):
+        await _add(db, rule)
+    assert await evaluate_metric_rules(db) == {"checked": 6, "fired": 6}
+    assert names == ["a1", "c1", "b1", "a2", "c2", "a3"]  # orgs by their oldest rule
+
+
+async def test_a_tick_carries_on_from_the_rule_the_last_tick_did_not_reach(db, org, dispatch, checked, monkeypatch,
+                                                                           caplog):
+    names, hooks = checked
+    monkeypatch.setattr(alert_service, "CHECK_DEADLINE_S", 0.2)
+    for name in ("r0", "r1", "r2", "r3"):
+        await _add(db, _firing(org, name))
+    stuck = asyncio.Event()
+    hooks["r1"] = lambda db: stuck.wait()
+    assert await evaluate_metric_rules(db) == {"checked": 2, "fired": 1}
+    assert "after 2 rule(s), 2 not reached" in caplog.text
+    stuck.set()
+    assert await evaluate_metric_rules(db) == {"checked": 4, "fired": 3}  # r0 is still firing
+    assert await evaluate_metric_rules(db) == {"checked": 4, "fired": 0}
+    assert names == ["r0", "r1", "r2", "r3", "r0", "r1", "r0", "r1", "r2", "r3"]  # a whole tick starts from the first
+
+
+async def test_a_tick_carries_on_past_a_deleted_rule_it_did_not_reach(db, org, dispatch, checked, monkeypatch):
+    names, hooks = checked
+    monkeypatch.setattr(alert_service, "CHECK_DEADLINE_S", 0.2)
+    other = (await _add(db, Organization(name="B", slug="b")))[0]
+    rules = [_firing(org, "a0"), _firing(other, "b0"), _firing(org, "a1"), _firing(other, "b1")]
+    for rule in rules:
+        await _add(db, rule)
+    hooks["b0"] = lambda db: asyncio.Event().wait()
+    await evaluate_metric_rules(db)
+    del hooks["b0"]
+    await db.delete(rules[2])  # a1, the first rule not reached
+    await db.commit()
+    await evaluate_metric_rules(db)
+    assert names == ["a0", "b0", "b1", "a0", "b0"]
+
+
+async def test_another_orgs_costly_rules_delay_a_rule_by_a_bounded_number_of_ticks(db, session_maker, org, dispatch,
+                                                                                   checked, monkeypatch):
+    names, hooks = checked
+    monkeypatch.setattr(alert_service, "CHECK_DEADLINE_S", 0.25)
+    other = (await _add(db, Organization(name="B", slug="b")))[0]
+    for i in range(12):  # each check takes 0.1 s, so a tick checks three rules
+        await _add(db, _firing(org, f"a{i}"))
+        hooks[f"a{i}"] = lambda db: asyncio.sleep(0.1)
+    await _add(db, _firing(other, "b0"), _firing(other, "b1"))
+    ticks = []
+    for _ in range(6):
+        async with session_maker() as s:  # a tick stopped mid-query leaves its session unusable, as in the worker
+            await evaluate_metric_rules(s)
+        ticks.append(len(names))
+    assert "b0" in names[:ticks[0]] and "b1" in names[:ticks[1]]
+    assert {f"a{i}" for i in range(12)} <= set(names)  # within ceil(14 / 3) + 1 ticks
+
+
+async def test_overlapping_ticks_fire_a_rule_once(db, session_maker, org, dispatch, checked):
+    started, _, _ = dispatch
+    names, hooks = checked
+    await _add(db, _firing(org, "a"))
+    both = asyncio.Event()
+
+    async def meet(db):
+        if names.count("a") == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 5)
+
+    hooks["a"] = meet
+
+    async def tick():
+        async with session_maker() as s:
+            return await evaluate_metric_rules(s)
+
+    summaries = await asyncio.gather(tick(), tick())
+    assert sorted(s["fired"] for s in summaries) == [0, 1] and [s["checked"] for s in summaries] == [1, 1]
+    assert await _count(session_maker, AlertEvent) == 1 and started == ["a"]
+
+
+async def _member_headers(db, org, user):
+    db.add(OrgMembership(org_id=org.id, user_id=user.id, role="admin"))
+    await db.commit()
+    return {"Authorization": f"Bearer {make_access_token(user.id, org.id, 'admin')}"}
+
+
+async def test_an_org_has_at_most_max_org_rules(client, db, session_maker, org, admin_user, auth_headers):
+    body = {"name": "r", "metric": "error_rate", "operator": ">", "threshold": 0.5}
+    await _add(db, *(AlertRule(org_id=org.id, name=f"s{i}", metric="policy_violations", operator=">=", threshold=1,
+                               enabled=i % 2 == 0) for i in range(MAX_ORG_RULES - 1)))  # disabled ones count too
+    r = await client.post("/api/alerts/rules", headers=auth_headers, json=body)
+    assert r.status_code == 200, r.text
+    last = r.json()["id"]
+    r = await client.post("/api/alerts/rules", headers=auth_headers, json=body)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "rule_limit"
+    assert r.json()["error"]["details"]["max_rules"] == MAX_ORG_RULES
+    assert await _count(session_maker, AlertRule) == MAX_ORG_RULES
+    other = (await _add(db, Organization(name="B", slug="b")))[0]
+    r = await client.post("/api/alerts/rules", headers=await _member_headers(db, other, admin_user), json=body)
+    assert r.status_code == 200  # the bound is per org
+    assert (await client.delete(f"/api/alerts/rules/{last}", headers=auth_headers)).status_code == 200
+    assert (await client.post("/api/alerts/rules", headers=auth_headers, json=body)).status_code == 200

@@ -12,12 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import app.database
 import app.redis
 import app.routers.ws
+import app.services.alert_service
 import app.services.trace_service
 from app.config import settings
 from app.database import Base, get_db
 from app.main import app as fastapi_app
 from app.middleware.auth import hash_api_key, make_access_token
 from app.models import Agent, ApiKey, Organization, OrgMembership, User
+
+
+@pytest.fixture(autouse=True)
+def alert_tick_from_the_start(monkeypatch):
+    """The alert tick resumes where the last one in this process stopped; each test starts from the first rule."""
+    monkeypatch.setattr(app.services.alert_service, "_resume_at", None)
 
 
 @pytest.fixture

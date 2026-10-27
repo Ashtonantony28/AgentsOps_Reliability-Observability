@@ -2,17 +2,18 @@ from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import AuthContext, get_current_user, require_role
-from app.models import AlertEvent, AlertRule
+from app.models import AlertEvent, AlertRule, Organization
 from app.schemas.alert import (
     AlertEventOut,
     AlertRuleCreate,
     AlertRuleOut,
     AlertRuleUpdate,
+    MAX_ORG_RULES,
 )
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
@@ -32,6 +33,10 @@ async def create_rule(
     ctx: AuthContext = Depends(require_role("developer")),
     db: AsyncSession = Depends(get_db),
 ):
+    await db.execute(select(Organization.id).where(Organization.id == ctx.org_id).with_for_update())
+    if (await db.execute(select(func.count()).where(AlertRule.org_id == ctx.org_id))).scalar_one() >= MAX_ORG_RULES:
+        raise HTTPException(409, detail={"error": "rule_limit", "max_rules": MAX_ORG_RULES,
+                                         "message": f"an org has at most {MAX_ORG_RULES} alert rules"})
     r = AlertRule(
         org_id=ctx.org_id,
         agent_id=req.agent_id,
