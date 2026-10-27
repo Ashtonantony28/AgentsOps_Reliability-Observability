@@ -166,12 +166,15 @@ def _in_turns(rules) -> list[tuple]:
     return keyed[i:] + keyed[:i]
 
 
-async def _check_all(db: AsyncSession, summary: dict, pages: list, order: list) -> None:
+async def _rules_in_turns(db: AsyncSession) -> list[tuple]:
     rules = (await db.execute(select(AlertRule).where(
         AlertRule.enabled.is_(True), AlertRule.metric != "policy_violations").order_by(
         AlertRule.created_at, AlertRule.id))).scalars().all()
     db.expunge_all()  # a rollback after a failed check would expire the rules still to check
-    order.extend(_in_turns(rules))
+    return _in_turns(rules)
+
+
+async def _check_all(db: AsyncSession, summary: dict, pages: list, order: list) -> None:
     for _, rule in order:
         summary["checked"] += 1
         try:
@@ -200,7 +203,7 @@ async def evaluate_metric_rules(db: AsyncSession) -> dict:
     turns by org from where the last tick stopped, so another org's rules can only delay a rule by some ticks."""
     global _resume_at
     summary = {"checked": 0, "fired": 0}
-    pages, order = [], []
+    pages, order = [], await _rules_in_turns(db)  # loaded before the deadline, so a tick always checks some rules
     try:
         await asyncio.wait_for(_check_all(db, summary, pages, order), CHECK_DEADLINE_S)
     except asyncio.TimeoutError:
