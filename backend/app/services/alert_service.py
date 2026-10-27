@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AlertEvent, AlertRule, Incident, Trace, TracePolicy, TracePolicyViolation
 from app.schemas.alert import MAX_WINDOW_MINUTES
 from app.schemas.policy import PolicySeverity
+from app.services import outbound
 from app.services.notification_service import dispatch_alert
 
 log = logging.getLogger(__name__)
@@ -128,18 +129,19 @@ async def _dispatch_all(pages: list[tuple]) -> None:
     """Sends each (org_id, channels, message, severity) page, a bounded number at once taking turns by org, and
     cancels what is still sending at the deadline."""
     by_org = defaultdict(list)
-    for org_id, *page in pages:
-        by_org[org_id].append(page)
+    for page in pages:
+        by_org[page[0]].append(page)
     gate = asyncio.Semaphore(DISPATCH_CONCURRENCY)
 
-    async def send(page):
+    async def send(org_id, *page):
+        outbound.org.set(org_id)  # this task's own context
         async with gate:
             try:
                 await dispatch_alert(*page)
             except Exception:
                 log.exception("alert dispatch failed")
 
-    tasks = [asyncio.create_task(send(p)) for turn in zip_longest(*by_org.values()) for p in turn if p is not None]
+    tasks = [asyncio.create_task(send(*p)) for turn in zip_longest(*by_org.values()) for p in turn if p is not None]
     if not tasks:
         return
     _, pending = await asyncio.wait(tasks, timeout=DISPATCH_DEADLINE_S)

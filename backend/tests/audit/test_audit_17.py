@@ -86,8 +86,6 @@ async def test_one_orgs_many_rules_do_not_keep_another_orgs_rule_unchecked(clien
 
 # --- A17-2 (high): slow lookups of two orgs hold every resolver thread, and other orgs' pages fail ---
 
-@pytest.mark.xfail(strict=True, reason="A17-2: two orgs' lookups of a name that never answers hold all RESOLVE_THREADS "
-                                       "threads past their deadline, so every other org's lookups time out")
 async def test_two_orgs_slow_lookups_do_not_fail_another_orgs_alert_page(client, db, org, agent, api_key_headers, dns,
                                                                          monkeypatch):
     monkeypatch.setattr(outbound, "RESOLVE_TIMEOUT_S", 0.2)
@@ -110,8 +108,6 @@ async def test_two_orgs_slow_lookups_do_not_fail_another_orgs_alert_page(client,
 
 # --- A17-3 (medium): a rule at the channel bound loses a page while any other call of its org is in flight ---
 
-@pytest.mark.xfail(strict=True, reason="A17-3: ORG_CALLS (10) equals MAX_CHANNELS and counts whole calls, so a rule's "
-                                       "10th channel is refused as too_many_calls while another call of the org runs")
 async def test_a_rule_at_the_channel_bound_is_paged_while_an_integration_test_runs(client, db, org, agent, auth_headers,
                                                                                   api_key_headers, dns):
     dns["held"].add("slow-reply.example")  # a receiver that answers slowly, as webhooks may
