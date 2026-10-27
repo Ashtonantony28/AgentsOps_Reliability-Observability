@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.middleware.auth import ROLE_ORDER, AuthContext, get_current_user, hash_token, require_role
+from app.middleware.rate_limit import enforce_rate_limit
 from app.models import AuditLog, Integration, OAuthState, OrgMembership, User
 from app.schemas.integration import (
     IntegrationCreate,
@@ -96,6 +97,7 @@ async def rotate_signing_secret(int_id: str, ctx: AuthContext = Depends(require_
 
 @router.post("/{int_id}/test", response_model=TestConnectionResult)
 async def test_connection(int_id: str, ctx: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    await enforce_rate_limit(f"integration-test:{ctx.org_id}", settings.INTEGRATION_TEST_LIMIT_PER_MIN)
     i = (await db.execute(select(Integration).where(Integration.id == int_id, Integration.org_id == ctx.org_id))).scalar_one_or_none()
     if not i:
         raise HTTPException(404, "integration_not_found")
