@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import weakref
+from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import zip_longest
@@ -21,6 +23,8 @@ ALERTING_ACTIONS = ("alert", "block")  # `log` policies record violations withou
 DISPATCH_CONCURRENCY = 20  # rules paging at once in one tick
 DISPATCH_DEADLINE_S = 45.0  # the tick runs every minute
 CHECK_DEADLINE_S = 180.0  # checks stop here, so the pages fired so far go out inside the task's 300 s limit
+_rule_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_resume_at: Optional[tuple] = None  # the key of the first rule the last tick in this process did not reach
 
 
 def severities_at_least(rule: AlertRule) -> tuple[str, ...]:
@@ -153,17 +157,38 @@ async def _dispatch_all(pages: list[tuple]) -> None:
                     DISPATCH_DEADLINE_S)
 
 
-async def _check_all(db: AsyncSession, summary: dict, pages: list) -> None:
+def _in_turns(rules) -> list[tuple]:
+    """(key, rule) pairs taking turns by org (each org's oldest rule first, orgs by their oldest rule), starting from
+    `_resume_at`, so a tick that stops at its deadline is carried on by the next one."""
+    by_org = defaultdict(list)
+    for r in rules:
+        by_org[r.org_id].append(r)
+    keyed = sorted(((turn, rs[0].created_at, org), r) for org, rs in by_org.items() for turn, r in enumerate(rs))
+    i = bisect_left(keyed, (_resume_at,)) if _resume_at else 0
+    return keyed[i:] + keyed[:i]
+
+
+async def _rules_in_turns(db: AsyncSession) -> list[tuple]:
     rules = (await db.execute(select(AlertRule).where(
-        AlertRule.enabled.is_(True), AlertRule.metric != "policy_violations").order_by(AlertRule.created_at))).scalars().all()
+        AlertRule.enabled.is_(True), AlertRule.metric != "policy_violations").order_by(
+        AlertRule.created_at, AlertRule.id))).scalars().all()
     db.expunge_all()  # a rollback after a failed check would expire the rules still to check
-    for rule in rules:
+    return _in_turns(rules)
+
+
+async def _check_all(db: AsyncSession, summary: dict, pages: list, order: list) -> None:
+    for _, rule in order:
         summary["checked"] += 1
         try:
             value = await compute_metric_value(db, rule)
             if not compare(value, rule.operator, rule.threshold) or await already_firing(db, rule):
                 continue
-            event = await fire_alert(db, rule, value)
+            async with _rule_locks.setdefault(rule.id, asyncio.Lock()):  # overlapping ticks fire a rule once
+                await db.execute(select(AlertRule.id).where(AlertRule.id == rule.id).with_for_update())
+                if await already_firing(db, rule):
+                    await db.commit()  # releases the row lock
+                    continue
+                event = await fire_alert(db, rule, value)
         except Exception:
             log.exception("alert rule %s check failed, skipped", rule.id)
             await db.rollback()
@@ -176,15 +201,19 @@ async def _check_all(db: AsyncSession, summary: dict, pages: list) -> None:
 async def evaluate_metric_rules(db: AsyncSession) -> dict:
     """The periodic check of every enabled metric rule (policy_violations rules fire as violations are stored).
     Every rule is checked before any is paged, so no org's channels hold up another org's rules; a rule whose check
-    raises is skipped, and the pages fired so far are sent however the check phase ends."""
+    raises is skipped, and the pages fired so far are sent however the check phase ends. Rules are checked taking
+    turns by org from where the last tick stopped, so another org's rules can only delay a rule by some ticks."""
+    global _resume_at
     summary = {"checked": 0, "fired": 0}
-    pages = []
+    pages, order = [], await _rules_in_turns(db)  # loaded before the deadline, so a tick always checks some rules
     try:
-        await asyncio.wait_for(_check_all(db, summary, pages), CHECK_DEADLINE_S)
+        await asyncio.wait_for(_check_all(db, summary, pages, order), CHECK_DEADLINE_S)
     except asyncio.TimeoutError:
-        log.warning("alert checks stopped at the %ss deadline after %d rule(s)", CHECK_DEADLINE_S, summary["checked"])
+        log.warning("alert checks stopped at the %ss deadline after %d rule(s), %d not reached", CHECK_DEADLINE_S,
+                    summary["checked"], len(order) - summary["checked"])
     finally:
         await _dispatch_all(pages)
+        _resume_at = order[summary["checked"]][0] if summary["checked"] < len(order) else None
     return summary
 
 

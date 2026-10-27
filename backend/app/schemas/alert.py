@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.schemas.policy import PolicySeverity
 
 MAX_CHANNELS = 10  # per rule
+MAX_ORG_RULES = 200  # so one org's rules take a bounded share of the alert tick
 MAX_WINDOW_MINUTES = 43_200  # 30 days
 
 

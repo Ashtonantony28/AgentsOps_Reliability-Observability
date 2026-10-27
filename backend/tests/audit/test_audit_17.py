@@ -64,8 +64,6 @@ async def _org_with_admin(db, name):
 
 # --- A17-1 (high): one org's rules keep every later rule of every org from being checked ---
 
-@pytest.mark.xfail(strict=True, reason="A17-1: the check phase stops at CHECK_DEADLINE_S and always starts from the "
-                                       "oldest rule, so one org's many rules keep every newer rule from being checked")
 async def test_one_orgs_many_rules_do_not_keep_another_orgs_rule_unchecked(client, db, session_maker, org,
                                                                           auth_headers, dns, monkeypatch):
     monkeypatch.setattr(alert_service, "CHECK_DEADLINE_S", 0.3)  # 180 s, and each check costs ~60 ms on 100k traces
