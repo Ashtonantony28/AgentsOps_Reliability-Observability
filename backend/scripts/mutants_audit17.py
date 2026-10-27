@@ -51,7 +51,7 @@ m.MUTANTS = [
     ("probe", OUT, "    future = _resolver.submit(", "    future = asyncio.get_running_loop()._default_executor.submit(",
      *P),
     ("probe", OUT, "        if _lookups >= RESOLVE_QUEUE:", "        if False:", *P),
-    ("probe", OUT, "            if _in_flight[org_id] >= ORG_CALLS:", "            if _in_flight[org_id] > ORG_CALLS:", *P),
+    ("probe", OUT, "            if self.held[org_id] < bound:", "            if self.held[org_id] <= bound:", *P),
     ("probe", OUT, "            call.refs += 1", "            pass", *P),
     ("probe", OUT, "    future.add_done_callback(done)", "    future.add_done_callback(lambda _: None)", *P),
     ("probe", OUT, "    call = _Call(org.get()) if org.get() else None", "    call = None", *P),
